@@ -15,15 +15,20 @@
 #   ./install.sh                       # installs the 'claude' agent + wires gates
 #   ./install.sh --agent claude --agent codex
 #   ./install.sh --agent claude --no-hooks
+#   ./install.sh --agent claude --skip-hook precommit-gate.sh
 #   ./install.sh --agent claude --no-sandbox
-#   --optout-if-recorded  honour a recorded opt-out (read under the settings lock; used by bin/baseline)
+#   --optout-if-recorded  honour recorded opt-outs — --no-sandbox, and every hook entry removed by
+#                         hand — read under the settings lock; used by bin/baseline
 #   ./install.sh --pinned --project DIR --version X.Y.Z [--agent claude|codex]...
 #   ./install.sh --pinned --project DIR --artifact FILE --sums FILE
 #
 # Options:
 #   --agent <claude|codex|gemini>   repeatable; default: claude
 #   --no-hooks                      don't wire the global Stop-hook gates
-#   --no-sandbox                    don't write the least-privilege sandbox settings (#248)
+#   --skip-hook <name>              repeatable; wire every shipped hook except <name> (exact script
+#                                   name, e.g. precommit-gate.sh) and remove its entry if wired.
+#                                   --no-hooks wins over it.
+#   --no-sandbox                   don't write the least-privilege sandbox settings (#248)
 #   --pinned                        release-pinned per-project install; every remaining argument
 #                                   is passed to scripts/lib/pinned-install.sh install
 #   -h, --help
@@ -112,20 +117,36 @@ for _adb_arg in "$@"; do
   fi
 done
 
-# ADB_BACKUP_DIR: a caller that must find what this run displaced (bin/baseline, after it unlinks
-# a hook this run added) names the directory instead of guessing a timestamp.
-BACKUP_DIR="${ADB_BACKUP_DIR:-$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)}"
+BACKUP_DIR="$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)"
 WIRE_HOOKS=1
 WIRE_SETTINGS=1
-# Set by `--optout-if-recorded`: honour a recorded `skipped-optout`, decided under the settings lock
-# rather than by the caller before this process takes it.
+# Set by `--optout-if-recorded`: honour a recorded `skipped-optout` and every per-hook opt-out,
+# decided under the settings lock rather than by the caller before this process takes it.
 OPTOUT_IF_RECORDED=0
+# `--skip-hook` names, one per line, each validated against adb_claude_hook_scripts before anything
+# is linked or written.
+SKIP_HOOKS=""
+SKIP_EXPLICIT=0   # 1 once `--skip-hook` is given: that choice must be recorded or the install fails
 AGENTS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --agent) AGENTS+=("$2"); shift 2 ;;
     --no-hooks) WIRE_HOOKS=0; shift ;;
+    --skip-hook)
+      # String equality per shipped name, never `grep -xF "$2"`: grep reads a newline inside the
+      # pattern as two patterns, so `$'nope\nprecommit-gate.sh'` would be accepted.
+      _adb_known=0
+      if [ $# -ge 2 ]; then
+        while IFS= read -r _adb_h; do [ "$_adb_h" = "$2" ] && _adb_known=1; done <<EOF
+$(adb_claude_hook_scripts)
+EOF
+      fi
+      if [ "$_adb_known" -eq 0 ]; then
+        echo "--skip-hook needs one of: $(adb_claude_hook_scripts | tr '\n' ' ')(got: ${2-nothing})" >&2
+        exit 2
+      fi
+      SKIP_HOOKS="$SKIP_HOOKS$2"$'\n'; SKIP_EXPLICIT=1; shift 2 ;;
     --no-sandbox) WIRE_SETTINGS=0; shift ;;
     --optout-if-recorded) OPTOUT_IF_RECORDED=1; shift ;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -1250,6 +1271,20 @@ install_claude() {
 _install_claude_locked() {
   local rc=0 manifest
   adb_info "claude → ~/.claude"
+  # THE PER-HOOK OPT-OUTS ARE READ HERE, under the settings lock and BEFORE linking: a hook this run
+  # is about to link for the first time must not read as "removed by hand", and a choice read by the
+  # caller before the lock can be stale by the time this process holds it. Each one joins the skip
+  # set, so a newly shipped hook is wired while the removed ones stay removed.
+  if [ "$WIRE_HOOKS" -eq 1 ] && [ "${OPTOUT_IF_RECORDED:-0}" -eq 1 ]; then
+    local _optouts
+    _optouts="$(adb_claude_hooks_missing_deliberate "$HOME/.claude/settings.json" "$REPO" "$HOME")" || {
+      adb_info "  ERROR  could not read the wiring receipt $(adb_claude_hooks_receipt "$HOME") — nothing was changed."
+      adb_info "         A hook entry you removed by hand cannot be told from one that never landed without it."
+      adb_info "         Make it readable, or remove it (each removed entry is then read from its script link alone)."
+      return 1
+    }
+    [ -z "$_optouts" ] || SKIP_HOOKS="$SKIP_HOOKS$_optouts"$'\n'
+  fi
   # The install surface (root doc, every skill, the runtime scripts, and the shared
   # scripts/lib) is enumerated ONCE by adb_agent_manifest — install.sh links it, uninstall.sh
   # removes it, and bin/baseline verifies it, so the three can't drift (#48). scripts/lib links
@@ -1281,6 +1316,11 @@ _install_claude_locked() {
   # which `$(…)` alone would strip and a line-structured record could not carry.
   local -a fresh_name=() fresh_prior=()
   local s dest prior
+  # ONE DEFERRAL FROM HERE THROUGH THE TAKE-BACK BELOW: a signal honoured anywhere between creating
+  # this run's hook links and either wiring them or taking them back leaves owned links with no
+  # entries — the per-hook opt-out's exact shape. wire_hooks defers again inside, which keeps a
+  # signal held here, and resumes only after it succeeded, when there is nothing left to take back.
+  adb_settings_lock_defer_signals   # transaction: this run's hook links + their wiring or take-back
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     dest="$HOME/.claude/scripts/$s"
@@ -1323,10 +1363,17 @@ EOF
           adb_info "  (hook links added by this run were taken back: wiring failed, and an owned link with no entry would read as a per-hook opt-out on the next self-heal)"
         fi
       fi
+      # AN EXPLICIT SKIP NOBODY RECORDED is not honoured: without jq there is no receipt, and once
+      # jq arrives the next self-heal reads the skipped hook as never landed and wires it.
+      if [ "$wrc" -eq 3 ] && [ "$SKIP_EXPLICIT" -eq 1 ]; then
+        adb_info "  WARN   --skip-hook could not be recorded without jq — install jq and re-run"
+        rc=1
+      fi
     fi
   else
     adb_info "  (gates not wired — --no-hooks)"
   fi
+  adb_settings_lock_resume_signals
 
   # THE SECOND SETTINGS SURFACE (#248), and deliberately AFTER the hook wiring, not folded into
   # it: wire_hooks copies the PRISTINE settings.json into $BACKUP_DIR, and wire_settings must see
@@ -1360,6 +1407,12 @@ EOF
 # common.sh), then append ours. A user's own groups under the same event never match the regex,
 # so they survive; a re-run replaces our previous entry instead of double-adding it.
 #
+# SKIP_HOOKS (one name per line) is removed from the appended copy handler by handler — the Stop
+# group holds three hooks — so a skipped hook that was wired loses its entry and the rest are
+# written. An event whose every handler is skipped is still visited, so our old groups under it go.
+# The receipt still lists every shipped hook: a skipped one is a decision, and recording it is what
+# makes the next self-heal read its absence as the operator's choice rather than as never landed.
+#
 # Returns 0 wired, 3 skipped (no jq — tolerated, but the caller must not leave this run's hook links
 # behind), 1 on any other failure. The status matters: the previous version ended with an unconditional
 # "wired" line even when jq or mv had failed, so a broken settings.json was reported as success
@@ -1372,33 +1425,68 @@ wire_hooks() {
     return 3   # skipped, not failed: the caller takes back this run's hook links and keeps rc 0
   fi
   local settings="$HOME/.claude/settings.json"
-  local tmp groups re
+  local tmp groups re skipped
+  skipped="$(printf '%s' "$SKIP_HOOKS" | sed '/^$/d' | sort -u)"
   groups="$(sed "s@__ADB_HOME__@$HOME@g" "$REPO/agents/claude/settings.hooks.json")" || {
     adb_info "  WARN   could not read agents/claude/settings.hooks.json — hooks NOT wired"; return 1; }
   re="$(adb_claude_hook_regex "$HOME")"
-  # `-s`, not `-f`: an EMPTY settings.json is not valid JSON, but `jq` reads empty input as an
-  # empty stream — it exits 0 and prints NOTHING, so the guard below would not fire and the `mv`
-  # would install a 0-byte file while reporting success. That failure is self-entrenching:
-  # bin/baseline's adb_hooks_wired then sees no precommit-gate.sh, concludes the user chose
-  # --no-hooks, and passes --no-hooks to every future self-heal, so the gates never come back.
-  [ -s "$settings" ] || echo '{}' > "$settings"
-  mkdir -p "$BACKUP_DIR$(dirname "$settings")"
-  cp "$settings" "$BACKUP_DIR$settings"
+  # AN EMPTY OR ABSENT settings.json IS SUBSTITUTED, NEVER CREATED IN PLACE — the rule
+  # wire_settings follows, for its reason: writing `{}` follows a symlink out of ~/.claude. jq reads
+  # `-n` instead (the filter builds the same document from null), and the destination is touched
+  # once, by the publish. A document this run cannot see is refused, never assumed empty.
+  # (An empty file is not valid JSON, and jq reads it as an empty stream: exit 0, no output — so
+  # read directly it would publish a 0-byte settings.json, which the `-s` guard below also refuses.)
+  local docst existed=0 prior_link=""
+  local -a jqsrc=("$settings")
+  docst="$(adb_settings_doc_state "$settings")"
+  case "$docst" in
+    absent)  jqsrc=(-n) ;;
+    empty)   jqsrc=(-n); existed=1 ;;
+    present) existed=1 ;;
+    *)       adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — hooks NOT wired"
+             return 1 ;;
+  esac
+  # THE PRE-IMAGE, which a failed receipt write puts back, so no backup means no wiring: the file's
+  # bytes, and for a symlink its exact target too, since the publish replaces the link and leaves
+  # the target alone. A file that did not exist is removed again; its backup is a `{}`, as before.
+  # CHECKED, like adb_settings_doc_state's capture: a `; printf x` sentinel succeeds when readlink
+  # fails, and an empty target would then roll back to a regular file in the link's place.
+  if [ -L "$settings" ]; then
+    prior_link="$(readlink -n "$settings" && printf x)" || prior_link=""
+    prior_link="${prior_link%x}"
+    if [ -z "$prior_link" ]; then
+      adb_info "  WARN   could not read where ~/.claude/settings.json links to — hooks NOT wired"
+      return 1
+    fi
+  fi
+  if ! mkdir -p "$BACKUP_DIR$(dirname "$settings")" \
+     || { [ "$existed" -eq 1 ] && ! cp "$settings" "$BACKUP_DIR$settings"; } \
+     || { [ "$existed" -eq 0 ] && ! printf '{}\n' > "$BACKUP_DIR$settings"; }; then
+    adb_info "  WARN   could not back up ~/.claude/settings.json under $BACKUP_DIR — hooks NOT wired"
+    return 1
+  fi
   # A per-process temp name in the same directory: two installs (or two SessionStart-triggered
   # self-heals) racing on one fixed path could `mv` each other's half-written file into place.
   tmp="$settings.adb.$$.tmp"
-  if ! jq --argjson groups "$groups" --arg re "$re" '
-        .hooks = (.hooks // {})
+  if ! jq --argjson groups "$groups" --arg re "$re" \
+        --arg dir "$HOME/.claude/scripts/" --arg skipped "$skipped" '
+        ($skipped | split("\n") | map(select(length > 0) | $dir + .)) as $skip
+        | .hooks = (.hooks // {})
         | reduce ($groups | to_entries[]) as $e (.;
-            .hooks[$e.key] = (((.hooks[$e.key] // [])
-              | map(select(([.hooks[]?.command // ""] | any(test($re))) | not)))
-              + $e.value))
-      ' "$settings" > "$tmp"; then
+            ($e.value
+              | map(.hooks |= map(select((.command // "") as $c | any($skip[]; . == $c) | not)))
+              | map(select(.hooks | length > 0))) as $ours
+            | (((.hooks[$e.key] // [])
+                | map(select(([.hooks[]?.command // ""] | any(test($re))) | not)))
+                + $ours) as $kept
+            | if ($kept | length) == 0 and (.hooks | has($e.key) | not) then .
+              else .hooks[$e.key] = $kept end)
+      ' "${jqsrc[@]}" > "$tmp"; then
     rm -f "$tmp"
     adb_info "  WARN   ~/.claude/settings.json is not valid JSON — hooks NOT wired (restore from the backup)"
     return 1
   fi
-  # Belt to the -s brace above: never replace the real file with an empty one, whatever the
+  # Belt to the substitution above: never replace the real file with an empty one, whatever the
   # reason (a full disk truncates the write just as effectively as an empty input does).
   if [ ! -s "$tmp" ]; then
     rm -f "$tmp"
@@ -1416,19 +1504,39 @@ wire_hooks() {
   adb_settings_lock_defer_signals   # transaction: hook entries + wiring receipt
   if ! adb_publish_json "$tmp" "$settings"; then
     adb_info "  WARN   could not write ~/.claude/settings.json — hooks NOT wired"
-    adb_settings_lock_resume_signals
-    return 1
+    return 1   # still deferred: the caller resumes once it has taken back this run's links
   fi
-  adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
   # THE RECEIPT, after the entries are durable: what the next self-heal reads to tell a removed
-  # entry from one that never landed (adb_claude_hooks_receipt). Written by rename, like the
-  # settings; a receipt that cannot be written is said, and the wiring above still stands.
+  # entry from one that never landed (adb_claude_hooks_receipt), and the only record that a
+  # SKIPPED hook was decided. Published like the settings. If it cannot be written the wiring
+  # fails and the settings go back to their pre-image, so entries and receipt land together or
+  # not at all: entries without it re-wire a skipped hook on the next self-heal.
   local receipt; receipt="$(adb_claude_hooks_receipt "$HOME")"
-  if adb_claude_hook_scripts > "$receipt.adb.$$.tmp" 2>/dev/null && mv "$receipt.adb.$$.tmp" "$receipt" 2>/dev/null; then :; else
+  if ! { adb_claude_hook_scripts > "$receipt.adb.$$.tmp" 2>/dev/null && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; }; then
     rm -f "$receipt.adb.$$.tmp"
-    adb_info "  WARN   could not write the wiring receipt $receipt — a hook entry you later remove will be re-wired by the next self-heal until it exists"
+    if [ "$existed" -eq 0 ] && rm -f "$settings"; then
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json, which did not exist before the hook wiring, removed again)"
+    elif [ -n "$prior_link" ] && rm -f "$settings" && ln -s -- "$prior_link" "$settings" \
+       && [ "$(readlink -n "$settings" && printf x)" = "${prior_link}x" ]; then
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as the symlink it was before the hook wiring)"
+    elif [ "$existed" -eq 1 ] && [ -z "$prior_link" ] && cp "$BACKUP_DIR$settings" "$settings.adb.$$.restore" 2>/dev/null \
+       && adb_publish_json "$settings.adb.$$.restore" "$settings" --allow-empty; then
+      adb_info "  WARN   could not write the wiring receipt $receipt — hooks NOT wired (~/.claude/settings.json put back as it was before the hook wiring)"
+    else
+      rm -f "$settings.adb.$$.restore"
+      adb_info "  WARN   could not write the wiring receipt $receipt, nor put ~/.claude/settings.json back — restore it from $BACKUP_DIR$settings"
+    fi
+    return 1   # still deferred: the caller resumes once it has taken back this run's links
   fi
   adb_settings_lock_resume_signals
+  if [ -z "$skipped" ]; then
+    adb_info "  hooks  wired global Stop gates + SessionStart currency and run-state hooks into ~/.claude/settings.json (backed up)"
+  elif [ "$(printf '%s\n' "$skipped" | grep -c .)" -ge "$(adb_claude_hook_scripts | grep -c .)" ]; then
+    adb_info "  hooks  none of the shipped hooks wired — every one skipped (~/.claude/settings.json backed up)"
+  else
+    adb_info "  hooks  wired the other shipped hooks into ~/.claude/settings.json (backed up)"
+  fi
+  [ -z "$skipped" ] || adb_info "  hooks  skipped (not wired, entry removed if it was): $(printf '%s' "$skipped" | tr '\n' ' ')"
 }
 
 run_adapter() {

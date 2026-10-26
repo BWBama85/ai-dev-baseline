@@ -1196,6 +1196,34 @@ check_mkdir_shim() {
     && chmod +x "$1/mkdir"
 }
 
+# check_mirror_without <tool> <dest-dir> — a PATH directory holding every command reachable on PATH
+# as a symlink, except <tool>. Shadowing a tool with a stub cannot express absence (`command -v`
+# still succeeds), and a hand-rolled minimal PATH removes `dirname` and the rest too, so the case
+# then tests a broken install instead of the absence. Run the code under test with the suite's own
+# interpreter, since `bash` resolved from a reduced PATH on macOS is 3.2. Returns 1, after a `bad`,
+# when the mirror still holds <tool> or lacks git, since a case run on it would then assert nothing.
+check_mirror_without() {
+  local drop="$1" dest="$2" pd exe base
+  local -a pdirs=()
+  mkdir -p "$dest"
+  IFS=: read -r -a pdirs <<< "$PATH"
+  for pd in "${pdirs[@]}"; do
+    [ -d "$pd" ] || continue
+    # A relative PATH entry would make a relative link, resolved against the MIRROR instead.
+    case "$pd" in /*) ;; *) pd="$(cd "$pd" 2>/dev/null && pwd)" || continue ;; esac
+    for exe in "$pd"/*; do
+      base="${exe##*/}"
+      [ "$base" = "$drop" ] && continue
+      [ -x "$exe" ] || continue
+      [ -e "$dest/$base" ] || ln -s "$exe" "$dest/$base" 2>/dev/null
+    done
+  done
+  if [ -e "$dest/$drop" ] || ! [ -x "$dest/git" ]; then
+    bad "the no-$drop PATH mirror is broken ($drop present, or git missing) — a case run on it would assert nothing"
+    return 1
+  fi
+}
+
 # check_copy_worktree <src> <dest> — copy a whole working tree (dotfiles included) into <dest>,
 # creating it, and NEVER copying `.git`. The ONE home for the throwaway-tree-copy move.
 #

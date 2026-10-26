@@ -1368,6 +1368,59 @@ printf 'precommit-gate.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
   "hooks-deliberate: with a receipt that lists it, the removed entry IS an opt-out"
 rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+# A RECEIPT THAT EXISTS AND CANNOT BE READ is status 2 with nothing printed (#444 review): read as
+# "lists nothing" it made every removed entry look never-wired, and the installer re-wired them.
+mkdir "$(adb_claude_hooks_receipt "$hs_home")"
+out="$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home")"; rc=$?
+eq "$rc" "2" "hooks-deliberate: a receipt that cannot be read (a directory) is status 2, not an empty list"
+eq "$out" "" "hooks-deliberate: ...and names nothing"
+rmdir "$(adb_claude_hooks_receipt "$hs_home")"
+if [ "$(id -u)" -ne 0 ]; then
+  printf 'precommit-gate.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"; chmod 000 "$(adb_claude_hooks_receipt "$hs_home")"
+  adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null; eq "$?" "2" "hooks-deliberate: a receipt with no read permission is status 2"
+  chmod 600 "$(adb_claude_hooks_receipt "$hs_home")"; rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+fi
+# ...and NEVER BLOCKS OR READS UNBOUNDED (#444 review): a FIFO there with no writer hung the read
+# while the installer held the settings lock, and a huge file was read whole. Bounded here, so a
+# regression is a red row rather than a hung suite (124 is the bound firing).
+mkfifo "$(adb_claude_hooks_receipt "$hs_home")"
+adb_run_bounded 10 1 "$BASH" -c '. "$1"; adb_claude_hooks_missing_deliberate "$2" "$3" "$4"' _ "$PWD/scripts/lib/common.sh" "$hs_part" "$hs_src" "$hs_home" >/dev/null
+eq "$?" "2" "hooks-deliberate: a FIFO at the receipt path is status 2, never a blocked read"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+{ printf 'precommit-gate.sh\n'; head -c 65536 /dev/zero | tr '\0' 'x'; } > "$(adb_claude_hooks_receipt "$hs_home")"
+adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
+eq "$?" "2" "hooks-deliberate: a receipt over 64 KiB is status 2, not read whole"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
+# ...and IS JUDGED ON ITS BYTES (#444 review): `$(…)` drops a NUL, so `precommit-\0gate.sh` read as
+# a name the receipt never held. Hook names and newlines only.
+# ...and as WHOLE RECORDS (#583): a damaged name, an empty receipt, an unterminated last record and
+# a blank line are each refused, rather than read as a receipt that omits the hook.
+for bad_rcpt in 'precommit-\0gate.sh\n' 'Precommit-gate.sh\n' 'precommit-gate.sh \n' 'precommit-gate.sh\r\n' \
+                'precommit-gate.shx\n' '' 'precommit-gate.sh' 'precommit-gate.sh\n\nsession-context.sh\n' '.sh\n' \
+                'precommit-gate.sh\n\n' '\nprecommit-gate.sh\n'; do
+  # shellcheck disable=SC2059   # the escapes ARE the fixture
+  printf "$bad_rcpt" > "$(adb_claude_hooks_receipt "$hs_home")"
+  adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
+  eq "$?" "2" "hooks-deliberate: a receipt outside the record grammar ($bad_rcpt) is status 2"
+done
+printf 'precommit-gate.sh\nsession-context.sh\n' > "$(adb_claude_hooks_receipt "$hs_home")"
+eq "$(adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" | tr -d '\n')" "precommit-gate.sh" \
+  "hooks-deliberate: ...while a well-formed receipt still reads"
+# A receipt is a regular file install.sh publishes; a symlink at its path is not one.
+mv "$(adb_claude_hooks_receipt "$hs_home")" "$hs_home/receipt-target"
+ln -s "$hs_home/receipt-target" "$(adb_claude_hooks_receipt "$hs_home")"
+adb_claude_hooks_missing_deliberate "$hs_part" "$hs_src" "$hs_home" >/dev/null
+eq "$?" "2" "hooks-deliberate: a SYMLINK at the receipt path is status 2"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")" "$hs_home/receipt-target"
+
+# --- adb_displaced_restore: a recorded link target that begins with `-` (#444 review) -------------
+# Without `--`, `ln -s "-n" <dest>` reads the target as an option, and the restore makes no link at
+# <dest> while reporting success.
+dr_dir="$work/displaced"; mkdir -p "$dr_dir/backup"
+adb_displaced_restore "$dr_dir/hook.sh" "$dr_dir/backup" "-n"; eq "$?" "0" "displaced-restore: a '-'-leading target restores"
+eq "$(readlink -n "$dr_dir/hook.sh" 2>/dev/null)" "-n" "displaced-restore: ...as a link to exactly that target"
+rm -rf "$dr_dir"
+rm -f "$(adb_claude_hooks_receipt "$hs_home")"
 eq "$(adb_claude_hooks_missing_deliberate "$hs_all" "$hs_src" "$hs_home" | wc -l | tr -d ' ')" "0" \
   "hooks-deliberate: a fully wired set names nothing"
 rm -f "$hs_home/.claude/scripts/precommit-gate.sh"

@@ -208,7 +208,7 @@ adb_displaced_restore() {
   if [ -e "$backup_dir$dest" ] || [ -L "$backup_dir$dest" ]; then
     mv "$backup_dir$dest" "$dest" || return 1
   elif [ -n "$prior" ]; then
-    ln -s "$prior" "$dest" || return 1
+    ln -s -- "$prior" "$dest" || return 1   # `--`: a target may begin with `-`
   fi
   return 0
 }
@@ -435,15 +435,33 @@ _adb_claude_hook_present() {
   fi
 }
 
-# The wiring RECEIPT: the hooks a SUCCESSFUL wire_hooks last wrote, one name per line. install.sh
+# The wiring RECEIPT: the hooks a SUCCESSFUL wire_hooks last decided — wired, or skipped by name
+# (`install.sh --skip-hook`, or a per-hook opt-out it preserved) — one name per line. install.sh
 # writes it after the settings rename lands; uninstall.sh removes it. It is what turns "our link,
-# no entry" into a known state: listed here, the entry was wired once and is gone now — the
-# operator removed it; not listed, it was never wired — an installer killed between the link and
+# no entry" into a known state: listed here, the entry was wired once or skipped on purpose and is
+# absent now — the operator's choice; not listed, it was never wired — an installer killed between the link and
 # the entry, or one that skipped wiring — and the next self-heal wires it. An install that predates
 # the receipt has none, and the link inference stands for it until its first successful wiring
 # (docs/installation.md says so).
 # Usage: adb_claude_hooks_receipt [home]
 adb_claude_hooks_receipt() { printf '%s/.claude/.adb-hooks-wired' "${1:-${HOME:-/root}}"; }
+
+# _adb_claude_hooks_receipt_records <file> — 0 when every line of a newline-terminated receipt is
+# one hook name (`[a-z0-9]`, then `[a-z0-9.-]`, ending `.sh`), 1 otherwise or when it cannot be
+# read; an empty line, a trailing one included, is a damaged record. Read from the FILE, never from
+# a `$(…)` capture, which strips trailing newlines and so hides trailing empty records. Matched
+# under a function-scoped C locale, so the ranges are ASCII whatever the caller's.
+_adb_claude_hooks_receipt_records() {
+  local line LC_ALL=C || return 1
+  [ -r "$1" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      [!a-z0-9]*|*[!a-z0-9.-]*|'') return 1 ;;
+      *.sh) : ;;
+      *) return 1 ;;
+    esac
+  done < "$1"
+}
 
 # Usage: adb_claude_hooks_state <settings.json> [home]      (home defaults to $HOME)
 adb_claude_hooks_state() {
@@ -487,12 +505,23 @@ EOF
 # install has the opt-out's exact shape otherwise (PR #443 review). OWNERSHIP, not existence (`adb_link_into`, the
 # same test every install-scoped scan uses): an unrelated file or a foreign symlink sitting at the
 # pathname is a collision the repair will back up, not a choice the operator made about our hook.
-# `bin/baseline` asks this before it reads `partial` as an opt-out: a newly shipped hook must be
-# wired by the next self-heal, not preserved as a choice nobody made (PR #443 review).
+# `install.sh --optout-if-recorded` skips exactly these, under the settings lock and before it
+# links anything, and `bin/baseline` asks it to tell `none`'s opt-out from a never-wired install.
+# Returns 0 with the list (possibly empty); 2, printing nothing, when something is at the receipt
+# path that is not a whole receipt: a regular, non-link, readable file of 1..64 KiB with no NUL and
+# a final newline (adb_bytes_whole), every line of it a hook name ending in `.sh`. An unreadable or
+# damaged receipt is not one that omits every hook, and reading it as one re-wires exactly the hooks
+# the operator removed. A name that is not shipped any more is a valid record, and simply unused.
 # Usage: adb_claude_hooks_missing_deliberate <settings.json> <src> [home]
 adb_claude_hooks_missing_deliberate() {
-  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt
+  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s receipt recorded="" have_receipt=0
   receipt="$(adb_claude_hooks_receipt "$home")"
+  if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+    have_receipt=1
+    adb_bytes_whole "$receipt" 65536 || return 2
+    recorded="$(head -c 65536 "$receipt")" || return 2
+    _adb_claude_hooks_receipt_records "$receipt" || return 2
+  fi
   while IFS= read -r s; do
     [ -n "$s" ] || continue
     adb_link_into "$home/.claude/scripts/$s" "$src" || continue
@@ -500,42 +529,11 @@ adb_claude_hooks_missing_deliberate() {
     # removed by hand. A link with no entry and no receipt line is an install killed between the
     # link and the entry (bin/baseline's own SessionStart budget can do that) — repaired, never
     # preserved. (PR #443 review)
-    if [ -f "$receipt" ]; then grep -qxF "$s" "$receipt" 2>/dev/null || continue; fi
+    if [ "$have_receipt" -eq 1 ]; then printf '%s\n' "$recorded" | grep -qxF -- "$s" || continue; fi
     printf '%s\n' "$s"
   done <<EOF
 $(adb_claude_hooks_missing "$settings" "$home")
 EOF
-}
-
-# The shipped hooks a MIXED set defers, one per line: hooks with no settings entry AND no owned
-# script link, reported ONLY while some other hook was removed by hand (adb_claude_hooks_missing_
-# deliberate). That is the state bin/baseline leaves on purpose — `--no-hooks` preserves the
-# opt-out and is all-or-nothing (#444), so the new hook is left unlinked rather than linked into
-# the opt-out's own shape — and a verifier that then reported the absent link BROKEN would repair
-# it every run and fail every time. Without a deliberate removal the set is not mixed and nothing
-# is deferred: a missing link is then a broken install, exactly as before.
-# Usage: adb_claude_hooks_deferred <settings.json> <src> [home]
-adb_claude_hooks_deferred() {
-  local settings="$1" src="$2" home="${3:-${HOME:-/root}}" s
-  [ -n "$(adb_claude_hooks_missing_deliberate "$settings" "$src" "$home")" ] || return 0
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    adb_link_into "$home/.claude/scripts/$s" "$src" && continue
-    printf '%s\n' "$s"
-  done <<EOF
-$(adb_claude_hooks_missing "$settings" "$home")
-EOF
-}
-
-# True iff <dest> is a hook script the MIXED hook set defers on purpose (#444): nothing at the path,
-# directly under <home>/.claude/scripts, and named in <deferred> (adb_claude_hooks_deferred's
-# output). A real file or a foreign link there is still a collision, never deferred. The one test
-# `baseline update`'s verifier and the adopt-readiness `harness` rung both apply.
-# Usage: adb_claude_hook_dest_deferred <dest> <deferred> <home>
-adb_claude_hook_dest_deferred() {
-  [ -n "$2" ] && [ ! -e "$1" ] && [ ! -L "$1" ] \
-    && [ "$(dirname "$1")" = "$3/.claude/scripts" ] \
-    && printf '%s\n' "$2" | grep -qxF -- "$(basename "$1")"
 }
 
 adb_claude_hook_regex() {
@@ -887,9 +885,12 @@ _adb_arm_lock_traps() {
 # Deferring rather than ignoring: the signal is honoured the moment the pair is complete, so a
 # Ctrl-C still works, it just lands on a boundary the file system can survive. `_ADB_SIGNAL_PENDING`
 # carries the status the handler would have exited with. (PR review)
+# A SECOND DEFERRAL KEEPS A HELD SIGNAL: this never clears `_ADB_SIGNAL_PENDING` (the resume does,
+# once it has read it), so a signal an outer deferral holds is still honoured when an inner
+# transaction defers again. It does not count depth: the first resume re-arms the immediate
+# handlers, so an inner transaction may resume only when the outer one has nothing left to protect.
 # Globals: _ADB_SIGNAL_PENDING (written)
 adb_settings_lock_defer_signals() {
-  _ADB_SIGNAL_PENDING=""
   trap '_ADB_SIGNAL_PENDING=143' TERM
   trap '_ADB_SIGNAL_PENDING=130' INT
   trap '_ADB_SIGNAL_PENDING=129' HUP

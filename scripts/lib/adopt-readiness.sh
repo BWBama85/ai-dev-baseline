@@ -185,11 +185,11 @@ _ar_primary_ok() {
 # What of <agent>'s install from <src> is not in place, as ` <agent>(<what>)` words on stdout —
 # nothing when the whole manifest is. Every destination must be our link into <src> AND resolve
 # (#539), and the payload a run reads through it must be a readable file: the root doc, each
-# skill's SKILL.md and scripts/lib/common.sh — with at least one skill. A hook a MIXED hook set defers is absent by design (#444) and is skipped
-# exactly as `baseline update`'s verifier skips it. Returns 1 when the manifest cannot be read.
+# skill's SKILL.md and scripts/lib/common.sh — with at least one skill.
+# Returns 1 when the manifest cannot be read.
 # Usage: _ar_agent_gaps <agent> <src>
 _ar_agent_gaps() {
-  local a="$1" src="$2" manifest st doc docfrom="" tab line from dest deferred="" out="" skills=0
+  local a="$1" src="$2" manifest st doc docfrom="" tab line from dest out="" skills=0
   manifest="$(adb_agent_manifest "$a" "$src" "$HOME")" || return 1
   if [ -z "$manifest" ]; then printf ' %s(unknown-agent)' "$a"; return 0; fi
   st="$(adb_agent_install_state "$a" "$src" "$HOME")" || return 1
@@ -199,7 +199,6 @@ _ar_agent_gaps() {
     root-doc-missing) out=" $a(root-doc)" ;;
     root-doc-foreign) out=" $a(root-doc: not the baseline's — $(adb_occupant_class "$doc" "$src"))" ;;
   esac
-  [ "$a" = claude ] && deferred="$(adb_claude_hooks_deferred "$HOME/.claude/settings.json" "$src" "$HOME")"
   tab="$(printf '\t')"
   # A gap the CLONE causes — its own file missing or unreadable — says `in the clone`: re-linking
   # cannot repair it, and the remedy must say so.
@@ -208,7 +207,6 @@ _ar_agent_gaps() {
     from="${line%%"$tab"*}"; dest="${line#*"$tab"}"
     if [ "$dest" = "$doc" ]; then docfrom="$from"; continue; fi
     case "$from" in "$src/agents/$a/skills/"*) skills=$((skills + 1)) ;; esac
-    adb_claude_hook_dest_deferred "$dest" "$deferred" "$HOME" && continue
     if [ ! -e "$from" ]; then
       out="$out $a(${dest/#$HOME/\~}: missing in the clone)"
     elif ! adb_link_into "$dest" "$src" || [ ! -e "$dest" ]; then

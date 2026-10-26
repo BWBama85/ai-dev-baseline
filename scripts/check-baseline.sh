@@ -374,6 +374,23 @@ hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks none + no owned links →
 for s in $(adb_claude_hook_scripts); do mv "$work/saved-hooks/$s" "$fh/.claude/scripts/$s"; done
 rm -f "$fh/.claude/settings.json"
 
+# AN UNREADABLE RECEIPT NEVER WIDENS THE INSTALL (#444 review). `none` keeps --no-hooks, since the
+# opt-out cannot be told from a never-wired install without it; `partial` says why a repair will
+# refuse rather than guess (install.sh aborts on it — check-session-currency.sh). A directory stands
+# in for the unreadable receipt. `none` is driven through the behind path, where the self-heal runs.
+reset_src; advance_origin "unreadable-receipt"; : > "$work/install.log"; hook_settings none
+rm -f "$(adb_claude_hooks_receipt "$fh")"; mkdir "$(adb_claude_hooks_receipt "$fh")"
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
+has "$(cat "$work/install.log")" "--no-hooks" "hooks none + unreadable receipt → the opt-out is kept (--no-hooks)"
+rmdir "$(adb_claude_hooks_receipt "$fh")"
+reset_src; hook_settings partial
+rm -f "$(adb_claude_hooks_receipt "$fh")"; mkdir "$(adb_claude_hooks_receipt "$fh")"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
+has "$out" "cannot be read" "hooks partial + unreadable receipt → the run says the receipt cannot be read"
+hasnt "$out" "newly shipped hook(s) not yet wired" "hooks partial + unreadable receipt → ...and never calls the removed hook newly shipped"
+rmdir "$(adb_claude_hooks_receipt "$fh")"
+rm -f "$fh/.claude/settings.json"
+
 # AN INSTALLER KILLED BETWEEN THE LINK AND THE ENTRY leaves an owned link with no entry — the
 # opt-out's shape — and only the receipt can say it was never wired (PR #443 review): the receipt
 # does not list session-context.sh, its link exists, its entry does not → repaired, not preserved.
@@ -400,7 +417,8 @@ reset_src; hook_settings partial
 out="$(HOME="$fh" "$src/bin/baseline" update 2>&1 || true)"
 has "$out" "PARTIAL" "hooks partial → the run says so out loud"
 has "$out" "precommit-gate.sh" "hooks partial → the run names the hook that is not wired"
-has "$out" "newly shipped hook is not wired" "hooks partial → the run states the residue, not just the state"
+has "$out" "wires every other one, a newly shipped one included" "hooks partial → the run says the opt-out costs no other hook"
+hasnt "$out" "newly shipped hook is not wired" "hooks partial → ...and no longer states a residue that is gone (#444)"
 rm -f "$fh/.claude/settings.json"
 
 # NEWLY SHIPPED IS NOT AN OPT-OUT (PR #443 review). A hook with neither an entry nor a script link
@@ -418,46 +436,39 @@ hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks newly shipped → ...WITH
 mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 
-# THE MIXED SET (#444, PR #443 review): a deliberate removal AND a newly shipped hook. The opt-out
-# is preserved (--no-hooks), so the new hook cannot be wired — and it must then not be LINKED
-# either, or the next self-heal reads the owned-but-unwired link as a second deliberate removal.
-# The stub installer creates no links, so what is asserted is the decision and the report; the
-# unlink primitive it calls is adb_unlink_if_ours, covered by check-common-lib.
-# THE BEHIND PATH, because that is where the mixed state is first produced (an upgrade pulls the
-# new hook) and where the self-heal runs unconditionally; and THE EXIT CODE, because the state the
-# self-heal leaves — the new hook's link absent — is one adb_verify_links used to call BROKEN, so
-# every update ended "repair failed" (exit 1) and every currency run repeated it (PR #443 review).
+# THE MIXED SET (#444): a deliberate removal (precommit-gate.sh, which the receipt lists) AND a hook
+# shipped since the last install (session-context.sh, which it does not). The repair must not pass
+# --no-hooks, which suppressed the new hook too, but --optout-if-recorded, under which install.sh
+# skips exactly the removed hooks. check-session-currency.sh drives that half with the real
+# installer and the real-installer rows below drive the whole update; this stub creates no links,
+# so the new hook's link is left in place and what is asserted is the decision.
+# THE BEHIND PATH, because that is where the mixed state is first produced (an upgrade pulls the hook).
 reset_src; advance_origin "ships-a-hook"; : > "$work/install.log"; hook_settings mixed
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
+eq "$rc" 0 "hooks mixed (behind) → the update completes (exit 0)"
+has "$(cat "$work/install.log")" "--optout-if-recorded" "hooks mixed → the repair asks install.sh to honour the recorded opt-outs"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks mixed → ...and does not pass --no-hooks, which would suppress the new hook too"
+has "$out" "kept as your per-hook opt-out: precommit-gate.sh "$'\n' "hooks mixed → only the hook removed by hand is named as the opt-out"
+has "$out" "Not removed by hand, so the next self-heal wires them: session-context.sh" "hooks mixed → ...and the new hook is named as one the update wires"
+hasnt "$out" "left UNLINKED" "hooks mixed → the new hook is not left unlinked"
+rm -f "$fh/.claude/settings.json"
+
+# A NEW HOOK WHOSE LINK IS ABSENT beside the opt-out — the state the pre-#444 stopgap left on
+# purpose — is a broken link, so the update repairs it rather than tolerating it as deferred. The
+# stub cannot wire it, so this run ends "repair failed"; the real-installer rows show it repaired.
+reset_src; : > "$work/install.log"; hook_settings mixed
 mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"
-out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
-eq "$rc" 0 "hooks mixed (behind) → the update completes (exit 0): a deferred hook is not a broken link"
-has "$out" "update complete" "hooks mixed (behind) → ...and says so"
-has "$(cat "$work/install.log")" "--no-hooks" "hooks mixed → the per-hook opt-out is preserved (--no-hooks)"
-has "$out" "left UNLINKED and unwired: session-context.sh" "hooks mixed → the newly shipped hook is named as left unlinked, not silently linked into an opt-out's shape"
-has "$out" "#444" "hooks mixed → ...and the run points at the per-hook form that resolves it"
-has "$out" "deferred (mixed hook set" "hooks mixed → ...and the verifier names the deferred hook rather than calling it broken"
-if [ -e "$fh/.claude/scripts/session-context.sh" ] || [ -L "$fh/.claude/scripts/session-context.sh" ]; then
-  bad "hooks mixed → the new hook's script must not be left linked without its entry"
-else ok; fi
-# ...and the NEXT run, now current, is "nothing to do" — not a repair that fails again.
-: > "$work/install.log"
-out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
-eq "$rc" 0 "hooks mixed (current) → a later update is nothing to do (exit 0), not a repeated failed repair"
-eq "$(wc -l < "$work/install.log" | tr -d ' ')" "0" "hooks mixed (current) → ...and the installer is not re-run"
-has "$out" "PARTIAL" "hooks mixed (current) → ...while the partial set is still reported"
-# A FOREIGN occupant at the deferred hook's path is still a collision, never tolerated as deferred.
-printf 'not ours\n' > "$fh/.claude/scripts/session-context.sh"
-out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
-has "$out" "BROKEN link" "hooks mixed → a foreign file at the deferred hook's path is still reported BROKEN"
-rm -f "$fh/.claude/scripts/session-context.sh"
+out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"
+has "$out" "unresolved): $fh/.claude/scripts/session-context.sh" "hooks mixed, new hook unlinked → reported BROKEN, not tolerated as deferred"
+hasnt "$out" "deferred" "hooks mixed, new hook unlinked → ...and never called deferred"
+eq "$(wc -l < "$work/install.log" | tr -d ' ')" "1" "hooks mixed, new hook unlinked → ...so the repair runs"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "hooks mixed, new hook unlinked → ...without --no-hooks"
 mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 
-# ...AND THE CLEANUP RUNS WHEN THE INSTALLER FAILS (PR #443 review). The stub is replaced through
-# origin with one that logs and exits 1 (the behind path pulls it), so the self-heal fails after
-# the fresh link would have landed; the deferred hook must still be cleaned up and reported, and
-# the failure must still be the exit status. The stub is restored through origin afterwards, since
-# every later case resets src to origin/main.
+# ...AND A FAILING INSTALLER IS STILL THE EXIT STATUS of a mixed-set repair. The stub is replaced
+# through origin with one that logs and exits 1 (the behind path pulls it), and restored through
+# origin afterwards, since every later case resets src to origin/main.
 _stub_ok="$(cat "$seed/install.sh")"
 _push_stub() {   # _push_stub <script-body> <commit-message>
   check_git "$c2" fetch -q origin; check_git "$c2" reset -q --hard origin/main
@@ -465,12 +476,9 @@ _push_stub() {   # _push_stub <script-body> <commit-message>
   check_git "$c2" add install.sh; check_git "$c2" commit -q -m "$2"; check_git "$c2" push -q origin main
 }
 reset_src; _push_stub "$(printf '%s\nexit 1\n' "$_stub_ok")" "installer-fails"; : > "$work/install.log"; hook_settings mixed
-mv "$fh/.claude/scripts/session-context.sh" "$work/saved-hook-link"
 out="$(HOME="$fh" "$src/bin/baseline" update 2>&1)"; rc=$?
 eq "$rc" 1 "hooks mixed + failing installer → the failure is still the exit status (1)"
 has "$out" "install.sh exited non-zero" "hooks mixed + failing installer → ...and is reported"
-has "$out" "left UNLINKED and unwired: session-context.sh" "hooks mixed + failing installer → the deferred-hook cleanup still runs and reports"
-mv "$work/saved-hook-link" "$fh/.claude/scripts/session-context.sh"
 rm -f "$fh/.claude/settings.json"
 _push_stub "$_stub_ok" "installer-restored"; reset_src
 
@@ -593,8 +601,15 @@ reset_src; : > "$work/install.log"; hook_settings partial
 rm -f "$fh/.claude/CLAUDE.md"
 HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
 has "$(cat "$work/install.log")" "--agent claude" "root doc missing → claude stays in the self-heal set"
-has "$(cat "$work/install.log")" "--no-hooks" "root doc missing → the per-hook opt-out is still preserved (--no-hooks)"
-has "$(cat "$work/install.log")" "--optout-if-recorded" "root doc missing → a recorded --no-sandbox is still honoured (--optout-if-recorded)"
+has "$(cat "$work/install.log")" "--optout-if-recorded" "root doc missing → the per-hook opt-out and a recorded --no-sandbox are still honoured (--optout-if-recorded)"
+hasnt "$(cat "$work/install.log")" "--no-hooks" "root doc missing, hooks partial → ...and the rest of the set is not suppressed wholesale (#444)"
+ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
+rm -f "$fh/.claude/settings.json"
+# ...and EVERY entry removed (`none`) still reaches the repair as --no-hooks.
+reset_src; : > "$work/install.log"; hook_settings none
+rm -f "$fh/.claude/CLAUDE.md"
+HOME="$fh" "$src/bin/baseline" update >/dev/null 2>&1 || true
+has "$(cat "$work/install.log")" "--no-hooks" "root doc missing, hooks none → the whole-set opt-out is still preserved (--no-hooks)"
 ln -s "$src/agents/claude/CLAUDE.md" "$fh/.claude/CLAUDE.md"
 rm -f "$fh/.claude/settings.json"
 
@@ -707,6 +722,33 @@ resolves "$h/.claude/CLAUDE.md" && ok || bad "opt-outs → the root doc is re-li
 eq "$(adb_claude_hooks_state "$h/.claude/settings.json" "$h")" "partial" "opt-outs → the removed hook entry stays removed"
 eq "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$h")" 2>/dev/null)" "skipped-optout" "opt-outs → --no-sandbox stays recorded"
 jq -e '.sandbox == null' "$h/.claude/settings.json" >/dev/null && ok || bad "opt-outs → no sandbox key was written"
+
+# THE MIXED SET, END TO END (#444): one hook entry removed by hand AND a hook shipped since the last
+# install — no entry, no link, no receipt line. `baseline update` alone must end with the new hook
+# wired and the removed one still absent, and the next update must have nothing to do. Twice: with
+# the receipt, and with none (an install that predates it, where the link alone marks the opt-out).
+for rcpt in kept absent; do
+  rhome "mixed-$rcpt" --agent claude --no-sandbox; h="$RH"
+  jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | (endswith("/precommit-gate.sh") or endswith("/session-context.sh")) | not))) | map(select(.hooks | length > 0))))' \
+    "$h/.claude/settings.json" > "$work/mixed.json" && mv "$work/mixed.json" "$h/.claude/settings.json"
+  rm -f "$h/.claude/scripts/session-context.sh"
+  if [ "$rcpt" = kept ]; then
+    grep -vxF session-context.sh "$(adb_claude_hooks_receipt "$h")" > "$work/mixed-receipt" && mv "$work/mixed-receipt" "$(adb_claude_hooks_receipt "$h")"
+  else
+    rm -f "$(adb_claude_hooks_receipt "$h")"
+  fi
+  eq "$(adb_claude_hooks_state "$h/.claude/settings.json" "$h")" "partial" "fixture ($rcpt receipt): a mixed hook set"
+  rupdate "$h"
+  eq "$RRC" "6" "mixed set ($rcpt receipt) → update repairs (exit 6)"
+  adb_claude_hook_wired "$h/.claude/settings.json" session-context.sh "$h" && ok || bad "mixed set ($rcpt receipt) → the newly shipped hook is wired"
+  resolves "$h/.claude/scripts/session-context.sh" && ok || bad "mixed set ($rcpt receipt) → ...and its script is linked"
+  if adb_claude_hook_wired "$h/.claude/settings.json" precommit-gate.sh "$h"; then bad "mixed set ($rcpt receipt) → the hook removed by hand must stay removed"; else ok; fi
+  eq "$(adb_claude_hooks_missing_deliberate "$h/.claude/settings.json" "$rsrc" "$h" | tr -d '\n')" "precommit-gate.sh" \
+    "mixed set ($rcpt receipt) → ...and still reads as the operator's opt-out"
+  rupdate "$h"
+  eq "$RRC" "0" "mixed set ($rcpt receipt) → the next update is nothing to do"
+  if adb_claude_hook_wired "$h/.claude/settings.json" precommit-gate.sh "$h"; then bad "mixed set ($rcpt receipt) → a second update must not re-wire the removed hook"; else ok; fi
+done
 
 # An OCCUPIED root doc is never displaced by an update: a regular file, then a link into a path
 # that is not a clone. Each is reported by class, and the exit code is what it would be anyway.

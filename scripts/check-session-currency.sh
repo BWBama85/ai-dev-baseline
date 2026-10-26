@@ -491,8 +491,8 @@ if [ "$tmo" -gt 0 ] && [ "$tmo" -le 120 ]; then ok; else bad "SessionStart timeo
 INSTALLER_OUT=""; INSTALLER_RC=0
 # <label> is first so every call site reads the same way and `installer_clean` can forward "$@";
 # this half only needs the last two.
-run_installer() {   # run_installer <label> <home> <script> — capture both streams AND the status
-  INSTALLER_OUT="$(HOME="$2" bash "$3" --agent claude 2>&1)"; INSTALLER_RC=$?
+run_installer() {   # run_installer <label> <home> <script> [installer args…] — capture both streams AND the status
+  INSTALLER_OUT="$(HOME="$2" bash "$3" --agent claude "${@:4}" 2>&1)"; INSTALLER_RC=$?
 }
 
 # installer_clean <label> <home> <script> — run it and require BOTH rc 0 and no WARN.
@@ -661,5 +661,212 @@ eq "$(jq '[.hooks.Stop[]?.hooks[]? | select(.command == "/custom/session-currenc
       "$uh/.claude/settings.json")" "1" "uninstall keeps a same-named user hook under OUR event"
 eq "$(jq '[.hooks[]?[]?.hooks[]? | select(.command | test("\\.claude/scripts/session-currency\\.sh$"))] | length' \
       "$uh/.claude/settings.json")" "0" "uninstall still removes our own entry"
+
+# --- `--skip-hook`: wiring a NAMED SUBSET (#444) --------------------------------------------------
+# The Stop template holds three hooks in ONE group, so a skip must filter handlers inside a group,
+# not drop groups. Asserted with adb_claude_hook_wired (event, matcher and handler type), never a
+# path grep, and against a user's own Stop hook that must survive every shape below.
+wired_set() {   # wired_set <home> — the shipped hooks wired in <home>, space-separated, sorted
+  local s
+  for s in $(adb_claude_hook_scripts); do
+    adb_claude_hook_wired "$1/.claude/settings.json" "$s" "$1" && printf '%s\n' "$s"
+  done | sort | tr '\n' ' '
+}
+all_but() {   # all_but <name>… — every shipped hook except those named, in wired_set's shape
+  adb_claude_hook_scripts | grep -vxF "$(printf '%s\n' "$@")" | sort | tr '\n' ' '
+}
+sh_home="$work/skiphome"; mkdir -p "$sh_home/.claude"
+jq -n '{hooks:{Stop:[{hooks:[{type:"command",command:"/usr/local/bin/my-stop-hook.sh"}]}]}}' > "$sh_home/.claude/settings.json"
+installer_clean "install with --skip-hook precommit-gate.sh" "$sh_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+eq "$(wired_set "$sh_home")" "$(all_but precommit-gate.sh)" "--skip-hook wires every shipped hook but the named one"
+has "$INSTALLER_OUT" "skipped (not wired, entry removed if it was): precommit-gate.sh" "--skip-hook → the install names what it skipped"
+eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' "$sh_home/.claude/settings.json")" "1" \
+  "--skip-hook keeps a user's own Stop hook"
+# THE RECEIPT STILL LISTS THE SKIPPED HOOK: without it, the next self-heal would read the owned
+# link with no entry as an interrupted install and wire it, undoing the skip.
+eq "$(sort "$(adb_claude_hooks_receipt "$sh_home")" | tr '\n' ' ')" "$(adb_claude_hook_scripts | sort | tr '\n' ' ')" \
+  "--skip-hook → the receipt still names every shipped hook"
+eq "$(adb_claude_hooks_missing_deliberate "$sh_home/.claude/settings.json" "$ROOT" "$sh_home" | tr -d '\n')" "precommit-gate.sh" \
+  "--skip-hook → the skipped hook reads as a recorded opt-out"
+# A skip of a hook that IS wired removes its entry; the previously skipped one comes back.
+installer_clean "re-install skipping a different, wired hook" "$sh_home" "$ROOT/install.sh" --skip-hook session-context.sh
+eq "$(wired_set "$sh_home")" "$(all_but session-context.sh)" "--skip-hook on a wired hook removes its entry and wires the rest"
+# Every hook skipped: each event is still visited, so none of ours is left behind.
+skip_all=()
+while IFS= read -r s; do skip_all+=(--skip-hook "$s"); done < <(adb_claude_hook_scripts)
+installer_clean "install skipping every shipped hook" "$sh_home" "$ROOT/install.sh" "${skip_all[@]}"
+eq "$(wired_set "$sh_home")" "" "--skip-hook naming every hook leaves none of ours wired"
+hasnt "$INSTALLER_OUT" "wired global Stop gates" "--skip-hook naming every hook → ...and never reports the hooks as wired"
+has "$INSTALLER_OUT" "none of the shipped hooks wired" "--skip-hook naming every hook → ...it says none were"
+eq "$(jq '[.hooks[][].hooks[] | select(.command | test("/\\.claude/scripts/"))] | length' "$sh_home/.claude/settings.json")" "0" \
+  "--skip-hook naming every hook → no entry of ours under any event"
+eq "$(jq '[.hooks.Stop[].hooks[] | select(.command == "/usr/local/bin/my-stop-hook.sh")] | length' "$sh_home/.claude/settings.json")" "1" \
+  "--skip-hook naming every hook still keeps the user's Stop hook"
+# --no-hooks wins, in either order.
+installer_clean "install restoring the full set" "$sh_home" "$ROOT/install.sh"
+cp "$sh_home/.claude/settings.json" "$work/skip-before.json"
+installer_clean "--no-hooks before --skip-hook" "$sh_home" "$ROOT/install.sh" --no-hooks --skip-hook precommit-gate.sh
+cmp -s "$work/skip-before.json" "$sh_home/.claude/settings.json" && ok || bad "--no-hooks --skip-hook must not touch the hook entries"
+installer_clean "--skip-hook before --no-hooks" "$sh_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh --no-hooks
+eq "$(wired_set "$sh_home")" "$(all_but)" "--skip-hook --no-hooks → --no-hooks wins, nothing is rewired"
+
+# A NAME THAT IS NOT A SHIPPED HOOK is refused before anything is linked or written: exit 2, the
+# settings byte-identical, no link created. So is a missing name, and a basename without `.sh`.
+bad_home="$work/skipbad"; mkdir -p "$bad_home/.claude"; printf '{"hooks":{}}\n' > "$bad_home/.claude/settings.json"
+cp "$bad_home/.claude/settings.json" "$work/skipbad-before.json"
+for bad_arg in "nope.sh" "precommit-gate" "/custom/precommit-gate.sh" "" $'nope\nprecommit-gate.sh' $'precommit-gate.sh\nsession-context.sh'; do
+  shown="${bad_arg//$'\n'/\\n}"   # one physical line per label, for the CI digest
+  run_installer "unknown --skip-hook" "$bad_home" "$ROOT/install.sh" --skip-hook "$bad_arg"
+  eq "$INSTALLER_RC" "2" "--skip-hook '$shown' → exit 2"
+  has "$INSTALLER_OUT" "--skip-hook needs one of:" "--skip-hook '$shown' → ...naming the valid names"
+done
+run_installer "--skip-hook with no name" "$bad_home" "$ROOT/install.sh" --skip-hook
+eq "$INSTALLER_RC" "2" "--skip-hook with no name → exit 2"
+cmp -s "$work/skipbad-before.json" "$bad_home/.claude/settings.json" && ok || bad "a refused --skip-hook must leave settings.json byte-identical"
+if [ -e "$bad_home/.claude/CLAUDE.md" ] || [ -L "$bad_home/.claude/CLAUDE.md" ] || [ -e "$bad_home/.claude/scripts" ]; then
+  bad "a refused --skip-hook must link nothing"
+else ok; fi
+
+# --optout-if-recorded READS THE OPT-OUTS ITSELF, under the lock and before linking: an entry
+# removed by hand stays removed, and a hook shipped since the last install (no entry, no link, no
+# receipt line) is wired. That is the mixed set bin/baseline's self-heal hands it.
+mx_home="$work/mixedhome"; mkdir -p "$mx_home/.claude"
+installer_clean "install the full set" "$mx_home" "$ROOT/install.sh"
+jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | (endswith("/precommit-gate.sh") or endswith("/session-context.sh")) | not))) | map(select(.hooks | length > 0))))' \
+  "$mx_home/.claude/settings.json" > "$work/mx.json" && mv "$work/mx.json" "$mx_home/.claude/settings.json"
+rm -f "$mx_home/.claude/scripts/session-context.sh"
+grep -vxF session-context.sh "$(adb_claude_hooks_receipt "$mx_home")" > "$work/mx-receipt" && mv "$work/mx-receipt" "$(adb_claude_hooks_receipt "$mx_home")"
+installer_clean "--optout-if-recorded over a mixed set" "$mx_home" "$ROOT/install.sh" --optout-if-recorded
+eq "$(wired_set "$mx_home")" "$(all_but precommit-gate.sh)" "--optout-if-recorded → the new hook is wired and the removed one stays removed"
+# ...and without the flag, running the installer by hand wires the full set.
+installer_clean "plain install over a partial set" "$mx_home" "$ROOT/install.sh"
+eq "$(wired_set "$mx_home")" "$(all_but)" "a plain install restores the full set"
+
+# AN UNREADABLE RECEIPT STOPS --optout-if-recorded BEFORE ANYTHING CHANGES (#444 review): read as
+# "lists nothing", it made the removed entry look never-wired and the install re-wired it. A
+# directory stands in for it, which no user can read as a file, root included.
+ur_home="$work/unreadreceipt"; mkdir -p "$ur_home/.claude"
+installer_clean "install the full set (unreadable receipt)" "$ur_home" "$ROOT/install.sh"
+jq '.hooks |= with_entries(.value |= (map(.hooks |= map(select(.command | endswith("/precommit-gate.sh") | not))) | map(select(.hooks | length > 0))))' \
+  "$ur_home/.claude/settings.json" > "$work/ur.json" && mv "$work/ur.json" "$ur_home/.claude/settings.json"
+rm -f "$(adb_claude_hooks_receipt "$ur_home")"; mkdir "$(adb_claude_hooks_receipt "$ur_home")"
+cp "$ur_home/.claude/settings.json" "$work/ur-before.json"
+run_installer "--optout-if-recorded over an unreadable receipt" "$ur_home" "$ROOT/install.sh" --optout-if-recorded
+no "$INSTALLER_RC" "--optout-if-recorded over an unreadable receipt → the install fails"
+has "$INSTALLER_OUT" "could not read the wiring receipt" "...and says the receipt is why"
+cmp -s "$work/ur-before.json" "$ur_home/.claude/settings.json" && ok || bad "an unreadable receipt must leave settings.json byte-identical (the removed hook was re-wired)"
+rmdir "$(adb_claude_hooks_receipt "$ur_home")"
+
+# A RECEIPT THAT CANNOT BE WRITTEN FAILS THE WIRING AND PUTS THE SETTINGS BACK (#444 review): the
+# entries without their receipt would record a skip nowhere, and the next self-heal would wire the
+# skipped hook. A directory at the receipt path is the fault — publication refuses it. Then the
+# recovery: with the path clear, the same command lands both.
+rw_home="$work/unwritablereceipt"; mkdir -p "$rw_home/.claude"
+installer_clean "install the full set (unwritable receipt)" "$rw_home" "$ROOT/install.sh"
+rm -f "$(adb_claude_hooks_receipt "$rw_home")"; mkdir "$(adb_claude_hooks_receipt "$rw_home")"
+cp "$rw_home/.claude/settings.json" "$work/rw-before.json"
+run_installer "--skip-hook with an unwritable receipt" "$rw_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+no "$INSTALLER_RC" "--skip-hook with an unwritable receipt → the install fails"
+has "$INSTALLER_OUT" "put back as it was" "...and says the settings were put back"
+hasnt "$INSTALLER_OUT" "hooks  wired" "...and never reports the hooks as wired"
+cmp -s "$work/rw-before.json" "$rw_home/.claude/settings.json" && ok || bad "an unwritable receipt must leave settings.json as it was before the install"
+rmdir "$(adb_claude_hooks_receipt "$rw_home")"
+installer_clean "--skip-hook once the receipt path is clear" "$rw_home" "$ROOT/install.sh" --skip-hook precommit-gate.sh
+# THE PRE-IMAGE IS BYTE-EXACT: an EMPTY settings.json goes back empty, not as the `{}` the wiring
+# normalized it to, and one that did not exist is removed again. `--no-sandbox` so the sandbox
+# surface, which runs after the hooks, writes nothing of its own.
+for pre in empty absent; do
+  pi_home="$work/preimage-$pre"; mkdir -p "$pi_home/.claude"
+  [ "$pre" = empty ] && : > "$pi_home/.claude/settings.json"
+  mkdir "$(adb_claude_hooks_receipt "$pi_home")"
+  run_installer "unwritable receipt over a(n) $pre settings.json" "$pi_home" "$ROOT/install.sh" --no-sandbox
+  no "$INSTALLER_RC" "unwritable receipt, $pre settings.json → the install fails"
+  if [ "$pre" = empty ]; then
+    [ -f "$pi_home/.claude/settings.json" ] && [ ! -s "$pi_home/.claude/settings.json" ] && ok \
+      || bad "unwritable receipt → an EMPTY settings.json must be put back empty, not as {}"
+  else
+    [ ! -e "$pi_home/.claude/settings.json" ] && ok || bad "unwritable receipt → a settings.json that did not exist must be removed again"
+  fi
+done
+
+# A SIGNAL DURING THE FAILED WIRING IS HONOURED ONLY AFTER THIS RUN'S LINKS ARE TAKEN BACK (#444
+# review): honoured first, it left fresh hook links with no entries — the per-hook opt-out's shape.
+# A `cp` shim sends TERM to the installer at the exact moment it copies the settings pre-image
+# back, which is inside the failure path; the run must still exit 143, and with no hook link left.
+sig_bin="$work/sigbin"; mkdir -p "$sig_bin"
+printf '#!/bin/sh\ncase "$*" in *.restore*) kill -TERM "$PPID" ;; esac\nexec %s "$@"\n' "$(command -v cp)" > "$sig_bin/cp"; chmod +x "$sig_bin/cp"
+sg_home="$work/sighome"; mkdir -p "$sg_home/.claude"; printf '{}\n' > "$sg_home/.claude/settings.json"
+mkdir "$(adb_claude_hooks_receipt "$sg_home")"
+sg_out="$(HOME="$sg_home" PATH="$sig_bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-sandbox 2>&1)"; sg_rc=$?
+eq "$sg_rc" "143" "TERM inside a failed wiring → the install still exits 143"
+has "$sg_out" "taken back" "TERM inside a failed wiring → ...after taking back this run's hook links"
+sg_left=""
+while IFS= read -r s; do
+  if [ -e "$sg_home/.claude/scripts/$s" ] || [ -L "$sg_home/.claude/scripts/$s" ]; then sg_left="$sg_left $s"; fi
+done < <(adb_claude_hook_scripts)
+eq "$sg_left" "" "TERM inside a failed wiring → no hook link of this run is left behind"
+
+# ...AND ONE THAT ARRIVES BEFORE ANYTHING IS PUBLISHED — while jq builds the entries, with this
+# run's hook links already made — is held until the wiring completes: an exit there left every
+# fresh link with no entry and no receipt. A `jq` shim sends TERM on the wiring filter's own call.
+sig2_bin="$work/sigbin2"; mkdir -p "$sig2_bin"
+printf '#!/bin/sh\ncase "$*" in *"--argjson groups"*) kill -TERM "$PPID" ;; esac\nexec %s "$@"\n' "$(command -v jq)" > "$sig2_bin/jq"; chmod +x "$sig2_bin/jq"
+sg2_home="$work/sighome2"; mkdir -p "$sg2_home/.claude"; printf '{}\n' > "$sg2_home/.claude/settings.json"
+HOME="$sg2_home" PATH="$sig2_bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-sandbox >/dev/null 2>&1; sg2_rc=$?
+eq "$sg2_rc" "143" "TERM while jq builds the entries → the install still exits 143"
+eq "$(wired_set "$sg2_home")" "$(all_but)" "TERM while jq builds the entries → ...once every fresh link is wired, never leaving one without its entry"
+[ -f "$(adb_claude_hooks_receipt "$sg2_home")" ] && ok || bad "TERM while jq builds the entries → ...and with the receipt written"
+
+# A SYMLINKED settings.json GOES BACK AS THE SAME SYMLINK (#444 review): the publish replaces the
+# link, not its target, so the rollback recreates the link — exact target, target bytes untouched.
+sl_home="$work/symsettings"; mkdir -p "$sl_home/.claude"
+printf '{"model":"opus"}\n' > "$sl_home/real-settings.json"; cp "$sl_home/real-settings.json" "$work/sl-target-before"
+ln -s "$sl_home/real-settings.json" "$sl_home/.claude/settings.json"
+mkdir "$(adb_claude_hooks_receipt "$sl_home")"
+run_installer "unwritable receipt over a symlinked settings.json" "$sl_home" "$ROOT/install.sh" --no-sandbox
+no "$INSTALLER_RC" "unwritable receipt, symlinked settings.json → the install fails"
+eq "$(readlink -n "$sl_home/.claude/settings.json" 2>/dev/null)" "$sl_home/real-settings.json" "...and settings.json is the same symlink again"
+cmp -s "$work/sl-target-before" "$sl_home/real-settings.json" && ok || bad "...and its target was never written"
+# ...and a target that BEGINS WITH `-` is restored as that target, never read by `ln` as an option.
+dl_home="$work/dashlink"; mkdir -p "$dl_home/.claude"
+printf '{"model":"opus"}\n' > "$dl_home/.claude/-n"
+ln -s -- "-n" "$dl_home/.claude/settings.json"
+mkdir "$(adb_claude_hooks_receipt "$dl_home")"
+run_installer "unwritable receipt over a settings.json linked to '-n'" "$dl_home" "$ROOT/install.sh" --no-sandbox
+no "$INSTALLER_RC" "unwritable receipt, settings.json -> '-n' → the install fails"
+eq "$(readlink -n "$dl_home/.claude/settings.json" 2>/dev/null)" "-n" "...and settings.json is the link to '-n' again"
+# A LINK TARGET THAT CANNOT BE READ IS REFUSED BEFORE ANYTHING IS PUBLISHED (#583): a masked
+# readlink left the target empty, and a later rollback put a regular file where the link was. A
+# `readlink` shim fails only for settings.json, so every other link this run makes still resolves.
+rl_bin="$work/rlbin"; mkdir -p "$rl_bin"
+printf '#!/bin/sh\ncase "$*" in *settings.json*) exit 1 ;; esac\nexec %s "$@"\n' "$(command -v readlink)" > "$rl_bin/readlink"; chmod +x "$rl_bin/readlink"
+rl_home="$work/rlhome"; mkdir -p "$rl_home/.claude"
+printf '{"model":"opus"}\n' > "$rl_home/real-settings.json"; cp "$rl_home/real-settings.json" "$work/rl-target-before"
+ln -s "$rl_home/real-settings.json" "$rl_home/.claude/settings.json"
+rl_out="$(HOME="$rl_home" PATH="$rl_bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-sandbox 2>&1)"; rl_rc=$?
+no "$rl_rc" "an unreadable settings.json link target → the hook wiring refuses"
+has "$rl_out" "could not read where ~/.claude/settings.json links to" "...and says why"
+[ -L "$rl_home/.claude/settings.json" ] && cmp -s "$work/rl-target-before" "$rl_home/real-settings.json" && ok \
+  || bad "...and leaves the link and its target exactly as they were"
+# A DANGLING settings.json is refused, never written through (the sandbox surface's rule, too).
+dg_home="$work/danglingsettings"; mkdir -p "$dg_home/.claude"; ln -s "$dg_home/nowhere.json" "$dg_home/.claude/settings.json"
+run_installer "a dangling settings.json" "$dg_home" "$ROOT/install.sh" --no-sandbox
+no "$INSTALLER_RC" "a dangling settings.json → the hook wiring refuses"
+has "$INSTALLER_OUT" "does not resolve to a readable file — hooks NOT wired" "...and says why"
+[ ! -e "$dg_home/nowhere.json" ] && [ -L "$dg_home/.claude/settings.json" ] && ok || bad "...and neither creates the link's target nor replaces the link"
+
+# AN EXPLICIT SKIP THAT CANNOT BE RECORDED FAILS THE INSTALL (#444 review). Without jq nothing is
+# wired and no receipt is written, so once jq arrives the next self-heal would read the skipped hook
+# as never landed and wire it. The no-jq PATH mirrors every other command.
+nj_bin="$work/nojq"; check_mirror_without jq "$nj_bin"
+nj_home="$work/nojqhome"; mkdir -p "$nj_home/.claude"
+nj_out="$(HOME="$nj_home" PATH="$nj_bin" "$BASH" "$ROOT/install.sh" --agent claude --no-sandbox --skip-hook precommit-gate.sh 2>&1)"; nj_rc=$?
+no "$nj_rc" "--skip-hook without jq → the install fails"
+has "$nj_out" "--skip-hook could not be recorded without jq" "...and says why"
+nj_out="$(HOME="$nj_home" PATH="$nj_bin" "$BASH" "$ROOT/install.sh" --agent claude --no-sandbox 2>&1)"; nj_rc=$?
+eq "$nj_rc" "0" "no jq and no --skip-hook → still the tolerated degradation (exit 0)"
+eq "$(wired_set "$rw_home")" "$(all_but precommit-gate.sh)" "recovery → the skip lands"
+eq "$(adb_claude_hooks_missing_deliberate "$rw_home/.claude/settings.json" "$ROOT" "$rw_home" | tr -d '\n')" "precommit-gate.sh" \
+  "recovery → ...with its receipt, so it reads as the operator's opt-out"
 
 check_summary "session-currency"
