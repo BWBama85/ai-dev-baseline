@@ -10,6 +10,13 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **The shell practice names both shells' behaviour (#577).** It said an unquoted variable "will
+  word-split or glob-expand", which is true in bash and false in zsh, the shell an agent's tool
+  usually runs on macOS. The rules now say what each shell does, and a new rule says never to rely
+  on word splitting or on an unmatched glob passing through (zsh keeps `$list` as one word and
+  aborts on `no matches found`). The glob rule names zsh's `*(N)` guard. `docs/philosophy.md`
+  matches, and `check-fact-drift.sh` refuses the old universal wording. Making Claude Code's Bash
+  tool run bash 5.3 (`CLAUDE_CODE_SHELL`) is not part of this change.
 - **The vendored shmutant moves to v0.3.0.** `scripts/shmutant.sh` is the
   [shmutant](https://github.com/BWBama85/shmutant) v0.3.0 release, copied byte for byte, and
   `scripts/shmutant.sh.sha256` records its new digest. It closes three defects upstream. Before it,
@@ -25,6 +32,13 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **A refusal no longer strands the sandbox keys an earlier install wrote (#483).** When an update
+  started shipping a key you already had, the installer refused the whole policy, as designed, but
+  the keys it had written before stayed in `~/.claude/settings.json` under a record that owned
+  nothing, so `uninstall.sh` could never remove them. A refusal where none of our keys was edited
+  now withdraws them: each one still holding the value we wrote is removed, along with any empty
+  object we created for it, and the installer names them (`sandbox  withdrawn …`). A refusal over a
+  key you edited or deleted is unchanged: the keys are yours and are left alone (D139).
 - **Removing one hook no longer blocks every hook shipped after it (#444).** `install.sh` wired the
   Claude hook set all or nothing, so once you had removed one hook's entry by hand (the documented
   per-hook opt-out), `baseline update` could keep that choice only by passing `--no-hooks`. A hook

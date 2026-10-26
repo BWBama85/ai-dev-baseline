@@ -1,9 +1,10 @@
 # Shell discipline
 <!-- adb:paths **/*.sh -->
 
-The interactive shell is commonly **zsh** (macOS default) and **bash** on Linux
-CI. Write commands that work in both, and default to POSIX `sh` semantics unless
-you are running a script with an explicit `#!/usr/bin/env bash` shebang.
+The interactive shell is commonly **zsh** (macOS default, and what an agent's
+shell tool usually runs there) and **bash** on Linux CI. Write commands that work
+in both, and default to POSIX `sh` semantics unless you are running a script with
+an explicit `#!/usr/bin/env bash` shebang.
 
 ## Rules
 
@@ -16,9 +17,14 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
   works, `<(…)` process substitution, `${var^^}` case tricks, and `source`-ing
   interactive rc idioms all break or behave differently under zsh/sh. If you need
   bash features, put them in a real `bash` script, not a one-liner.
-- **Quote every expansion.** `"$file"`, `"${arr[@]}"`. An unquoted variable
-  containing a space or a glob char (`* ? [`) will word-split or glob-expand and
-  silently do the wrong thing.
+- **Quote every expansion.** `"$file"`, `"${arr[@]}"`. Unquoted, a variable
+  holding a space or a glob char (`* ? [`) is split and glob-expanded in bash and
+  left whole in zsh — the same line does different things in each shell.
+- **Never rely on splitting or on an unmatched glob.** zsh passes an unquoted
+  `$list` as ONE word, and stops the whole command with `no matches found` where
+  bash passes an unmatched glob through literally. Iterate a list one item per
+  line (`printf '%s\n' "$list" | while IFS= read -r x; do …; done`), or put the
+  code in a real `bash` script.
 - **Never assign to a zsh-special name.** `path`, `fpath`, `cdpath`, `manpath`,
   `module_path` and `argv` are **bound to shell state** in zsh — `path` *is*
   `$PATH`. A loop like `read -r kind path key` therefore empties the search path
@@ -56,8 +62,9 @@ you are running a script with an explicit `#!/usr/bin/env bash` shebang.
     time your code runs, `PATH` has already given its answer.
 <!-- adb:end -->
 - **Globs and `find`:** when a glob may match nothing, guard it (`shopt -s
-  nullglob` in bash, or iterate `find … -print0 | while IFS= read -r -d ''`).
-  Don't let an unmatched glob leak through as a literal argument.
+  nullglob` in bash, `*(N)` in zsh, or iterate `find … -print0 | while IFS= read
+  -r -d ''`). Unguarded, bash passes the literal pattern on as an argument and zsh
+  aborts the command.
 <!-- adb:procedure -->
 
 ## Background processes
