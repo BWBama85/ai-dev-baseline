@@ -11063,8 +11063,9 @@ survive is the part a later reader needs.
              the root `AGENTS.md` itself, `broken` for a link whose lookup fails other than
              not-found, nothing otherwise. For a link that does not resolve, the OS is asked rather
              than imitated: the error text of an open under `LC_ALL=C`, matched at its end against
-             `: No such file or directory`. The update notice says the merged surfaces are
-             incomplete. Two review passes found five link shapes a shell imitation of path lookup
+             `: No such file or directory`, from the project's PHYSICAL root, since Codex resolves
+             from its cwd and an aliased path would spend one of the platform's link hops. The
+             update notice says the merged surfaces are incomplete. Two review passes found five link shapes a shell imitation of path lookup
              got wrong (a loop, a symlink to `AGENTS.md`, a symlink to a hard link of it, macOS's
              32-hop limit, a dangling directory link); refusing every form at install is what
              removed the need to predict any of them across the splice's rename.

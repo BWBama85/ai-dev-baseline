@@ -206,10 +206,14 @@ _pi_codex_override_exists() { [ -e "$1/AGENTS.override.md" ] || [ -L "$1/AGENTS.
 #   unresolvable  a link whose lookup fails any other way (a loop, a permission or not-a-directory
 #                 error): Codex loads no project docs at all
 # The OS is asked, not imitated: the open's own error text under the C locale, matched at its end.
+# It is asked from the PHYSICAL root, as Codex resolves from its cwd: a symlinked component in the
+# path given here would spend one of the platform's link hops that Codex never spends.
 _pi_codex_override() {
-  local f="$1/AGENTS.override.md" msg
+  local root f msg
+  if root="$(cd -P -- "$1" && pwd -P && printf x)"; then root="${root%x}"; root="${root%$'\n'}"; else root="$1"; fi
+  f="$root/AGENTS.override.md"
   if [ -f "$f" ]; then
-    if [ "$f" -ef "$1/AGENTS.md" ]; then printf none; else printf shadowed; fi
+    if [ "$f" -ef "$root/AGENTS.md" ]; then printf none; else printf shadowed; fi
   elif [ -L "$f" ] && [ ! -e "$f" ]; then
     msg="$(LC_ALL=C; { : < "$f"; } 2>&1)"
     case "$msg" in *': No such file or directory') printf none ;; *) printf unresolvable ;; esac

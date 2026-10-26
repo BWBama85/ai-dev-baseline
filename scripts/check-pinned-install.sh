@@ -833,6 +833,24 @@ for _shape in missing.md .ovldead/doc.md AGENTS.md; do
   rm -f "$PSL/AGENTS.override.md"
 done
 rm -f "$PSL"/.ovl*
+# Codex resolves from its PHYSICAL cwd, so a project reached through an alias must not spend one of
+# the platform's link hops on it: a chain exactly as long as the platform follows, ending at
+# AGENTS.md, is harmless however the project was named. The limit is measured, not assumed.
+probe="$(cd -P "$work" && pwd -P)/hopprobe"; mkdir -p "$probe"; : > "$probe/t0"
+hops=0; prev=t0
+while [ "$hops" -lt 64 ]; do
+  ln -s "$prev" "$probe/l$((hops + 1))"
+  { : < "$probe/l$((hops + 1))"; } 2>/dev/null || break
+  hops=$((hops + 1)); prev="l$hops"
+done
+rm -rf "$probe"
+prev=AGENTS.md
+for _i in $(seq 1 "$hops"); do ln -s "$prev" "$PSL/.ovl$_i"; prev=".ovl$_i"; done
+mv "$PSL/.ovl$hops" "$PSL/AGENTS.override.md"
+ln -s "$PSL" "$work/shadowalias"
+bash "$PI" status --project "$work/shadowalias" --offline >/dev/null 2>&1; rc=$?
+eq "$rc" 0 "shadow: a $hops-hop override link to AGENTS.md is harmless through an aliased project path"
+rm -f "$work/shadowalias" "$PSL/AGENTS.override.md" "$PSL"/.ovl*
 mv "$work/override.parked" "$PSL/AGENTS.override.md"
 cp "$PSL/AGENTS.override.md" "$work/override.before"
 bash "$PI" uninstall --project "$PSL" >/dev/null 2>&1; rc=$?
