@@ -751,22 +751,25 @@ if check_block the-withdrawal-end-to-end-install-v1-a-n the-version-probe-three-
 # rowless receipt without the settings that go with it. Only the real installer spans that.
 wd_home="$work/wdhome"; mkdir -p "$wd_home/.claude"
 printf '{"model":"opus"}\n' > "$wd_home/.claude/settings.json"
-wd_repo="$work/wdrepo"; mkdir -p "$wd_repo"
-( cd "$ROOT" && cp -R . "$wd_repo" ) >/dev/null 2>&1; rm -rf "$wd_repo/.git"
+wd_repo="$work/wdrepo"
+check_copy_worktree "$ROOT" "$wd_repo" >/dev/null 2>&1 && ok || bad "precondition: the clone copy for the withdrawal must succeed"
 jq 'del(.sandbox.enabled)' "$PAYLOAD" > "$wd_repo/agents/claude/settings.fragment.json"
 stub "2.1.259 (Claude Code)"
 HOME="$wd_home" PATH="$work/bin:$PATH" bash "$wd_repo/install.sh" --agent claude --no-hooks >"$work/wd-v1.log" 2>&1 \
   && ok || { bad "precondition: payload v1 must install"; sed 's/^/  /' "$work/wd-v1.log" >&2; }
 jq '.sandbox.enabled = false' "$wd_home/.claude/settings.json" > "$work/wd-edit.json" && cp "$work/wd-edit.json" "$wd_home/.claude/settings.json"
 cp "$PAYLOAD" "$wd_repo/agents/claude/settings.fragment.json"
-HOME="$wd_home" PATH="$work/bin:$PATH" bash "$wd_repo/install.sh" --agent claude --no-hooks >"$work/wd-v2.log" 2>&1
+HOME="$wd_home" PATH="$work/bin:$PATH" bash "$wd_repo/install.sh" --agent claude --no-hooks >"$work/wd-v2.log" 2>&1 \
+  && ok || { bad "an install whose refusal withdraws must still succeed"; sed 's/^/  /' "$work/wd-v2.log" >&2; }
 grep -q 'sandbox  withdrawn' "$work/wd-v2.log" && ok \
   || { bad "the installer must report the keys a refusal withdraws"; sed 's/^/  /' "$work/wd-v2.log" >&2; }
 [ "$(jq -c . "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
   || bad "the installer must publish the withdrawal, leaving only the operator's keys; got $(jq -c . "$wd_home/.claude/settings.json")"
 [ "$(adb_claude_settings_disposition "$wd_home/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
   || bad "the withdrawal must still be recorded as a refusal"
-HOME="$wd_home" bash "$wd_repo/uninstall.sh" --agent claude >"$work/wd-un.log" 2>&1
+HOME="$wd_home" bash "$wd_repo/uninstall.sh" --agent claude >"$work/wd-un.log" 2>&1 \
+  && ok || { bad "uninstall after a withdrawal must succeed"; sed 's/^/  /' "$work/wd-un.log" >&2; }
+[ ! -e "$wd_home/.claude/.adb-settings-owned" ] && ok || bad "uninstall after a withdrawal must remove the refusal receipt"
 [ "$(jq -c . "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
   || bad "uninstall after a withdrawal must leave the operator's keys exactly as they are; got $(jq -c . "$wd_home/.claude/settings.json")"
 fi

@@ -22,9 +22,9 @@ an explicit `#!/usr/bin/env bash` shebang.
   left whole in zsh — the same line does different things in each shell.
 - **Never rely on splitting or on an unmatched glob.** zsh passes an unquoted
   `$list` as ONE word, and stops the whole command with `no matches found` where
-  bash passes an unmatched glob through literally. Iterate a list one item per
-  line (`printf '%s\n' "$list" | while IFS= read -r x; do …; done`), or put the
-  code in a real `bash` script.
+  bash passes an unmatched glob through literally. Pipe the command that
+  produces the items, one per line, into `while IFS= read -r x; do …; done`, or
+  put the code in a real `bash` script.
 - **Never assign to a zsh-special name.** `path`, `fpath`, `cdpath`, `manpath`,
   `module_path` and `argv` are **bound to shell state** in zsh — `path` *is*
   `$PATH`. A loop like `read -r kind path key` therefore empties the search path
