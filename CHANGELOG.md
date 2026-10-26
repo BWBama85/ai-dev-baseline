@@ -33,6 +33,16 @@ only by a published release, which is what these entries are the notes for.
 
 ### Fixed
 
+- **A pinned Codex install no longer writes practices Codex will never read (#506).** Codex reads a
+  root `AGENTS.override.md` instead of the root `AGENTS.md`, so a region spliced into `AGENTS.md`
+  beside one was never loaded, and `status` still reported the install intact. Now
+  `install` and `upgrade` refuse with `10` before writing anything when the agent set includes Codex
+  and a root `AGENTS.override.md` exists in any form, an empty file or a link included, and name
+  the file. `status` reports an override added later as `shadowed` with `20`, or as `broken` when
+  it is a link the OS cannot resolve for a reason other than a missing target, since Codex then
+  loads no project docs. The `baseline update` notice says the merged surfaces are incomplete
+  instead of reporting only "0 missing" (D141).
+
 - **A refusal no longer strands the sandbox keys an earlier install wrote (#483).** When an update
   started shipping a key you already had, the installer refused the whole policy, as designed, but
   the keys it had written before stayed in `~/.claude/settings.json` under a record that owned

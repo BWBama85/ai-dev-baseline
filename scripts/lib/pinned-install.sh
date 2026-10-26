@@ -191,11 +191,43 @@ _pi_codex_doc_load() {
   printf '%s\t%s\n' "$best" "$bestdir"
 }
 
+# A root AGENTS.override.md comes before AGENTS.md in Codex's per-directory lookup (agents_md.rs
+# `agents_md_paths`, D141): Codex takes the first name whose metadata, links followed, is a regular
+# file, before reading it, and a lookup error other than not-found fails its whole doc discovery.
+#
+# _pi_codex_override_exists <project-root> — install's test: the name exists in ANY form, a link
+# included. Install refuses on it, so no link shape ever has to be predicted across the splice.
+_pi_codex_override_exists() { [ -e "$1/AGENTS.override.md" ] || [ -L "$1/AGENTS.override.md" ]; }
+
+# _pi_codex_override <project-root> — status's test: what the override does to the region NOW.
+#   none          absent; not a regular file; the same file as the root AGENTS.md; or a link the OS
+#                 resolves to not-found
+#   shadowed      a regular file, an empty one included, read instead of AGENTS.md
+#   unresolvable  a link whose lookup fails any other way (a loop, a permission or not-a-directory
+#                 error): Codex loads no project docs at all
+# The OS is asked, not imitated: the open's own error text under the C locale, matched at its end.
+# It is asked from the PHYSICAL root, as Codex resolves from its cwd: a symlinked component in the
+# path given here would spend one of the platform's link hops that Codex never spends.
+_pi_codex_override() {
+  local root f msg
+  if root="$(cd -P -- "$1" && pwd -P && printf x)"; then root="${root%x}"; root="${root%$'\n'}"; else root="$1"; fi
+  f="$root/AGENTS.override.md"
+  if [ -f "$f" ]; then
+    if [ "$f" -ef "$root/AGENTS.md" ]; then printf none; else printf shadowed; fi
+  elif [ -L "$f" ] && [ ! -e "$f" ]; then
+    msg="$(LC_ALL=C; { : < "$f"; } 2>&1)"
+    case "$msg" in *': No such file or directory') printf none ;; *) printf unresolvable ;; esac
+  else
+    printf none
+  fi
+}
+
 # The managed region in a project's own AGENTS.md. Codex discovers project instructions by
-# concatenating every AGENTS.md from the project root down to the cwd; its own discovery module
+# concatenating one doc per directory from the project root down to the cwd; its own discovery module
 # (codex-rs/core/src/agents_md.rs, read this run) documents that walk, and the fallback it does
 # offer is a filename list (`project_doc_fallback_filenames`), not an include directive — so the
-# root file is the only place a payload can put text Codex will read.
+# root AGENTS.md is the only place a payload can put text Codex will read, unless a root
+# AGENTS.override.md shadows it, which install refuses (`_pi_codex_override_exists`).
 PI_BEGIN='<!-- ai-dev-baseline:begin (managed by pinned-install.sh — do not edit inside) -->'
 PI_END='<!-- ai-dev-baseline:end -->'
 
@@ -1012,6 +1044,10 @@ _pi_check_surfaces() {
   local p="$1" agents="$2" rp="$3" rc=0 body want cmd
   case ",$agents," in
     *,codex,*)
+      case "$(_pi_codex_override "$p")" in
+        shadowed)     _pi_say "  shadowed AGENTS.md managed region (a root AGENTS.override.md is read instead, so Codex never reads the region)"; rc=1 ;;
+        unresolvable) _pi_say "  broken   AGENTS.override.md (a link that does not resolve, so Codex loads no project docs at all)"; rc=1 ;;
+      esac
       case "$(_pi_block_state "$p/AGENTS.md")" in
         balanced)
           # THE MARKERS BEING BALANCED SAYS NOTHING ABOUT WHAT IS BETWEEN THEM. Emptying the region
@@ -1342,6 +1378,18 @@ cmd_install() {
     esac
   done
 
+  # Refused before anything is fetched or written, so a refused install leaves the project as it was.
+  case " ${agents[*]} " in
+    *" codex "*)
+      if _pi_codex_override_exists "$p"; then
+        _pi_err "install: $p/AGENTS.override.md exists. Codex looks for it before AGENTS.md, so the"
+        _pi_err "         practices spliced into AGENTS.md beside it could be shadowed or never load."
+        _pi_err "         Nothing was written. Move what the override says into AGENTS.md and remove it"
+        _pi_err "         (a link included), then re-run — or leave codex out of the agent set."
+        return 10
+      fi ;;
+  esac
+
   if [ -n "$artifact" ]; then
     [ -n "$sums" ] || { _pi_err "install: --artifact requires --sums"; return 2; }
   else
@@ -1550,7 +1598,8 @@ EOF
     rm -rf "$work"; trap - EXIT; return 14
   }
 
-  # Codex reads only the root AGENTS.md, so its practices are spliced there as a delimited region.
+  # Codex's root doc is AGENTS.md (an override was refused above), so the practices go there as a
+  # delimited region.
   local created bytes load lrc deep where
   for agent in "${agents[@]}"; do
     [ "$agent" = codex ] || continue
@@ -1783,10 +1832,11 @@ cmd_notice() {
     missing="$(printf '%s' "$counts" | awk '{print $1}')"
     altered="$(printf '%s' "$counts" | awk '{print $2}')"
     records="$(printf '%s' "$counts" | awk '{print $3}')"
-    if [ "$records" -eq 0 ] || [ "$missing" -gt 0 ] || [ "$altered" -gt 0 ] \
-       || ! _pi_check_surfaces "$p" "$agents" "$rp" >/dev/null 2>&1; then
-      printf 'baseline:   payload: %s missing, %s locally modified (%s records) — run: bash %s status\n' \
-        "$missing" "$altered" "$records" "$(_pi_cmd_path "$p")" >&2
+    local surf=ok
+    _pi_check_surfaces "$p" "$agents" "$rp" >/dev/null 2>&1 || surf=incomplete
+    if [ "$records" -eq 0 ] || [ "$missing" -gt 0 ] || [ "$altered" -gt 0 ] || [ "$surf" != ok ]; then
+      printf 'baseline:   payload: %s missing, %s locally modified (%s records), merged surfaces %s — run: bash %s status\n' \
+        "$missing" "$altered" "$records" "$surf" "$(_pi_cmd_path "$p")" >&2
     fi
   else
     printf 'baseline:   payload: no receipt — run: bash %s status\n' "$(_pi_cmd_path "$p")" >&2

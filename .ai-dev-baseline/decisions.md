@@ -11047,3 +11047,51 @@ survive is the part a later reader needs.
 - placement: `base/practices/shell.md` · `docs/philosophy.md` · `scripts/check-fact-drift.sh` ·
              `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline; #577 tracks the enforcement half)
+
+## D141 — #506: a pinned Codex install beside a root `AGENTS.override.md` is refused, not redirected
+- date:      2026-10-26
+- category:  project-delta
+- unknown:   #506. A pinned Codex install splices the practices into the root `AGENTS.md`. Codex
+             reads a root `AGENTS.override.md` instead when one exists, so the region was never
+             loaded and `status` reported the install intact. The issue allows either a refusal or
+             a splice into the file Codex actually reads.
+- decision:  REFUSE (implementer, 2026-10-26, within the options the issue gives). `install` and
+             `upgrade` exit `10` before fetching or writing anything when the agent set includes
+             Codex and a root `AGENTS.override.md` exists in ANY form, a link of any kind
+             included (`_pi_codex_override_exists`), and name the file. `status` reports what the
+             override does NOW (`_pi_codex_override`): `shadowed` for a regular file that is not
+             the root `AGENTS.md` itself, `broken` for a link whose lookup fails other than
+             not-found, nothing otherwise. For a link that does not resolve, the OS is asked rather
+             than imitated: the error text of an open under `LC_ALL=C`, matched at its end against
+             `: No such file or directory`, from the project's PHYSICAL root, since Codex resolves
+             from its cwd and an aliased path would spend one of the platform's link hops. The
+             update notice says the merged surfaces are incomplete. Two review passes found five link shapes a shell imitation of path lookup
+             got wrong (a loop, a symlink to `AGENTS.md`, a symlink to a hard link of it, macOS's
+             32-hop limit, a dangling directory link); refusing every form at install is what
+             removed the need to predict any of them across the splice's rename.
+- reason:    Codex calls the override its LOCAL file (`LOCAL_AGENTS_MD_FILENAME`), and a pinned
+             payload is committed with the project. Splicing into the override would move the
+             managed region between two files depending on whether the override exists. Every exit
+             path (re-install, dropping Codex, uninstall) would then have to find and strip it, and
+             deleting the override afterwards would leave neither file carrying the region. A
+             refusal matches the existing ones (a symlinked `AGENTS.md`, an unbalanced region): the
+             operator decides.
+- vendor:    Read 2026-10-26 from `codex-rs/core/src/agents_md.rs` on `main` (context7
+             `/openai/codex` and the raw file). `agents_md_paths` takes, per directory, the first
+             candidate (`AGENTS.override.md`, `AGENTS.md`, then the fallbacks) whose metadata, with
+             links followed, `is_file`, before reading it. `read_agents_md` then drops empty text
+             without going back to `AGENTS.md`. So an empty override shadows too and a dangling
+             link does not, while a metadata error other than not-found (a loop, permission denied,
+             not-a-directory) returns `Err` from the whole lookup. Skipping empty files with a
+             fallback is the global `~/.codex` loader's behaviour (`codex-home/src/instructions`),
+             not project docs'.
+- rejected:  Splice into the override (the region moves, see above). Install anyway and only warn
+             (does not meet the issue's acceptance: the practices still never load). Allow the
+             harmless link shapes at install (a dangling link, a symlink to `AGENTS.md`): whether a
+             link still reaches the region after the splice renames `AGENTS.md` depends on how it
+             resolves, and predicting that in shell was wrong five ways in review.
+- placement: `scripts/lib/pinned-install.sh` (`_pi_codex_override_exists`, `_pi_codex_override`,
+             `cmd_install`, `_pi_check_surfaces`, `cmd_notice`) · `scripts/check-pinned-install.sh`
+             (case 9b) ·
+             `docs/installation.md` · `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline)

@@ -758,6 +758,105 @@ bash "$PI" install --project "$PP" --agent codex --artifact "$ART" --sums "$SUMS
 if cmp -s "$work/inplace.before" "$PP/AGENTS.md"; then ok; else bad "inplace: re-installing moved or rewrote the managed region"; fi
 eq "$(tail -1 "$PP/AGENTS.md")" "TAIL PROSE AFTER THE BLOCK" "inplace: the project's trailing prose stays last"
 
+# 9b. A ROOT AGENTS.override.md SHADOWS THE CODEX REGION (#506). In each directory Codex reads the
+# first regular file of AGENTS.override.md, AGENTS.md — chosen before its content is read, so an
+# empty override shadows too — and a region spliced into AGENTS.md beside one is never loaded.
+# Install refuses the name in ANY form, links included; status reports what it does now.
+PSO="$(new_project shadowfresh)"
+printf '# Ours\n' > "$PSO/AGENTS.md"
+: > "$PSO/AGENTS.override.md"
+before="$(tree_digest "$PSO")"
+out="$(bash "$PI" install --project "$PSO" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: a Codex install beside a root AGENTS.override.md refuses, an empty one included"
+has "$out" "AGENTS.override.md exists" "shadow: … naming the file"
+eq "$(tree_digest "$PSO")" "$before" "shadow: … and writes nothing, for either agent"
+file_isnt "$PSO/.ai-dev-baseline/upstream.toml" "shadow: … not even the pin"
+# Every link shape is refused too, harmless ones included: whether a link still reaches the region
+# after the splice renames AGENTS.md is not predicted. The link itself is left as it was.
+for _shape in notes.md missing.md AGENTS.override.md AGENTS.md; do
+  PSY="$(new_project "shadowlink-${_shape%.md}")"
+  printf '# Ours\n' > "$PSY/AGENTS.md"; printf 'notes\n' > "$PSY/notes.md"
+  ln -s "$_shape" "$PSY/AGENTS.override.md"
+  before="$(tree_digest "$PSY")"
+  bash "$PI" install --project "$PSY" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+  eq "$rc" 10 "shadow: an override linked to $_shape refuses"
+  eq "$(tree_digest "$PSY")" "$before" "shadow: … ($_shape) writing nothing"
+  eq "$(readlink -n "$PSY/AGENTS.override.md")" "$_shape" "shadow: … ($_shape) and leaving the link as it was"
+done
+PSH="$(new_project shadowhard)"
+printf '# Ours\n' > "$PSH/AGENTS.md"
+ln "$PSH/AGENTS.md" "$PSH/AGENTS.override.md"
+bash "$PI" install --project "$PSH" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+eq "$rc" 10 "shadow: an override hard-linked to AGENTS.md refuses"
+# The override is Codex's alone: a Claude-only install has no region for it to hide.
+PSC="$(new_project shadowclaude)"
+: > "$PSC/AGENTS.override.md"
+bash "$PI" install --project "$PSC" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+yes "$rc" "shadow: a Claude-only install is not refused over a Codex override"
+# An override that appears AFTER the install is reported, refused on re-install and upgrade, and
+# never touched by uninstall.
+PSL="$(new_project shadowlater)"
+bash "$PI" install --project "$PSL" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+printf 'local notes\n' > "$PSL/AGENTS.override.md"
+out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "shadow: status reports a region an override now shadows as NOT intact"
+has "$out" "shadowed AGENTS.md managed region" "shadow: … naming the state"
+has "$out" "is read instead" "shadow: … and why"
+out="$(bash "$PI" notice --project "$PSL" 2>&1)"
+has "$out" "merged surfaces incomplete" "shadow: the update notice says the surfaces failed, not only '0 missing'"
+before="$(tree_digest "$PSL")"
+out="$(bash "$PI" install --project "$PSL" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: a re-install beside a new override refuses"
+out="$(bash "$PI" upgrade --project "$PSL" --to 9.9.10 --artifact "$work/ai-dev-baseline-9.9.10.tar.gz" --sums "$work/SUMS.next" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: so does an upgrade"
+eq "$(tree_digest "$PSL")" "$before" "shadow: … and neither changed anything"
+mv "$PSL/AGENTS.override.md" "$work/override.parked"
+bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
+eq "$rc" 0 "shadow: taking the override away restores an intact install"
+# Status asks the OS how a link resolves. A loop, and a chain longer than any platform follows (40
+# on Linux, 32 on macOS), fail Codex's whole lookup; a missing target, even through a dangling
+# directory link, is not-found and skipped; a link to AGENTS.md reads the region itself.
+prev=missing.md
+for _i in $(seq 1 45); do ln -s "$prev" "$PSL/.ovl$_i"; prev=".ovl$_i"; done
+ln -s missing-dir "$PSL/.ovldead"
+for _shape in AGENTS.override.md "$prev"; do
+  ln -s "$_shape" "$PSL/AGENTS.override.md"
+  out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "shadow: status reports an override link to $_shape (no lookup ends) as NOT intact"
+  has "$out" "does not resolve" "shadow: … ($_shape) naming the link"
+  rm -f "$PSL/AGENTS.override.md"
+done
+for _shape in missing.md .ovldead/doc.md AGENTS.md; do
+  ln -s "$_shape" "$PSL/AGENTS.override.md"
+  bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
+  eq "$rc" 0 "shadow: status reads an override link to $_shape as harmless"
+  rm -f "$PSL/AGENTS.override.md"
+done
+rm -f "$PSL"/.ovl*
+# Codex resolves from its PHYSICAL cwd, so a project reached through an alias must not spend one of
+# the platform's link hops on it: a chain exactly as long as the platform follows, ending at
+# AGENTS.md, is harmless however the project was named. The limit is measured, not assumed.
+probe="$(cd -P "$work" && pwd -P)/hopprobe"; mkdir -p "$probe"; : > "$probe/t0"
+hops=0; prev=t0
+while [ "$hops" -lt 64 ]; do
+  ln -s "$prev" "$probe/l$((hops + 1))"
+  { : < "$probe/l$((hops + 1))"; } 2>/dev/null || break
+  hops=$((hops + 1)); prev="l$hops"
+done
+rm -rf "$probe"
+prev=AGENTS.md
+for _i in $(seq 1 "$hops"); do ln -s "$prev" "$PSL/.ovl$_i"; prev=".ovl$_i"; done
+mv "$PSL/.ovl$hops" "$PSL/AGENTS.override.md"
+ln -s "$PSL" "$work/shadowalias"
+bash "$PI" status --project "$work/shadowalias" --offline >/dev/null 2>&1; rc=$?
+eq "$rc" 0 "shadow: a $hops-hop override link to AGENTS.md is harmless through an aliased project path"
+rm -f "$work/shadowalias" "$PSL/AGENTS.override.md" "$PSL"/.ovl*
+mv "$work/override.parked" "$PSL/AGENTS.override.md"
+cp "$PSL/AGENTS.override.md" "$work/override.before"
+bash "$PI" uninstall --project "$PSL" >/dev/null 2>&1; rc=$?
+yes "$rc" "shadow: uninstall still works beside an override"
+cmp -s "$work/override.before" "$PSL/AGENTS.override.md" && ok || bad "shadow: uninstall altered the override"
+
 # 10. UNINSTALL MUST NOT DELETE THE GATE SCRIPTS WHILE settings.json STILL POINTS AT THEM.
 PJ="$(new_project nojq)"
 bash "$PI" install --project "$PJ" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
