@@ -191,11 +191,18 @@ _pi_codex_doc_load() {
   printf '%s\t%s\n' "$best" "$bestdir"
 }
 
+# _pi_codex_shadowed <project-root> — succeed when Codex would read a root AGENTS.override.md
+# INSTEAD of the root AGENTS.md. Per directory Codex takes the first of the two that is a regular file
+# once links are followed, and chooses before reading it: an empty override shadows, a dangling link
+# does not (agents_md.rs `agents_md_paths`, D141).
+_pi_codex_shadowed() { [ -f "$1/AGENTS.override.md" ]; }
+
 # The managed region in a project's own AGENTS.md. Codex discovers project instructions by
-# concatenating every AGENTS.md from the project root down to the cwd; its own discovery module
+# concatenating one doc per directory from the project root down to the cwd; its own discovery module
 # (codex-rs/core/src/agents_md.rs, read this run) documents that walk, and the fallback it does
 # offer is a filename list (`project_doc_fallback_filenames`), not an include directive — so the
-# root file is the only place a payload can put text Codex will read.
+# root AGENTS.md is the only place a payload can put text Codex will read, unless a root
+# AGENTS.override.md shadows it, which install refuses (`_pi_codex_shadowed`).
 PI_BEGIN='<!-- ai-dev-baseline:begin (managed by pinned-install.sh — do not edit inside) -->'
 PI_END='<!-- ai-dev-baseline:end -->'
 
@@ -1012,6 +1019,9 @@ _pi_check_surfaces() {
   local p="$1" agents="$2" rp="$3" rc=0 body want cmd
   case ",$agents," in
     *,codex,*)
+      if _pi_codex_shadowed "$p"; then
+        _pi_say "  shadowed AGENTS.md managed region (a root AGENTS.override.md is read instead — Codex loads none of the practices)"; rc=1
+      fi
       case "$(_pi_block_state "$p/AGENTS.md")" in
         balanced)
           # THE MARKERS BEING BALANCED SAYS NOTHING ABOUT WHAT IS BETWEEN THEM. Emptying the region
@@ -1342,6 +1352,18 @@ cmd_install() {
     esac
   done
 
+  # Refused before anything is fetched or written, so a refused install leaves the project as it was.
+  case " ${agents[*]} " in
+    *" codex "*)
+      if _pi_codex_shadowed "$p"; then
+        _pi_err "install: $p/AGENTS.override.md exists, and Codex reads it INSTEAD of AGENTS.md,"
+        _pi_err "         so the practices spliced into AGENTS.md would never load. Nothing was written."
+        _pi_err "         Move what the override says into AGENTS.md and remove it, then re-run —"
+        _pi_err "         or leave codex out of the agent set."
+        return 10
+      fi ;;
+  esac
+
   if [ -n "$artifact" ]; then
     [ -n "$sums" ] || { _pi_err "install: --artifact requires --sums"; return 2; }
   else
@@ -1550,7 +1572,8 @@ EOF
     rm -rf "$work"; trap - EXIT; return 14
   }
 
-  # Codex reads only the root AGENTS.md, so its practices are spliced there as a delimited region.
+  # Codex's root doc is AGENTS.md (an override was refused above), so the practices go there as a
+  # delimited region.
   local created bytes load lrc deep where
   for agent in "${agents[@]}"; do
     [ "$agent" = codex ] || continue
@@ -1783,10 +1806,11 @@ cmd_notice() {
     missing="$(printf '%s' "$counts" | awk '{print $1}')"
     altered="$(printf '%s' "$counts" | awk '{print $2}')"
     records="$(printf '%s' "$counts" | awk '{print $3}')"
-    if [ "$records" -eq 0 ] || [ "$missing" -gt 0 ] || [ "$altered" -gt 0 ] \
-       || ! _pi_check_surfaces "$p" "$agents" "$rp" >/dev/null 2>&1; then
-      printf 'baseline:   payload: %s missing, %s locally modified (%s records) — run: bash %s status\n' \
-        "$missing" "$altered" "$records" "$(_pi_cmd_path "$p")" >&2
+    local surf=ok
+    _pi_check_surfaces "$p" "$agents" "$rp" >/dev/null 2>&1 || surf=incomplete
+    if [ "$records" -eq 0 ] || [ "$missing" -gt 0 ] || [ "$altered" -gt 0 ] || [ "$surf" != ok ]; then
+      printf 'baseline:   payload: %s missing, %s locally modified (%s records), merged surfaces %s — run: bash %s status\n' \
+        "$missing" "$altered" "$records" "$surf" "$(_pi_cmd_path "$p")" >&2
     fi
   else
     printf 'baseline:   payload: no receipt — run: bash %s status\n' "$(_pi_cmd_path "$p")" >&2

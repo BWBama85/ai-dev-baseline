@@ -962,7 +962,9 @@ baseline pinned uninstall                  # or: ./uninstall.sh --pinned --proje
 `status` reports the mode, the pinned version, whether the payload still matches its receipt, and —
 this one call reaches the network — whether a newer release exists. Its exit code is the machine
 contract: `0` pinned and current · `10` a newer release exists · `11` not pinned · `20` the payload
-is missing or unverifiable · `30` the release list could not be read.
+is missing or unverifiable · `30` the release list could not be read. A merged surface Codex cannot
+load counts as missing: a root `AGENTS.override.md` added after the install is reported as
+`shadowed`, with `20`, because Codex then reads it instead of `AGENTS.md`.
 
 **Nothing upgrades on its own, and `--to` *is* the approval.** There is no prompt, because two
 things already invoke `baseline update` unattended (the `SessionStart` hook and the last step of
@@ -1025,6 +1027,12 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   30 seconds (`ADB_PINNED_CODEX_SCAN_SECS`) rather than hold the install.
 - **A project already carrying an `/adopt` pin is refused, not converted.** That file records a
   commit this installer cannot reconstruct; retire it deliberately first.
+- **A Codex install beside a root `AGENTS.override.md` is refused.** In each directory Codex reads
+  the first of `AGENTS.override.md` and `AGENTS.md` that exists, an empty file or a link to one
+  included, so practices spliced into `AGENTS.md` there would never load. The install, a re-install
+  and an upgrade all refuse with `10` before writing anything, and name the file. Move what the
+  override says into `AGENTS.md` and remove it, or leave Codex out of the agent set. A Claude-only
+  install is not affected, and uninstall never touches the override.
 - **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would
   replace the link with a regular file, and uninstall could never put it back — so a repository that
   deliberately shares one instruction file across checkouts is told, rather than silently

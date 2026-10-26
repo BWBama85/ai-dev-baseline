@@ -758,6 +758,58 @@ bash "$PI" install --project "$PP" --agent codex --artifact "$ART" --sums "$SUMS
 if cmp -s "$work/inplace.before" "$PP/AGENTS.md"; then ok; else bad "inplace: re-installing moved or rewrote the managed region"; fi
 eq "$(tail -1 "$PP/AGENTS.md")" "TAIL PROSE AFTER THE BLOCK" "inplace: the project's trailing prose stays last"
 
+# 9b. A ROOT AGENTS.override.md SHADOWS THE CODEX REGION (#506). In each directory Codex reads the
+# first regular file of AGENTS.override.md, AGENTS.md — chosen before its content is read, so an
+# empty override shadows too — and a region spliced into AGENTS.md beside one is never loaded.
+PSO="$(new_project shadowfresh)"
+printf '# Ours\n' > "$PSO/AGENTS.md"
+: > "$PSO/AGENTS.override.md"
+before="$(tree_digest "$PSO")"
+out="$(bash "$PI" install --project "$PSO" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: a Codex install beside a root AGENTS.override.md refuses, an empty one included"
+has "$out" "AGENTS.override.md" "shadow: … naming the file Codex reads instead"
+eq "$(tree_digest "$PSO")" "$before" "shadow: … and writes nothing, for either agent"
+file_isnt "$PSO/.ai-dev-baseline/upstream.toml" "shadow: … not even the pin"
+# A link Codex can read through is a regular file to it; a dangling one is nothing.
+PSY="$(new_project shadowlink)"
+printf 'shared local notes\n' > "$PSY/notes.md"
+ln -s notes.md "$PSY/AGENTS.override.md"
+out="$(bash "$PI" install --project "$PSY" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: an override symlinked to a readable file shadows too"
+PSD="$(new_project shadowdangling)"
+ln -s missing.md "$PSD/AGENTS.override.md"
+bash "$PI" install --project "$PSD" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+yes "$rc" "shadow: a dangling override link shadows nothing, so the install proceeds"
+# The override is Codex's alone: a Claude-only install has no region for it to hide.
+PSC="$(new_project shadowclaude)"
+: > "$PSC/AGENTS.override.md"
+bash "$PI" install --project "$PSC" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+yes "$rc" "shadow: a Claude-only install is not refused over a Codex override"
+# An override that appears AFTER the install is reported, refused on re-install and upgrade, and
+# never touched by uninstall.
+PSL="$(new_project shadowlater)"
+bash "$PI" install --project "$PSL" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
+printf 'local notes\n' > "$PSL/AGENTS.override.md"
+out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
+eq "$rc" 20 "shadow: status reports a region an override now shadows as NOT intact"
+has "$out" "shadowed AGENTS.md managed region" "shadow: … naming the state"
+has "$out" "Codex loads none of the practices" "shadow: … and what it costs"
+out="$(bash "$PI" notice --project "$PSL" 2>&1)"
+has "$out" "merged surfaces incomplete" "shadow: the update notice says the surfaces failed, not only '0 missing'"
+before="$(tree_digest "$PSL")"
+out="$(bash "$PI" install --project "$PSL" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: a re-install beside a new override refuses"
+out="$(bash "$PI" upgrade --project "$PSL" --to 9.9.10 --artifact "$work/ai-dev-baseline-9.9.10.tar.gz" --sums "$work/SUMS.next" 2>&1)"; rc=$?
+eq "$rc" 10 "shadow: so does an upgrade"
+eq "$(tree_digest "$PSL")" "$before" "shadow: … and neither changed anything"
+mv "$PSL/AGENTS.override.md" "$work/override.parked"
+bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
+eq "$rc" 0 "shadow: taking the override away restores an intact install"
+mv "$work/override.parked" "$PSL/AGENTS.override.md"
+bash "$PI" uninstall --project "$PSL" >/dev/null 2>&1; rc=$?
+yes "$rc" "shadow: uninstall still works beside an override"
+eq "$(cat "$PSL/AGENTS.override.md")" "local notes" "shadow: … and leaves the override alone"
+
 # 10. UNINSTALL MUST NOT DELETE THE GATE SCRIPTS WHILE settings.json STILL POINTS AT THEM.
 PJ="$(new_project nojq)"
 bash "$PI" install --project "$PJ" --agent claude --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1
