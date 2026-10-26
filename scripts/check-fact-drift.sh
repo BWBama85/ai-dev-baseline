@@ -2012,6 +2012,17 @@ fact ci-failure-model-binary 'absent:flaky (or|vs\.?) real' \
   'fires:  classify flaky vs. real with evidence, fix real failures at the root, and' -- \
   base/practices/ci-discipline.md base/workflows/debug.md docs/philosophy.md
 
+# --- shell splitting is a BASH behaviour, not a universal one (#577, D140) -----------------------
+#
+# Refuses the spelling that states bash's splitting as true of every shell. The witnesses are the
+# two superseded lines verbatim: the practice (and the three root docs rendered from it) and the
+# philosophy doc.
+fact shell-splitting-not-universal 'absent:will word-split or glob-expand|unquoted expansions silently word-splitting' \
+  'fires:  containing a space or a glob char (`* ? [`) will word-split or glob-expand and' \
+  'fires:  gating, unquoted expansions silently word-splitting. The fix is one command' -- \
+  base/practices/shell.md docs/philosophy.md \
+  agents/claude/CLAUDE.md agents/codex/AGENTS.md agents/gemini/GEMINI.md
+
 # --- the release-role policy: release stays PROJECT-OWNED (#3/D7, migrated by #375) -------------
 #
 # #3 resolved a DECISION, not a feature: cutting a release stays project-owned, and the baseline

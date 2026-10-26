@@ -240,9 +240,12 @@ the next `baseline update` applies the settings by itself once you upgrade the C
 
 The fragment is installed **only when every key it ships is absent**, with one exception: an
 `excludedCommands` of yours that already holds every shipped entry (below). If any other key is
-already in your `settings.json`, whatever its value, nothing is written and the installer names
-what is in the way. There is no partial application: a half-applied policy reports protection it does not
-have, and `sandbox.enabled` without the credential rules (or the reverse) is exactly that.
+already in your `settings.json`, whatever its value, no policy value is written and the installer
+names what is in the way. There is no partial application: a half-applied policy reports protection it
+does not have, and `sandbox.enabled` without the credential rules (or the reverse) is exactly that. So
+when an update refuses because it started shipping a key you already have, and you have edited none of
+the keys an earlier install wrote, those keys are withdrawn. If you have edited one, they are all
+yours and stay (the table below).
 
 Your own keys are never in the way unless they *are* one of ours: `sandbox.filesystem.allowWrite`
 sits beside our `sandbox.enabled` and is never read, rewritten or removed.
@@ -260,8 +263,8 @@ them, and the digest of the fragment applied:
 
 | You do this | What happens next |
 |---|---|
-| Already have any key we ship | **Nothing is written**, and the refusal names it. Remove or rename it and re-run `./install.sh` to take the policy. The one exception is an `excludedCommands` that already holds every shipped entry, which counts as satisfied (above). For that key the refusal also names the entries to add. |
-| Had your own `excludedCommands` before this release shipped one | If it holds `"git *"` and `"gh *"`, the next update just records it as yours. If it does not, that update **refuses the whole policy and gives up ownership** of the keys it installed earlier. They stay in your file, but the installer no longer manages them, and retaking them means removing them first. **Add the two entries before you update.** |
+| Already have any key we ship | **No policy value is written**, and the refusal names it. Remove or rename it and re-run `./install.sh` to take the policy. If an earlier install had already applied the policy (an update started shipping a key you have) and you have not edited any key it wrote, those keys are **withdrawn** rather than left behind with nothing able to remove them. If you have edited one, see the edit row below: the keys are yours and stay. The one exception is an `excludedCommands` that already holds every shipped entry, which counts as satisfied (above). For that key the refusal also names the entries to add. |
+| Had your own `excludedCommands` before this release shipped one | If it holds `"git *"` and `"gh *"`, the next update just records it as yours. If it does not, that update **refuses the whole policy**, leaves your `excludedCommands` as it is, and withdraws the keys it installed earlier (unless you have edited one of them, in which case they are all yours and stay). **Add the two entries before you update** to keep the policy. |
 | Edit or delete a key we wrote | The surface is yours from then on: the next install refuses rather than rewriting, and names what changed. Deleting is the opt-out, and it is not remembered as ours — so if you later re-add that value by hand, uninstall will not take it. Adding entries of your own to `excludedCommands` is not an edit of this kind: that key becomes yours and nothing else changes. |
 | `install.sh --no-sandbox` | Nothing written, the choice recorded; `baseline update` keeps honouring it. |
 | A future version stops shipping a key | The next install **prunes** it, so no orphan is left in your file. |

@@ -688,6 +688,99 @@ r="$(m "$(cat "$work/installed.json")" "$work/blocked-receipt" --remove)"
   || bad "a blocked receipt must own NOTHING — a refusal relinquishes the surface, and claiming it lets uninstall delete a value the operator re-added"
 fi
 
+if check_block a-refusal-over-only-a-newly-shipped-leaf the-merge-s-verdicts-under-the-all-or-no; then
+# --- a refusal over ONLY a newly shipped leaf WITHDRAWS what this install owns (#483, D139) -------
+#
+# The operator took nothing over: they already had a key the payload has just started shipping. The
+# blocked receipt owns nothing, so leaving our values in place orphans them, and uninstall could
+# never remove them. A refusal WITH a divergence still relinquishes, as above.
+jq 'del(.sandbox.enabled)' "$PAYLOAD" > "$work/v1-payload.json"
+printf '{"model":"opus"}\n' > "$work/v1.json"
+r="$(adb_claude_settings_merge "$work/v1.json" "$work/v1-payload.json" "$work/empty-receipt")"
+[ "$(verdict "$r")" = write ] && ok || bad "precondition: payload v1 must install cleanly; verdict $(verdict "$r")"
+printf '%s' "$r" | jq '.settings' > "$work/v1-installed.json"
+adb_claude_settings_leaf_rows "$work/v1-payload.json" "$(printf '%s' "$r" | jq -c .wrote)" "$(printf '%s' "$r" | jq -c .created)" \
+  | adb_claude_settings_receipt_render installed 9.9.9 "$FLOOR" "$(adb_sha256 "$work/v1-payload.json")" > "$work/v1-receipt"
+v2() {   # v2 <jq edit of the v1-installed settings> [receipt] -> the merge of payload v2 over it
+  jq "$1" "$work/v1-installed.json" > "$work/v2-live.json"
+  adb_claude_settings_merge "$work/v2-live.json" "$PAYLOAD" "${2:-$work/v1-receipt}"
+}
+
+# The issue's reproduction: the operator sets the key v2 starts shipping, and nothing else.
+r="$(v2 '.sandbox.enabled = false')"
+[ "$(verdict "$r")" = refuse ] && [ "$(names "$r" blocked)" = sandbox.enabled ] && [ "$(names "$r" diverged)" = "" ] && ok \
+  || bad "precondition: payload v2 must refuse over the newly shipped sandbox.enabled alone; $(printf '%s' "$r" | jq -c '{verdict,blocked,diverged}')"
+[ "$(names "$r" withdrawn)" = "sandbox.credentials.files,sandbox.credentials.envVars,sandbox.network.allowedDomains,sandbox.excludedCommands" ] && ok \
+  || bad "a refusal over only a newly shipped leaf must WITHDRAW every leaf this install owns; withdrawn: $(names "$r" withdrawn)"
+[ "$(printf '%s' "$r" | jq -c '.settings')" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
+  || bad "after the withdrawal only the operator's keys may remain, and the containers we created must go with ours; got $(printf '%s' "$r" | jq -c '.settings')"
+# ...and uninstall, over the rowless receipt that refusal records, then has nothing of ours to find.
+printf '%s' "$r" | jq '.settings' > "$work/withdrawn.json"
+: | adb_claude_settings_receipt_render skipped-blocked 9.9.9 "$FLOOR" "$(adb_sha256 "$PAYLOAD")" > "$work/withdrawn-receipt"
+r="$(adb_claude_settings_merge "$work/withdrawn.json" "$PAYLOAD" "$work/withdrawn-receipt" --remove)"
+[ "$(printf '%s' "$r" | jq -c '.settings')" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
+  || bad "uninstall after a withdrawal must leave the operator's own value; got $(printf '%s' "$r" | jq -c '.settings')"
+
+# A refusal WITH a divergence is the operator taking the surface over: nothing is withdrawn.
+r="$(v2 '.sandbox.enabled = false | .sandbox.credentials.files = []')"
+[ "$(names "$r" diverged)" = sandbox.credentials.files ] && [ "$(names "$r" withdrawn)" = "" ] && ok \
+  || bad "a refusal WITH a divergence must relinquish, not withdraw; $(printf '%s' "$r" | jq -c '{diverged,withdrawn}')"
+[ "$(printf '%s' "$r" | jq -c '.settings.sandbox.network.allowedDomains')" = "$(jq -c '.sandbox.network.allowedDomains' "$PAYLOAD")" ] && ok \
+  || bad "a relinquishing refusal must leave every value in place"
+
+# A value the operator EXTENDED satisfies rather than diverges, and is theirs: it is not withdrawn.
+r="$(v2 '.sandbox.enabled = false | .sandbox.excludedCommands += ["make *"]')"
+[ "$(names "$r" diverged)" = "" ] && ok || bad "precondition: an extended excludedCommands must not diverge"
+[ "$(printf '%s' "$r" | jq -r '.settings.sandbox.excludedCommands | index("make *") != null')" = true ] && ok \
+  || bad "an extended value is the operator's and must survive the withdrawal"
+
+# Only a container THIS withdrawal emptied goes. One recorded for a retired leaf the operator had
+# already deleted stays, as it does in the retirement pass.
+{ cat "$work/v1-receipt"; printf 'leaf%s["zz","k"]%s1\ncontainer%s["zz"]\n' "$ADB_TAB" "$ADB_TAB" "$ADB_TAB"; } \
+  | awk '/^leaves /{ $2 = $2 + 1 } {print}' > "$work/v1-zz-receipt"
+r="$(v2 '.sandbox.enabled = false | .zz = {}' "$work/v1-zz-receipt")"
+[ "$(names "$r" withdrawn | tr ',' '\n' | wc -l | tr -d ' ')" = 4 ] && ok || bad "precondition: the four owned leaves must still be withdrawn"
+[ "$(printf '%s' "$r" | jq -c '.settings.zz')" = '{}' ] && ok \
+  || bad "the withdrawal must delete only the containers it emptied; got zz=$(printf '%s' "$r" | jq -c '.settings.zz')"
+fi
+
+if check_block the-withdrawal-end-to-end-install-v1-a-n the-version-probe-three-outcomes-driven; then
+# --- the withdrawal end to end: install v1, a newly shipped key the operator has, uninstall (#483) --
+#
+# The merge above can be right while the installer drops `.withdrawn` on the floor, or publishes the
+# rowless receipt without the settings that go with it. Only the real installer spans that.
+wd_home="$work/wdhome"; mkdir -p "$wd_home/.claude"
+printf '{"model":"opus"}\n' > "$wd_home/.claude/settings.json"
+wd_repo="$work/wdrepo"
+check_copy_worktree "$ROOT" "$wd_repo" >/dev/null 2>&1 && ok || bad "precondition: the clone copy for the withdrawal must succeed"
+jq 'del(.sandbox.enabled)' "$PAYLOAD" > "$wd_repo/agents/claude/settings.fragment.json"
+stub "2.1.259 (Claude Code)"
+HOME="$wd_home" PATH="$work/bin:$PATH" bash "$wd_repo/install.sh" --agent claude --no-hooks >"$work/wd-v1.log" 2>&1 \
+  && ok || { bad "precondition: payload v1 must install"; sed 's/^/  /' "$work/wd-v1.log" >&2; }
+jq '.sandbox.enabled = false' "$wd_home/.claude/settings.json" > "$work/wd-edit.json" && cp "$work/wd-edit.json" "$wd_home/.claude/settings.json"
+cp "$PAYLOAD" "$wd_repo/agents/claude/settings.fragment.json"
+HOME="$wd_home" PATH="$work/bin:$PATH" bash "$wd_repo/install.sh" --agent claude --no-hooks >"$work/wd-v2.log" 2>&1 \
+  && ok || { bad "an install whose refusal withdraws must still succeed"; sed 's/^/  /' "$work/wd-v2.log" >&2; }
+grep -q 'sandbox  withdrawn' "$work/wd-v2.log" && ok \
+  || { bad "the installer must report the keys a refusal withdraws"; sed 's/^/  /' "$work/wd-v2.log" >&2; }
+[ "$(jq -c . "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
+  || bad "the installer must publish the withdrawal, leaving only the operator's keys; got $(jq -c . "$wd_home/.claude/settings.json")"
+[ "$(adb_claude_settings_disposition "$wd_home/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
+  || bad "the withdrawal must still be recorded as a refusal"
+HOME="$wd_home" bash "$wd_repo/uninstall.sh" --agent claude >"$work/wd-un.log" 2>&1 \
+  && ok || { bad "uninstall after a withdrawal must succeed"; sed 's/^/  /' "$work/wd-un.log" >&2; }
+[ ! -e "$wd_home/.claude/.adb-settings-owned" ] && ok || bad "uninstall after a withdrawal must remove the refusal receipt"
+[ "$(jq -c . "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
+  || bad "uninstall after a withdrawal must leave the operator's keys exactly as they are; got $(jq -c . "$wd_home/.claude/settings.json")"
+# The automatic update discards the installer's output, so its refusal line is the only place the
+# withdrawal can be told. Both refusal reports must say the keys may have been removed.
+# "may have been": a refusal receipt from before D139 looks the same and left its keys in place.
+awk '/^    7\)/{f=1} f && /may have been REMOVED/{print "ok"; exit} f && /^      ;;/{exit}' "$ROOT/scripts/lib/currency-lib.sh" | grep -q ok && ok \
+  || bad "the automatic update's refusal line must say the earlier protections may have been REMOVED"
+awk '/^adb_settings_refused_now\(\)/{f=1} f && /may have been REMOVED/{print "ok"; exit} f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+  || bad "baseline's refusal message must say the earlier protections may have been REMOVED"
+fi
+
 if check_block the-created-container-cleanup-is-guarded the-merge-s-verdicts-under-the-all-or-no; then
 # --- the created-container cleanup is guarded like the leaf reads --------------------------------
 #
@@ -4137,6 +4230,26 @@ if [ "$MUTATION" -eq 1 ]; then
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable) ;;   # leaf ownership' \
       '    installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked) ;;   # leaf ownership' \
       'a blocked receipt must own NOTHING'
+  check_row 'a refusal over only a newly shipped leaf orphans what it owned' 'scripts/lib/common.sh' 'a-refusal-over-only-a-newly-shipped-leaf' \
+      '          | if ($diverged | length) == 0 then' \
+      '          | if false then' \
+      'must WITHDRAW every leaf this install owns'
+  check_row 'a refusal with a divergence withdraws instead of relinquishing' 'scripts/lib/common.sh' 'a-refusal-over-only-a-newly-shipped-leaf' \
+      '          | if ($diverged | length) == 0 then' \
+      '          | if true then' \
+      'must relinquish, not withdraw'
+  check_row 'the withdrawal removes a value the operator changed' 'scripts/lib/common.sh' 'a-refusal-over-only-a-newly-shipped-leaf' \
+      '                    elif ( .settings | getpath($r.p) ) == $r.v then   # withdraw-value-match' \
+      '                    elif true then   # withdraw-value-match' \
+      'must survive the withdrawal'
+  check_row 'the withdrawal leaves the containers it emptied' 'scripts/lib/common.sh' 'a-refusal-over-only-a-newly-shipped-leaf' \
+      '                             then .settings = (.settings | delpaths([$a])) else . end   # withdraw-container' \
+      '                             then . else . end   # withdraw-container' \
+      'the containers we created must go with ours'
+  check_row 'the withdrawal deletes containers it did not empty' 'scripts/lib/common.sh' 'a-refusal-over-only-a-newly-shipped-leaf' \
+      '                  | map(. as $a | select( $wd | any( (length > ($a | length)) and (.[0:($a | length)] == $a) ) ))   # withdraw-anchored' \
+      '                  | map(.)   # withdraw-anchored' \
+      'must delete only the containers it emptied'
   check_row 'the remove-pass container cleanup skips its ancestor walk' 'scripts/lib/common.sh' 'the-created-container-cleanup-is-guarded' \
       '            ( .settings | anc_ok($a) ) as $ok   # remove-pass container' \
       '            true as $ok   # remove-pass container' \

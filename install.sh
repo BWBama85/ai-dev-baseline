@@ -554,15 +554,19 @@ _adb_wire_settings_locked() {
     # forever, so every update re-runs the installer and reports a repair that changed nothing.
     # And NO ROWS are carried: under the all-or-nothing contract a refusal relinquishes the
     # surface, so claiming ownership of keys the operator has taken over is what would let a later
-    # uninstall delete a value they re-added by hand.
+    # uninstall delete a value they re-added by hand. A refusal where NOTHING diverged has taken
+    # nothing over, so the merge WITHDRAWS what this install owned instead (`.withdrawn`, #483,
+    # D139) and there is no row left to carry.
     # A REFUSAL MAY STILL CARRY A RETIREMENT. Removing a key we no longer ship is cleanup, not
     # part of the all-or-nothing decision — and dropping it here would leave that key installed
     # with no ownership record at all, since a blocked receipt carries no rows.
-    local retired
-    if ! retired="$(_adb_result_field "$result" -r '[.pruned[] | join(".")] | join(", ")')"; then
-      adb_info "  WARN   could not read what the retirement pruned — sandbox settings NOT written"
+    local retired withdrawn gone
+    if ! retired="$(_adb_result_field "$result" -r '[.pruned[] | join(".")] | join(", ")')" \
+       || ! withdrawn="$(_adb_result_field "$result" -r '[.withdrawn[] | join(".")] | join(", ")')"; then
+      adb_info "  WARN   could not read what the refusal removes — sandbox settings NOT written"
       return 1   # read before the deferral opens: nothing to resume
     fi
+    gone="$retired${retired:+${withdrawn:+, }}$withdrawn"
     # A REFUSAL THAT PRUNES IS TWO DURABLE WRITES, so it is a transaction exactly as the write path
     # is: the settings lose the retired key, then the receipt stops claiming it. A signal in
     # between leaves the old receipt naming a leaf that is no longer there, and if the operator
@@ -605,8 +609,8 @@ _adb_wire_settings_locked() {
     fi
     _blkrc=$?
     if [ "$_blkrc" -gt 1 ]; then
-      adb_info "  WARN   the refusal could not be compared with ~/.claude/settings.json, so the retired"
-      adb_info "         key(s) $retired were NOT pruned and the ownership record was left as it is."
+      adb_info "  WARN   the refusal could not be compared with ~/.claude/settings.json, so the key(s)"
+      adb_info "         ${gone:-<none>} were NOT removed and the ownership record was left as it is."
       adb_settings_lock_resume_signals
       return 1   # blocked-compare-unanswerable
     fi
@@ -614,7 +618,7 @@ _adb_wire_settings_locked() {
     if [ "$_blk_changed" -eq 1 ] && [ -f "$receipt" ]; then
       local _bprobe="$receipt.adb.$$.probe"
       if ! mv "$receipt" "$_bprobe" 2>/dev/null; then
-        adb_info "  WARN   $receipt cannot be replaced, so the retired key(s) $retired were NOT pruned."
+        adb_info "  WARN   $receipt cannot be replaced, so the key(s) ${gone:-<none>} were NOT removed."
         adb_info "         Pruning them first would leave this record claiming a value that is gone."
         adb_settings_lock_resume_signals
         return 1
@@ -633,17 +637,21 @@ _adb_wire_settings_locked() {
          && [ -s "$rtmp2" ] && adb_publish_json "$rtmp2" "$settings"; then
         if [ -n "$retired" ]; then
           adb_info "  sandbox  pruned (no longer shipped): $retired"
-        else
+        fi
+        if [ -n "$withdrawn" ]; then
+          adb_info "  sandbox  withdrawn (written by an earlier install; the policy applies whole or not at all): $withdrawn"
+        fi
+        if [ -z "$gone" ]; then
           adb_info "  sandbox  removed an empty object this install had created (no shipped key was in it)"
         fi
       else
         rm -f "$rtmp2"
-        adb_info "  WARN   could not prune the retired key(s) ${retired:-<none: an empty object we created>} — they remain in $settings."
+        adb_info "  WARN   could not remove the key(s) ${gone:-<none: an empty object we created>} — they remain in $settings."
         adb_info "         The previous ownership record is LEFT IN PLACE so a later run can still"
         adb_info "         remove them; nothing was recorded about this refusal. Re-run ./install.sh."
         # ABORT BEFORE REPLACING THE RECEIPT. A `skipped-blocked` receipt carries no rows, so
-        # writing one here would leave the un-pruned retired key with no record able to remove it
-        # on any later update or uninstall.
+        # writing one here would leave the un-pruned retired or withdrawn key with no record able
+        # to remove it on any later update or uninstall.
         adb_settings_lock_resume_signals
         return 1   # prune-abort
       fi
@@ -671,7 +679,10 @@ _adb_wire_settings_locked() {
     # receipt to invalidate, so it returns 0 and this branch used to report success having recorded
     # nothing: `adb_settings_pending` then retries the refusal forever and a self-heal calls it a
     # repair. The refusal not reaching disk is a failure of this branch either way. (PR review)
-    _adb_invalidate_stale_receipt "$receipt" "the refusal stands and nothing was written" || true
+    # THE DOCUMENT MAY ALREADY HAVE CHANGED: a retirement or a withdrawal was published above.
+    local _blk_tail=" and nothing was written"
+    [ "$_blk_changed" -eq 1 ] && _blk_tail=", and ${gone:-an empty object we created} WAS removed from settings.json"
+    _adb_invalidate_stale_receipt "$receipt" "the refusal stands$_blk_tail" || true
     adb_info "  WARN   the refusal was NOT recorded, so \`baseline update\` will keep retrying it and"
     adb_info "         reporting a repair that applied nothing. Re-run once $receipt is writable."
     adb_settings_lock_resume_signals

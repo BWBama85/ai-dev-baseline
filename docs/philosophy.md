@@ -70,9 +70,10 @@ happened and was expensive enough to codify a rule against:
 
 - **Shell portability** (`shell.md`) — bash arrays and `[[ ]]` breaking under
   zsh/sh, compound `A && B && C` chains getting blocked by command-safety
-  gating, unquoted expansions silently word-splitting. The fix is one command
-  per purpose, quoted expansions, no bashisms outside a real `#!/usr/bin/env
-  bash` script.
+  gating, unquoted expansions that word-split in bash but not in zsh, unmatched
+  globs that bash passes through and zsh aborts on. The fix is one command per
+  purpose, quoted expansions, no reliance on splitting or on an unmatched glob,
+  no bashisms outside a real `#!/usr/bin/env bash` script.
 - **Diagnose-before-rerun CI discipline** (`ci-discipline.md`) — re-running a
   red CI job as a first resort burns minutes, hides the real cause, and can
   ship a latent bug on a lucky green. The rule: establish the job actually ran,

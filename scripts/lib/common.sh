@@ -1687,9 +1687,11 @@ EOF
 
 # THE MERGE, AND IT IS ALL-OR-NOTHING (owner decision, round 6 of #248's review). Prints one JSON
 # object on stdout:
-#   {verdict, settings, wrote:[], created:[], blocked:[], diverged:[], pruned:[], kept:[], satisfied:[]}
+#   {verdict, settings, wrote:[], created:[], blocked:[], diverged:[], pruned:[], kept:[], satisfied:[],
+#    withdrawn:[]}
 # `verdict` is `write`, `insync`, `refuse` or `remove`; every list but `settings` holds leaf paths
-# (`created` holds container paths; `satisfied` is filled on `write` only). This is the ONE home for what "ours" means, so install.sh and
+# (`created` holds container paths; `satisfied` is filled on `write` only; `withdrawn` on `refuse`
+# only). This is the ONE home for what "ours" means, so install.sh and
 # uninstall.sh cannot drift about it.
 #
 # WHY ALL-OR-NOTHING. The earlier contract applied per leaf: write what it could, skip what the
@@ -1707,7 +1709,9 @@ EOF
 #   * AN ESTABLISHED INSTALL updates only while every recorded leaf is still present with the value
 #     recorded for it. Any divergence — an edit, or a deletion, which is the documented by-hand
 #     opt-out — means the operator has taken the surface over: nothing is written, and the refusal
-#     names what diverged. The one exception is the satisfiable leaf the operator has EXTENDED: it
+#     names what diverged. A refusal with NOTHING diverged — only a newly shipped leaf in the way —
+#     WITHDRAWS the leaves this install owns (#483, D139): the operator took nothing over, and a
+#     refusal that left them in place would orphan them under a receipt that owns nothing. The one exception is the satisfiable leaf the operator has EXTENDED: it
 #     still satisfies, so it moves to `satisfied` rather than diverging. That is also why no tombstone is needed. A deleted leaf is not
 #     remembered as "ours, removed"; it simply makes the surface theirs, so it is never rewritten
 #     and never later deleted on the strength of a record.
@@ -1814,7 +1818,8 @@ adb_claude_settings_merge() {
   | [ $fragment | paths(type != "object") | select(all(.[]; type == "string")) ] as $leaves
   | ( $owned | map(.p) ) as $ownedp
   | { verdict: "insync", settings: $settings,
-      wrote: [], created: [], blocked: [], diverged: [], pruned: [], kept: [], satisfied: [] }
+      wrote: [], created: [], blocked: [], diverged: [], pruned: [], kept: [], satisfied: [],
+      withdrawn: [] }
   | if $mode == "--remove" then
       # Owned leaves first: matching values go, edited ones are kept and named.
       reduce ($ownedp[]) as $p
@@ -1911,6 +1916,35 @@ adb_claude_settings_merge() {
           # of whether the rest applies; only the fragment writes are undone here.
           .verdict = "refuse" | .blocked = $blocked | .diverged = $diverged
           | .wrote = [] | .created = []
+          # NOTHING DIVERGED, SO THE POLICY IS WITHDRAWN (#483, D139). The refusal is about a newly
+          # shipped leaf the operator already has; they took nothing of ours over. The receipt this
+          # refusal writes owns nothing, so leaving our leaves in place orphans them for good. Remove
+          # each still-shipped owned leaf whose live value still equals the record, by the rule the
+          # remove pass uses — and then the containers we created that this emptied.
+          | if ($diverged | length) == 0 then
+              reduce ( $owned[] | select( member($leaves; .p) ) ) as $r   # refuse-withdraws
+                ( .;
+                  ( .settings | anc_ok($r.p) ) as $ok
+                  | if ($ok | not) then .
+                    elif ( .settings | present($r.p) | not ) then .
+                    elif ( .settings | getpath($r.p) ) == $r.v then   # withdraw-value-match
+                      .settings = (.settings | delpaths([$r.p])) | .withdrawn += [$r.p]
+                    else .
+                    end )
+              | .withdrawn as $wd
+              | ( $created
+                  | map(. as $a | select( $wd | any( (length > ($a | length)) and (.[0:($a | length)] == $a) ) ))   # withdraw-anchored
+                  | sort_by(-length) ) as $mine
+              | reduce ($mine[]) as $a
+                  ( .;
+                    ( .settings | anc_ok($a) ) as $ok
+                    | if ($ok | not) then .
+                      elif ( .settings | present($a) | not ) then .
+                      else ( .settings | getpath($a) ) as $now
+                           | if ($now | type) == "object" and ($now | length) == 0
+                             then .settings = (.settings | delpaths([$a])) else . end   # withdraw-container
+                      end )
+            else . end
         else
           # A SATISFIED leaf is left exactly as the operator has it, and recorded as theirs.
           .satisfied = $satisfied
