@@ -317,8 +317,8 @@ done, on an input it is supposed to reject.
 
 # Shell discipline
 
-The interactive shell is commonly **zsh** (macOS default, and what an agent's
-shell tool usually runs there) and **bash** on Linux CI. Write commands that work
+The interactive shell is commonly **zsh** (macOS default, and what Claude Code's
+Bash tool picks up there) and **bash** on Linux CI. Write commands that work
 in both, and default to POSIX `sh` semantics unless you are running a script with
 an explicit `#!/usr/bin/env bash` shebang.
 
@@ -339,8 +339,8 @@ an explicit `#!/usr/bin/env bash` shebang.
 - **Never rely on splitting or on an unmatched glob.** zsh passes a non-empty
   unquoted `$list` as one word, and stops the whole command with `no matches found` where
   bash passes an unmatched glob through literally. Pipe the command that
-  produces the items, one per line, into `while IFS= read -r x; do …; done`, or
-  put the code in a real `bash` script.
+  produces the items, one newline-terminated line each, into `while IFS= read -r
+  x; do …; done`, or put the code in a real `bash` script.
 - **Never assign to a zsh-special name.** `path`, `fpath`, `cdpath`, `manpath`,
   `module_path` and `argv` are **bound to shell state** in zsh — `path` *is*
   `$PATH`. A loop like `read -r kind path key` therefore empties the search path
