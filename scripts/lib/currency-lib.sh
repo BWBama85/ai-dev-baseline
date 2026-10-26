@@ -377,7 +377,7 @@ cmd_check() {
       # succeeded — the message says so — because gating the refusal on "nothing else happened"
       # is what made it vanish exactly when something else had gone wrong too.
       _adb_cu_emit refused \
-        "the least-privilege sandbox settings were refused — you already own one of the keys they ship. If an earlier install had applied them and you had edited none, they were REMOVED, so the protections are off. Run './install.sh' in the install-source to see what is in the way. Any clone update or link repair in the same run DID complete."
+        "the least-privilege sandbox settings were refused — you already own one of the keys they ship. If an earlier install had applied them and you had changed none of their values (adding to excludedCommands does not count), they were REMOVED, so the protections are off. Run './install.sh' in the install-source to see what is in the way. Any clone update or link repair in the same run DID complete."
       ;;
     8)
       # The settings were pending because ownership rows had DIVERGED under a skip or an opt-out,
