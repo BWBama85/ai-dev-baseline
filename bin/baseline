@@ -331,7 +331,7 @@ adb_settings_refused_now() {
   echo "baseline: the least-privilege sandbox settings were NOT applied — you already own one of" >&2
   echo "          the keys they ship, so the whole policy was refused (#248). If an earlier install" >&2
   echo "          had applied it and you had changed none of its values (adding to excludedCommands" >&2
-  echo "          does not count), its keys were REMOVED (D139) and the protections are off." >&2
+  echo "          does not count), its keys may have been REMOVED (D139), leaving the protections off." >&2
   echo "          Run ./install.sh in $SRC to see what is in the way, then remove or rename" >&2
   echo "          those keys and re-run it." >&2
   return 0
