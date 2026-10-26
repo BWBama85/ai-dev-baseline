@@ -806,9 +806,10 @@ mv "$PSL/AGENTS.override.md" "$work/override.parked"
 bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
 eq "$rc" 0 "shadow: taking the override away restores an intact install"
 mv "$work/override.parked" "$PSL/AGENTS.override.md"
+cp "$PSL/AGENTS.override.md" "$work/override.before"
 bash "$PI" uninstall --project "$PSL" >/dev/null 2>&1; rc=$?
 yes "$rc" "shadow: uninstall still works beside an override"
-eq "$(cat "$PSL/AGENTS.override.md")" "local notes" "shadow: … and leaves the override alone"
+cmp -s "$work/override.before" "$PSL/AGENTS.override.md" && ok || bad "shadow: uninstall altered the override"
 
 # 10. UNINSTALL MUST NOT DELETE THE GATE SCRIPTS WHILE settings.json STILL POINTS AT THEM.
 PJ="$(new_project nojq)"
