@@ -761,42 +761,28 @@ eq "$(tail -1 "$PP/AGENTS.md")" "TAIL PROSE AFTER THE BLOCK" "inplace: the proje
 # 9b. A ROOT AGENTS.override.md SHADOWS THE CODEX REGION (#506). In each directory Codex reads the
 # first regular file of AGENTS.override.md, AGENTS.md — chosen before its content is read, so an
 # empty override shadows too — and a region spliced into AGENTS.md beside one is never loaded.
+# Install refuses the name in ANY form, links included; status reports what it does now.
 PSO="$(new_project shadowfresh)"
 printf '# Ours\n' > "$PSO/AGENTS.md"
 : > "$PSO/AGENTS.override.md"
 before="$(tree_digest "$PSO")"
 out="$(bash "$PI" install --project "$PSO" --agent claude --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
 eq "$rc" 10 "shadow: a Codex install beside a root AGENTS.override.md refuses, an empty one included"
-has "$out" "AGENTS.override.md" "shadow: … naming the file Codex reads instead"
+has "$out" "AGENTS.override.md exists" "shadow: … naming the file"
 eq "$(tree_digest "$PSO")" "$before" "shadow: … and writes nothing, for either agent"
 file_isnt "$PSO/.ai-dev-baseline/upstream.toml" "shadow: … not even the pin"
-# A link Codex can read through is a regular file to it; a dangling one is nothing.
-PSY="$(new_project shadowlink)"
-printf 'shared local notes\n' > "$PSY/notes.md"
-ln -s notes.md "$PSY/AGENTS.override.md"
-out="$(bash "$PI" install --project "$PSY" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
-eq "$rc" 10 "shadow: an override symlinked to a readable file shadows too"
-PSD="$(new_project shadowdangling)"
-ln -s missing.md "$PSD/AGENTS.override.md"
-bash "$PI" install --project "$PSD" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
-yes "$rc" "shadow: a dangling override link shadows nothing, so the install proceeds"
-# A link that fails for any other reason fails Codex's whole doc lookup, so nothing loads.
-PSP="$(new_project shadowloop)"
-ln -s AGENTS.override.md "$PSP/AGENTS.override.md"
-before="$(tree_digest "$PSP")"
-out="$(bash "$PI" install --project "$PSP" --agent codex --artifact "$ART" --sums "$SUMS" 2>&1)"; rc=$?
-eq "$rc" 10 "shadow: an override link that loops refuses"
-has "$out" "does not resolve" "shadow: … and says the link is the problem"
-eq "$(tree_digest "$PSP")" "$before" "shadow: … writing nothing"
-# A link to the root AGENTS.md is read through to the region itself; a HARD link is not, because the
-# splice publishes by rename and leaves the override holding the old bytes.
-PSA="$(new_project shadowself)"
-printf '# Ours\n' > "$PSA/AGENTS.md"
-ln -s AGENTS.md "$PSA/AGENTS.override.md"
-bash "$PI" install --project "$PSA" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
-yes "$rc" "shadow: an override symlinked to the root AGENTS.md is not refused"
-out="$(bash "$PI" status --project "$PSA" --offline 2>&1)"; rc=$?
-eq "$rc" 0 "shadow: … and status reports it intact, since Codex reads the region through it"
+# Every link shape is refused too, harmless ones included: whether a link still reaches the region
+# after the splice renames AGENTS.md is not predicted. The link itself is left as it was.
+for _shape in notes.md missing.md AGENTS.override.md AGENTS.md; do
+  PSY="$(new_project "shadowlink-${_shape%.md}")"
+  printf '# Ours\n' > "$PSY/AGENTS.md"; printf 'notes\n' > "$PSY/notes.md"
+  ln -s "$_shape" "$PSY/AGENTS.override.md"
+  before="$(tree_digest "$PSY")"
+  bash "$PI" install --project "$PSY" --agent codex --artifact "$ART" --sums "$SUMS" >/dev/null 2>&1; rc=$?
+  eq "$rc" 10 "shadow: an override linked to $_shape refuses"
+  eq "$(tree_digest "$PSY")" "$before" "shadow: … ($_shape) writing nothing"
+  eq "$(readlink -n "$PSY/AGENTS.override.md")" "$_shape" "shadow: … ($_shape) and leaving the link as it was"
+done
 PSH="$(new_project shadowhard)"
 printf '# Ours\n' > "$PSH/AGENTS.md"
 ln "$PSH/AGENTS.md" "$PSH/AGENTS.override.md"
@@ -827,11 +813,26 @@ eq "$(tree_digest "$PSL")" "$before" "shadow: … and neither changed anything"
 mv "$PSL/AGENTS.override.md" "$work/override.parked"
 bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
 eq "$rc" 0 "shadow: taking the override away restores an intact install"
-ln -s AGENTS.override.md "$PSL/AGENTS.override.md"
-out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
-eq "$rc" 20 "shadow: status reports a looping override link as NOT intact"
-has "$out" "does not resolve" "shadow: … naming the link"
-rm -f "$PSL/AGENTS.override.md"
+# Status asks the OS how a link resolves. A loop, and a chain longer than any platform follows (40
+# on Linux, 32 on macOS), fail Codex's whole lookup; a missing target, even through a dangling
+# directory link, is not-found and skipped; a link to AGENTS.md reads the region itself.
+prev=missing.md
+for _i in $(seq 1 45); do ln -s "$prev" "$PSL/.ovl$_i"; prev=".ovl$_i"; done
+ln -s missing-dir "$PSL/.ovldead"
+for _shape in AGENTS.override.md "$prev"; do
+  ln -s "$_shape" "$PSL/AGENTS.override.md"
+  out="$(bash "$PI" status --project "$PSL" --offline 2>&1)"; rc=$?
+  eq "$rc" 20 "shadow: status reports an override link to $_shape (no lookup ends) as NOT intact"
+  has "$out" "does not resolve" "shadow: … ($_shape) naming the link"
+  rm -f "$PSL/AGENTS.override.md"
+done
+for _shape in missing.md .ovldead/doc.md AGENTS.md; do
+  ln -s "$_shape" "$PSL/AGENTS.override.md"
+  bash "$PI" status --project "$PSL" --offline >/dev/null 2>&1; rc=$?
+  eq "$rc" 0 "shadow: status reads an override link to $_shape as harmless"
+  rm -f "$PSL/AGENTS.override.md"
+done
+rm -f "$PSL"/.ovl*
 mv "$work/override.parked" "$PSL/AGENTS.override.md"
 cp "$PSL/AGENTS.override.md" "$work/override.before"
 bash "$PI" uninstall --project "$PSL" >/dev/null 2>&1; rc=$?

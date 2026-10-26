@@ -191,42 +191,31 @@ _pi_codex_doc_load() {
   printf '%s\t%s\n' "$best" "$bestdir"
 }
 
-# _pi_codex_override <project-root> — print what a root AGENTS.override.md does to the root AGENTS.md,
-# as Codex's `agents_md_paths` decides it (D141): per directory it takes the first of the two whose
-# metadata, links followed, is a regular file, before reading it; a lookup that fails with anything
-# but not-found fails the whole doc discovery.
-#   none          absent; not a regular file; a link to a missing name under a searchable directory;
-#                 or a SYMLINK to the root AGENTS.md, which reads the region through it
-#   shadowed      a regular file, an empty one or a hard link included, is read instead
-#   unresolvable  any other link that does not resolve (a loop, an unreadable or non-directory
-#                 component): Codex loads no project docs at all. A chain through a dangling
-#                 intermediate link lands here too, though Codex reads that one as not-found.
+# A root AGENTS.override.md comes before AGENTS.md in Codex's per-directory lookup (agents_md.rs
+# `agents_md_paths`, D141): Codex takes the first name whose metadata, links followed, is a regular
+# file, before reading it, and a lookup error other than not-found fails its whole doc discovery.
+#
+# _pi_codex_override_exists <project-root> — install's test: the name exists in ANY form, a link
+# included. Install refuses on it, so no link shape ever has to be predicted across the splice.
+_pi_codex_override_exists() { [ -e "$1/AGENTS.override.md" ] || [ -L "$1/AGENTS.override.md" ]; }
+
+# _pi_codex_override <project-root> — status's test: what the override does to the region NOW.
+#   none          absent; not a regular file; the same file as the root AGENTS.md; or a link the OS
+#                 resolves to not-found
+#   shadowed      a regular file, an empty one included, read instead of AGENTS.md
+#   unresolvable  a link whose lookup fails any other way (a loop, a permission or not-a-directory
+#                 error): Codex loads no project docs at all
+# The OS is asked, not imitated: the open's own error text under the C locale, matched at its end.
 _pi_codex_override() {
-  local f="$1/AGENTS.override.md" cur t n=0
+  local f="$1/AGENTS.override.md" msg
   if [ -f "$f" ]; then
-    if [ -L "$f" ] && [ "$f" -ef "$1/AGENTS.md" ]; then printf none; else printf shadowed; fi
-    return 0
+    if [ "$f" -ef "$1/AGENTS.md" ]; then printf none; else printf shadowed; fi
+  elif [ -L "$f" ] && [ ! -e "$f" ]; then
+    msg="$(LC_ALL=C; { : < "$f"; } 2>&1)"
+    case "$msg" in *': No such file or directory') printf none ;; *) printf unresolvable ;; esac
+  else
+    printf none
   fi
-  if [ -e "$f" ] || [ ! -L "$f" ]; then printf none; return 0; fi
-  # A link that does not resolve: walk it by name, as the kernel does, to tell a missing target
-  # (not-found, skipped) from a loop or an unreachable directory. 40 hops is Linux's MAXSYMLINKS.
-  cur="$f"
-  while [ -L "$cur" ]; do
-    n=$((n + 1))
-    [ "$n" -le 40 ] || { printf unresolvable; return 0; }
-    t="$(readlink -n -- "$cur" && printf x)" || { printf unresolvable; return 0; }
-    t="${t%x}"
-    case "$t" in /*) cur="$t" ;; *) cur="${cur%/*}/$t" ;; esac
-  done
-  [ -e "$cur" ] && { printf unresolvable; return 0; }
-  # Not-found only when the nearest name that exists above it is a searchable directory: a regular
-  # file there is not-a-directory and an unreadable one is permission-denied, both errors to Codex.
-  t="$cur"
-  while :; do
-    t="${t%/*}"; [ -n "$t" ] || t=/
-    { [ -e "$t" ] || [ -L "$t" ]; } && break
-  done
-  if [ -d "$t" ] && [ -x "$t" ]; then printf none; else printf unresolvable; fi
 }
 
 # The managed region in a project's own AGENTS.md. Codex discovers project instructions by
@@ -234,7 +223,7 @@ _pi_codex_override() {
 # (codex-rs/core/src/agents_md.rs, read this run) documents that walk, and the fallback it does
 # offer is a filename list (`project_doc_fallback_filenames`), not an include directive — so the
 # root AGENTS.md is the only place a payload can put text Codex will read, unless a root
-# AGENTS.override.md shadows it, which install refuses (`_pi_codex_override`).
+# AGENTS.override.md shadows it, which install refuses (`_pi_codex_override_exists`).
 PI_BEGIN='<!-- ai-dev-baseline:begin (managed by pinned-install.sh — do not edit inside) -->'
 PI_END='<!-- ai-dev-baseline:end -->'
 
@@ -1388,19 +1377,13 @@ cmd_install() {
   # Refused before anything is fetched or written, so a refused install leaves the project as it was.
   case " ${agents[*]} " in
     *" codex "*)
-      case "$(_pi_codex_override "$p")" in
-        shadowed)
-          _pi_err "install: $p/AGENTS.override.md exists, and Codex reads it INSTEAD of AGENTS.md,"
-          _pi_err "         so the practices spliced into AGENTS.md would never load. Nothing was written."
-          _pi_err "         Move what the override says into AGENTS.md and remove it, then re-run —"
-          _pi_err "         or leave codex out of the agent set."
-          return 10 ;;
-        unresolvable)
-          _pi_err "install: $p/AGENTS.override.md is a link that does not resolve (a loop, or a"
-          _pi_err "         directory on its way that cannot be read), and Codex then loads no project"
-          _pi_err "         docs at all. Nothing was written. Fix or remove the link, then re-run."
-          return 10 ;;
-      esac ;;
+      if _pi_codex_override_exists "$p"; then
+        _pi_err "install: $p/AGENTS.override.md exists. Codex looks for it before AGENTS.md, so the"
+        _pi_err "         practices spliced into AGENTS.md beside it could be shadowed or never load."
+        _pi_err "         Nothing was written. Move what the override says into AGENTS.md and remove it"
+        _pi_err "         (a link included), then re-run — or leave codex out of the agent set."
+        return 10
+      fi ;;
   esac
 
   if [ -n "$artifact" ]; then

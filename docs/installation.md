@@ -964,8 +964,10 @@ this one call reaches the network — whether a newer release exists. Its exit c
 contract: `0` pinned and current · `10` a newer release exists · `11` not pinned · `20` the payload
 is missing or unverifiable · `30` the release list could not be read. A merged surface Codex cannot
 load counts as missing: a root `AGENTS.override.md` added after the install is reported as
-`shadowed`, with `20`, because Codex then reads it instead of `AGENTS.md`, and one that is a link
-that does not resolve is reported as `broken`.
+`shadowed`, with `20`, because Codex then reads it instead of `AGENTS.md`. A link there that fails
+to resolve for any reason but a missing target (a loop, for instance) is reported as `broken`,
+because Codex then loads no project docs at all; a link to the root `AGENTS.md` itself, or to a
+missing target, is not reported.
 
 **Nothing upgrades on its own, and `--to` *is* the approval.** There is no prompt, because two
 things already invoke `baseline update` unattended (the `SessionStart` hook and the last step of
@@ -1031,13 +1033,10 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
 - **A Codex install beside a root `AGENTS.override.md` is refused.** In each directory Codex reads
   the first of `AGENTS.override.md` and `AGENTS.md` that is a regular file, an empty file or a link
   to one included, so practices spliced into `AGENTS.md` there would never load. The install, a
-  re-install and an upgrade all refuse with `10` before writing anything, and name the file. Move
-  what the override says into `AGENTS.md` and remove it, or leave Codex out of the agent set. Two
-  link shapes are judged as Codex judges them: a symlink to the root `AGENTS.md` itself is fine
-  (Codex reads the region through it), and a link that does not resolve for any reason but a
-  missing target (a loop, an unreadable directory) is refused too, because Codex then loads no
-  project docs at all. A Claude-only install is not affected, and uninstall never touches the
-  override.
+  re-install and an upgrade all refuse with `10` before writing anything when the name exists in
+  any form, a link of any kind included, and name the file. Move what the override says into
+  `AGENTS.md` and remove it, or leave Codex out of the agent set. A Claude-only install is not
+  affected, and uninstall never touches the override.
 - **A symlinked `AGENTS.md` or `.claude/settings.json` is refused.** Publishing by rename would
   replace the link with a regular file, and uninstall could never put it back — so a repository that
   deliberately shares one instruction file across checkouts is told, rather than silently

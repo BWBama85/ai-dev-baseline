@@ -11057,17 +11057,17 @@ survive is the part a later reader needs.
              a splice into the file Codex actually reads.
 - decision:  REFUSE (implementer, 2026-10-26, within the options the issue gives). `install` and
              `upgrade` exit `10` before fetching or writing anything when the agent set includes
-             Codex and a root `AGENTS.override.md` is a regular file once links are followed
-             (`_pi_codex_override` prints `shadowed`), and name the file. A SYMLINK to the root
-             `AGENTS.md` is not refused, because Codex reads the region through it; a hard link is,
-             because the splice publishes by rename and leaves it holding the old bytes. A link that
-             does not resolve for any reason but a missing name under a searchable directory (a
-             loop, an unreadable or non-directory component) is refused too (`unresolvable`): Codex
-             fails the whole lookup and loads no project docs. `_pi_check_surfaces` reports an
-             override added after the install as `shadowed` or `broken` (`status` 20), and the
-             update notice says the merged surfaces are incomplete. The independent review of this
-             change found the loop and the symlink-to-`AGENTS.md` cases; the first draft used a bare
-             `[ -f ]`.
+             Codex and a root `AGENTS.override.md` exists in ANY form, a link of any kind
+             included (`_pi_codex_override_exists`), and name the file. `status` reports what the
+             override does NOW (`_pi_codex_override`): `shadowed` for a regular file that is not
+             the root `AGENTS.md` itself, `broken` for a link whose lookup fails other than
+             not-found, nothing otherwise. For a link that does not resolve, the OS is asked rather
+             than imitated: the error text of an open under `LC_ALL=C`, matched at its end against
+             `: No such file or directory`. The update notice says the merged surfaces are
+             incomplete. Two review passes found five link shapes a shell imitation of path lookup
+             got wrong (a loop, a symlink to `AGENTS.md`, a symlink to a hard link of it, macOS's
+             32-hop limit, a dangling directory link); refusing every form at install is what
+             removed the need to predict any of them across the splice's rename.
 - reason:    Codex calls the override its LOCAL file (`LOCAL_AGENTS_MD_FILENAME`), and a pinned
              payload is committed with the project. Splicing into the override would move the
              managed region between two files depending on whether the override exists. Every exit
@@ -11085,8 +11085,12 @@ survive is the part a later reader needs.
              fallback is the global `~/.codex` loader's behaviour (`codex-home/src/instructions`),
              not project docs'.
 - rejected:  Splice into the override (the region moves, see above). Install anyway and only warn
-             (does not meet the issue's acceptance: the practices still never load).
-- placement: `scripts/lib/pinned-install.sh` (`_pi_codex_override`, `cmd_install`,
-             `_pi_check_surfaces`, `cmd_notice`) · `scripts/check-pinned-install.sh` (case 9b) ·
+             (does not meet the issue's acceptance: the practices still never load). Allow the
+             harmless link shapes at install (a dangling link, a symlink to `AGENTS.md`): whether a
+             link still reaches the region after the splice renames `AGENTS.md` depends on how it
+             resolves, and predicting that in shell was wrong five ways in review.
+- placement: `scripts/lib/pinned-install.sh` (`_pi_codex_override_exists`, `_pi_codex_override`,
+             `cmd_install`, `_pi_check_surfaces`, `cmd_notice`) · `scripts/check-pinned-install.sh`
+             (case 9b) ·
              `docs/installation.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
