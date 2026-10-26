@@ -20,8 +20,8 @@ an explicit `#!/usr/bin/env bash` shebang.
 - **Quote every expansion.** `"$file"`, `"${arr[@]}"`. Unquoted, a variable
   holding a space or a glob char (`* ? [`) is split and glob-expanded in bash and
   left whole in zsh — the same line does different things in each shell.
-- **Never rely on splitting or on an unmatched glob.** zsh passes an unquoted
-  `$list` as ONE word, and stops the whole command with `no matches found` where
+- **Never rely on splitting or on an unmatched glob.** zsh passes a non-empty
+  unquoted `$list` as one word, and stops the whole command with `no matches found` where
   bash passes an unmatched glob through literally. Pipe the command that
   produces the items, one per line, into `while IFS= read -r x; do …; done`, or
   put the code in a real `bash` script.

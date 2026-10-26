@@ -11000,13 +11000,16 @@ survive is the part a later reader needs.
              `adb_claude_settings_merge` removes every still-shipped leaf the receipt owns whose live
              value still equals the record, then the containers the receipt records as created that
              this emptied, and reports them in a new `withdrawn` list. The refusal receipt stays
-             rowless (D100 unchanged). A refusal WITH a divergence still relinquishes and removes
-             nothing. A satisfiable key the operator extended (D129) is theirs and is not withdrawn.
+             rowless (D100 unchanged). A refusal WITH a divergence still relinquishes and withdraws
+             no still-shipped leaf; retirement stays independent of both, as D100's second
+             correction says. A satisfiable key the operator extended (D129) is theirs and is not
+             withdrawn.
              `install.sh` publishes the withdrawal inside the existing refusal transaction and
              reports it.
-- reason:    It keeps D100's invariant that `settings.json` holds the whole policy or none of it.
-             The receipt grammar and every reader of it are unchanged, because no refusal ever
-             carries rows. The cost: an update that ships a key the operator already has turns
+- reason:    For the case it covers, `settings.json` then holds none of the policy rather than a
+             part nothing owns. (A refusal over a divergence still leaves the operator's values,
+             possibly a partial policy, in place: those keys are theirs.) The receipt grammar and
+             every reader of it are unchanged, because no refusal ever carries rows. The cost: an update that ships a key the operator already has turns
              the policy off until they resolve it. The refusal message says so, as it did before.
 - rejected:  Keep owning the intact leaves under `skipped-blocked` (the issue's first shape). It
              leaves a partial policy in place and needs a partial-receipt contract that every
@@ -11015,3 +11018,32 @@ survive is the part a later reader needs.
 - placement: `scripts/lib/common.sh` (`adb_claude_settings_merge`) · `install.sh` (the refusal
              branch) · `scripts/check-settings-fragment.sh` · `docs/installation.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D140 — #577: the shell practice ships now; `CLAUDE_CODE_SHELL` enforcement is a later change
+- date:      2026-10-26
+- category:  project-delta
+- unknown:   #577 asks for two things: correct the shell practice so it names zsh's behaviour, and
+             make Claude Code's Bash tool run the resolved bash 5.3 by having the installer set
+             `env.CLAUDE_CODE_SHELL`. The second has open design questions the issue leaves to the
+             implementer: a host-specific path inside the all-or-nothing fragment (couples the shell
+             fix to every sandbox blocker and opt-out, needs a scalar "satisfied" rule) versus an
+             independent receipt row (a new surface every reader must accept).
+- decision:  PRACTICE NOW, ENFORCEMENT LATER (owner, 2026-10-26). The practice, philosophy and
+             fact-drift changes ship in the PR for #483 with `Refs #577`; #577 stays open for the
+             enforcement half.
+- reason:    The practice half is fully specified and reaches all three agents. The enforcement half
+             is a new settings surface whose shape needs its own review, and folding it into #483's
+             change would have made both harder to review.
+- vendor:    Checked 2026-10-26 for the enforcement half and for the other agents:
+             - Claude Code: `CLAUDE_CODE_SHELL` selects the shell for Bash tool commands only, and
+               an invalid value silently falls back to auto-detection
+               (https://code.claude.com/docs/en/env-vars). Hooks are not named for it.
+             - Codex: no configuration key selects the shell
+               (https://learn.chatgpt.com/docs/config-file/config-reference; `allow_login_shell` and
+               `shell_environment_policy.*` govern login semantics and environment only).
+             - Gemini CLI: `run_shell_command` runs `bash -c` on macOS and Linux, with no setting to
+               change it (https://geminicli.com/docs/tools/shell/).
+             For Codex the practice is the only mechanism; Gemini CLI already runs bash.
+- placement: `base/practices/shell.md` · `docs/philosophy.md` · `scripts/check-fact-drift.sh` ·
+             `CHANGELOG.md`
+- baseline-issue: n/a (this repo IS the baseline; #577 tracks the enforcement half)
