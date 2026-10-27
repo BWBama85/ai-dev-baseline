@@ -719,7 +719,8 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   or after `$SINCE`, and its matrix job is named for the step — `gh run list --workflow
   mutation-nightly.yml --commit "$HEAD_SHA" --event workflow_dispatch --created ">=$SINCE" --limit 100
   --json databaseId,url,headSha` (100 rows that all match means the list may be cut — say so), then `gh run view <id> --json jobs --jq '.jobs[].name'` must show
-  `mutation-nightly (<step>)`. That is MATCHING evidence, not identity: when more than one run
+  `mutation-nightly (<step>)` — for a sharded step (#532), one `mutation-nightly (<step>, shard <k>
+  of <K>)` job for every k from 1 to K, and the run proves the step only if all K are there. That is MATCHING evidence, not identity: when more than one run
   matches (another dispatch of the same step at the same head), link every match and say the
   evidence is ambiguous rather than picking one. A run that does not register within a few minutes
   is reported as **not started**, never assumed. More than three steps listed: label the PR `run-mutations`

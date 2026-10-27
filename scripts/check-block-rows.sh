@@ -21,7 +21,10 @@
 #      harness included), and a bound that is not a positive integer is refused (#445); and the
 #      whole-suite pool, which is the vendored shmutant since #519: its adapter turns every verdict
 #      but `killed` into a FAIL, carries this repository's settings, and refuses a stream it cannot
-#      read whole (10g).
+#      read whole (10g);
+#  11. sharding — ADB_MUTATION_SHARD=<k>/<K> keeps only shard k's rows, the shards partition the
+#      table exactly once, a row outside the shard is never built and never a pass, and a malformed
+#      or impossible selector is refused before anything is built (#532).
 #
 # The copier lives here rather than in a suite of its own because check-lib.sh is one library and
 # this is its suite; the file is named for the feature that first needed one.
@@ -777,5 +780,65 @@ until [ -z "$(survivors)" ] || [ "$EPOCHSECONDS" -ge "$_deadline" ]; do sleep 0.
 no_survivor "cancelling the harness"
 wait "$_cpid" 2>/dev/null
 kill_own
+
+# 11. SHARDING (#532). The shards of one table must cover every row exactly once — asked of the
+# verdict files each run leaves, not of its printed output — and a row outside the shard must
+# contribute no assertion: the three rows below are all detected, so every count is exact.
+ran_rows() {   # <workdir> — the row indices this run scored (any verdict but outside), one per line
+  local f
+  for f in "$1"/row-*/verdict; do
+    [ -f "$f" ] || continue
+    case "$(cut -d'|' -f1 "$f")" in outside) ;; *) f="${f%/verdict}"; printf '%s\n' "${f##*/row-}" ;; esac
+  done
+}
+for _of in 1 2 3; do
+  : > "$work/shard-union-$_of"
+  for (( _k = 1; _k <= _of; _k++ )); do
+    rows "shard-$_k-$_of" "$three" "ADB_MUTATION_SHARD=$_k/$_of"
+    eq "$rc" 0 "shard $_k/$_of of the table passes"
+    _mine=0; for (( _i = 0; _i < 3; _i++ )); do [ $(( _i % _of )) -eq $(( _k - 1 )) ] && _mine=$((_mine + 1)); done
+    has "$out" "shard $_k/$_of — $_mine of 3 row(s) belong to it" "shard $_k/$_of names its share of the table"
+    has "$out" "$_mine/$_mine mutation(s) applied, $_mine observed RED" "shard $_k/$_of tallies only its own rows"
+    has "$out" "driver: $_mine passed, 0 failed" "shard $_k/$_of: a row outside it is not scored as a passing assertion"
+    [ "$_of" -eq 1 ] || has "$out" "$((3 - _mine)) row(s) left to the other shard(s)" "shard $_k/$_of: the summary counts the rows it left"
+    ran_rows "$work/wd-shard-$_k-$_of" >> "$work/shard-union-$_of"
+  done
+  eq "$(LC_ALL=C sort -n "$work/shard-union-$_of" | tr '\n' ' ')" "0 1 2 " "the $_of shard(s) together score every row exactly once"
+done
+# THE PREPARE LOG: per-block mode, shard 1/3 holds only `add` (block `base`) — one full control, one
+# block control, one row = 3 copies. A row outside the shard built anyway would move this.
+eq "$(wc -l < "$work/prep-shard-1-3.log" | tr -d ' ')" 3 "shard 1/3 builds only its own row and that row's controls"
+rows shard-full "$three" ADB_MUTATION_SHARD=2/3 ADB_MUTATION_FULL_SUITE=1
+eq "$rc" 0 "a shard in full-suite mode passes"
+has "$out" "1/1 mutation(s) applied, 1 observed RED on their own witness (pool=" "a full-suite shard scores only its own row"
+has "$out" "full suite per mutant" "the shard keeps full-suite mode"
+# …and the gate applies inside the shard: its only row gated is a shard with nothing to run, while a
+# gated row in ANOTHER shard is not this shard's to count.
+rows shard-gated "$three" ADB_MUTATION_SHARD=1/3 ADB_T_GATE_SKIP=0
+has "$out" "0/1 row(s) run — every row gated" "a shard whose only row is gated says so"
+[ ! -e "$work/prep-shard-gated.log" ] && ok || bad "a shard whose rows are all gated must build no tree copy"
+rows shard-gated-other "$three" ADB_MUTATION_SHARD=1/3 ADB_T_GATE_SKIP=1
+has "$out" "1/1 mutation(s) applied" "a row gated in another shard does not change this one"
+lacks "$out" "row(s) gated" "a row outside the shard is never reported as gated here"
+# A broken declaration OUTSIDE the shard still refuses it: every shard validates the whole table.
+rows shard-decl "$three
+check_row absent lib.sh base 'no such text' 'x' 'add-sum'" ADB_MUTATION_SHARD=1/4
+eq "$rc" 1 "a broken row outside the shard still fails the shard"
+has "$out" "row 'absent': its literal is ABSENT" "the broken row outside the shard is named"
+# THE SELECTOR, refused before anything is built — never read as "no shard".
+for _v in 0/3 4/3 3 /3 1/ a/3 1/3/3 '1 /3' -1/3 1/0 1/1234567890 1.0/3; do
+  rows "badshard-${_v//[^0-9a-z]/_}" "$three" "ADB_MUTATION_SHARD=$_v"
+  eq "$rc" 1 "ADB_MUTATION_SHARD='$_v' fails the harness"
+  has "$out" "ADB_MUTATION_SHARD" "ADB_MUTATION_SHARD='$_v' is named"
+  [ ! -e "$work/prep-badshard-${_v//[^0-9a-z]/_}.log" ] && ok || bad "ADB_MUTATION_SHARD='$_v': a tree copy was built before the selector was validated"
+done
+rows shard-toomany "$three" ADB_MUTATION_SHARD=1/4
+has "$out" "splits 3 row(s) into 4 shards, so a shard would hold no row" "more shards than rows is refused"
+rows shard-past "$three" ADB_MUTATION_SHARD=3/2
+has "$out" "names shard 3 of only 2" "a shard past the count is refused"
+rows shard-empty "$three" ADB_MUTATION_SHARD=
+eq "$rc" 0 "an empty selector runs the whole table"
+has "$out" "3/3 mutation(s) applied" "an empty selector shards nothing"
+lacks "$out" "shard " "an empty selector prints no shard line"
 
 check_summary "block-rows"

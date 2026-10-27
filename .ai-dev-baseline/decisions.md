@@ -11095,3 +11095,43 @@ survive is the part a later reader needs.
              (case 9b) ·
              `docs/installation.md` · `CHANGELOG.md`
 - baseline-issue: n/a (this repo IS the baseline)
+
+## D142 — #532: a mutation harness too big for one nightly job is sharded by row
+- date:      2026-10-26
+- category:  project-delta
+- unknown:   #532. Full-suite `settings-fragment-mutation` ranged 179-316 minutes on the hosted
+             runner at 289-294 rows (scheduled runs 2026-10-23..26 and the `run-mutations` run on
+             #587), against 360 minutes, GitHub's maximum for a hosted job. Two earlier runs were
+             cancelled at the 240-minute bound that preceded it. A harness that outgrows the bound
+             never returns a verdict, and D126 depends on the nightly returning one.
+- decision:  SHARD BY ROW (owner decision 2026-10-26, option 1 of three, with 3 shards and the
+             figure measured on the PR). `check_mutation_rows` reads `ADB_MUTATION_SHARD=<k>/<K>`
+             and runs only the rows whose 0-based index modulo K is k-1. In full-suite mode each
+             row costs about one suite run, so shard sizes that differ by at most one row are
+             balanced shards, and round-robin needs no range arithmetic to get them.
+             Every shard still runs the declaration pass over the whole table and one unmutated
+             full control. A row outside the shard gets an `outside` verdict: counted, named in the
+             summary line, and scored as neither pass nor failure, the same treatment D108 gives a
+             gated row. The selector is refused before anything is built if it is malformed, if
+             k > K, or if K is larger than the row count, since an empty shard would read as green.
+             `mutation-gate.sh steps --matrix --shards <step>=<K>` emits one matrix entry per
+             (step, k) for k = 1..K, so the jobs of one step partition its rows exactly once. The
+             count is declared in the nightly's plan step (`SHARDS`), beside the job bound it is
+             sized against, because it is a property of the runner and not of the harness. An
+             unsharded harness keeps its job name, which is what `/implement-issue` correlates on.
+- reason:    It keeps D103 rule 3 and D108 whole. Each row is still scored against the whole suite,
+             daily. Option 2 (per-block nightly plus a weekly whole-suite run) gives up that daily
+             backstop, and its weekly run would still face the same 360-minute ceiling. Option 3
+             (splitting the suite) is the largest diff, and it needs an argument that the smaller
+             suites keep the coverage. Sharding costs K-1 extra controls, about one suite run each.
+- rejected:  A sixth `selfcheck.sh --list` field for the shard count: that couples the local runner
+             to a CI sizing choice. Contiguous row ranges: equally balanced, but a run of adjacent
+             rows that hang together (rows cluster by the code they mutate) would all land on one
+             shard, each costing the full row deadline. An aggregate job that re-checks coverage: the
+             partition is total by construction, `check-block-rows.sh` and
+             `check-mutation-gate.sh` prove it, and a failed or cancelled shard already fails the
+             run that `mutation-nightly-status.sh` reads.
+- placement: `scripts/check-lib.sh`, `scripts/mutation-gate.sh`, `.github/workflows/mutation-nightly.yml`,
+             `scripts/check-block-rows.sh`, `scripts/check-mutation-gate.sh`, `docs/ci-runners.md`,
+             `CONTRIBUTING.md`, `CLAUDE.md`, `base/workflows/implement-issue.md`
+- baseline-issue: n/a

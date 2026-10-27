@@ -154,6 +154,11 @@ in its target exactly once or its witness is not in its block's source, and it r
 block unmutated first to require the assertion count a full pass gives it. So a missing dependency
 is a red control, not a quiet GREEN. The nightly sets `ADB_MUTATION_FULL_SUITE=1`, which scores every
 row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a suite by hand.
+`ADB_MUTATION_SHARD=<k>/<K>` (#532) runs only the rows whose index modulo K is k-1, so shards 1..K
+together score every row once. A row outside the shard is counted but never scored as a pass, and a
+malformed value, k above K, or K above the row count is refused before anything is built. The
+nightly gives a harness too big for one job K shards through its plan step's `SHARDS`; a dispatch
+of that step runs every shard.
 
 **Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each
 block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a

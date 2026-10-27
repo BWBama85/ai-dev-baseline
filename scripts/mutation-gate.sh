@@ -57,6 +57,13 @@
 #       registered `*-mutation` step, so a dispatch input is validated before any job starts. Exits 3
 #       when the registry cannot be read or names no `*-mutation` step: an empty list would be a
 #       matrix that runs nothing and a skip that skips nothing, both green.
+#   mutation-gate.sh steps --matrix [--only <step>] [--shards <step>=<count>[,…]]
+#       The same list as a GitHub Actions matrix (#532): `{"include":[{"step":…,"shard":k,
+#       "shards":K},…]}`, one entry per shard k = 1..K of each step, in registry order. A step with
+#       no `--shards` entry is one shard of one. `mutation-nightly.yml`'s plan publishes this, and
+#       each job hands `<k>/<K>` to its harness as `ADB_MUTATION_SHARD`. Refuses (2) an entry that
+#       is not `<step>=<count>`, a step that is not a registered `*-mutation` step, a step named
+#       twice, and a count outside 1..64 — checked against the whole registry even under `--only`.
 #   mutation-gate.sh touched [--base <ref>]
 #       Which harnesses does this change give something new to say (#456)? Asks the same decision
 #       `run` asks, for every `*-mutation` step, and prints each step that would RUN, one per line on
@@ -111,6 +118,7 @@ usage: bash scripts/$ME should-run <step> [--base <ref>] -- <input-path>...
        bash scripts/$ME rows <suite-path> [--base <ref>]   < <row-id><TAB><target> lines
        bash scripts/$ME base [--base <ref>]
        bash scripts/$ME steps [--json|--csv|--lines] [--only <step>]
+       bash scripts/$ME steps --matrix [--only <step>] [--shards <step>=<count>[,...]]
        bash scripts/$ME touched [--base <ref>]
 EOF
   exit 2
@@ -412,16 +420,19 @@ case "$sub" in
     exit $? ;;
 
   steps)
-    fmt=lines only=""
+    fmt=lines only="" shards="" shards_set=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
-        --json|--csv|--lines) fmt="${1#--}"; shift ;;
+        --json|--csv|--lines|--matrix) fmt="${1#--}"; shift ;;
         # An EMPTY selector is usage, never "all": the dispatch path passes an empty input as no
         # `--only` at all, so an empty one here is a caller bug that must not widen to every harness.
         --only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; only="$2"; shift 2 ;;
+        --shards) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; shards="$2"; shards_set=1; shift 2 ;;
         *) usage ;;
       esac
     done
+    # Shard counts describe matrix jobs, so they mean nothing to the other formats.
+    [ -z "$shards_set" ] || [ "$fmt" = matrix ] || usage
     if ! rows="$(gate_mutation_rows 2>&1)"; then
       printf '%s: steps: %s\n' "$ME" "$rows" >&2; exit 3
     fi
@@ -429,6 +440,7 @@ case "$sub" in
     wait "$!" || { printf '%s: steps: could not read the step names from the registry rows\n' "$ME" >&2; exit 3; }
     [ "${#names[@]}" -eq "$(printf '%s\n' "$rows" | wc -l | tr -d ' ')" ] \
       || { printf '%s: steps: the step names do not match the registry rows one for one\n' "$ME" >&2; exit 3; }
+    all_names=("${names[@]}")
     if [ -n "$only" ]; then
       found=""
       for nm in "${names[@]}"; do [ "$nm" = "$only" ] && found=1; done
@@ -439,11 +451,47 @@ case "$sub" in
       }
       names=("$only")
     fi
+    # --shards <step>=<K>[,<step>=<K>…] (#532): read against the WHOLE registry, before `--only`
+    # narrowed it, so a dispatch of one step still refuses a typo in another step's entry.
+    declare -A shard_of=()
+    if [ -n "$shards_set" ]; then
+      IFS=',' read -r -a specs <<< "$shards"
+      for spec in "${specs[@]}"; do
+        sname="${spec%%=*}" scount="${spec#*=}"
+        case "$spec" in *=*) : ;; *)
+          printf '%s: steps: shard entry %s is not <step>=<count>\n' "$ME" "${spec:-(empty)}" >&2; exit 2 ;;
+        esac
+        found=""
+        for nm in "${all_names[@]}"; do [ "$nm" = "$sname" ] && found=1; done
+        if [ -z "$found" ]; then
+          printf '%s: steps: shard entry names %s, which is not a registered *-mutation step\n' "$ME" "${sname:-(empty)}" >&2; exit 2
+        fi
+        [ -z "${shard_of[$sname]:-}" ] || {
+          printf '%s: steps: %s is given a shard count twice\n' "$ME" "$sname" >&2; exit 2; }
+        # 1..64: a positive decimal small enough that K jobs of one step stay far inside GitHub's
+        # 256-job matrix limit. A leading zero is refused rather than read, as is anything else.
+        case "$scount" in [1-9]|[1-5][0-9]|6[0-4]) : ;; *)
+          printf '%s: steps: the shard count for %s must be an integer from 1 to 64, got %s\n' "$ME" "$sname" "${scount:-(empty)}" >&2; exit 2 ;;
+        esac
+        shard_of[$sname]="$scount"
+      done
+    fi
     # Every name matched ^[A-Za-z0-9_-]*-mutation$ in the registry read, so none needs JSON escaping.
     case "$fmt" in
       lines) printf '%s\n' "${names[@]}" ;;
       csv)   (IFS=,; printf '%s\n' "${names[*]}") ;;
       json)  printf '['; sep=""; for nm in "${names[@]}"; do printf '%s"%s"' "$sep" "$nm"; sep=","; done; printf ']\n' ;;
+      # ONE JOB PER (step, shard), shards 1..K for every step, so the jobs of one step partition its
+      # rows exactly once (check-lib.sh `_check_row_shard`). A step with no entry is one shard of one.
+      matrix)
+        printf '{"include":['; sep=""
+        for nm in "${names[@]}"; do
+          of="${shard_of[$nm]:-1}"
+          for (( k = 1; k <= of; k++ )); do
+            printf '%s{"step":"%s","shard":%d,"shards":%d}' "$sep" "$nm" "$k" "$of"; sep=","
+          done
+        done
+        printf ']}\n' ;;
     esac
     exit 0 ;;
 

@@ -311,6 +311,32 @@ _check_row_secs() {
   CHECK_ROW_SECS="$v"
 }
 
+# _check_row_shard <label> <rows> — read ADB_MUTATION_SHARD (`<k>/<K>`, #532) into CHECK_SHARD_K and
+# CHECK_SHARD_OF, both 0 when it is unset or empty (every row runs). Row i, counted from 0, belongs to
+# shard k exactly when i % K == k - 1, so shards 1..K partition the table: every row in exactly one.
+# Refused, never defaulted: anything but two positive integers around one `/`, a k above K, or a K
+# above the row count — that shard would hold no row, and a job that scores nothing reads as green.
+_check_row_shard() {
+  local v="${ADB_MUTATION_SHARD:-}" k of
+  CHECK_SHARD_K=0; CHECK_SHARD_OF=0
+  [ -n "$v" ] || return 0
+  case "$v" in
+    */*/*|*[!0-9/]*) k="" ;;
+    */*) k="$(_adb_pos_int "${v%/*}")" && of="$(_adb_pos_int "${v#*/}")" || k="" ;;
+    *) k="" ;;
+  esac
+  if [ -z "$k" ]; then
+    bad "$1 --mutation: ADB_MUTATION_SHARD must be <k>/<K>, two positive integers, got '$v'"; return 1
+  fi
+  if [ "$k" -gt "$of" ]; then
+    bad "$1 --mutation: ADB_MUTATION_SHARD '$v' names shard $k of only $of"; return 1
+  fi
+  if [ "$of" -gt "$2" ]; then
+    bad "$1 --mutation: ADB_MUTATION_SHARD '$v' splits $2 row(s) into $of shards, so a shard would hold no row"; return 1
+  fi
+  CHECK_SHARD_K="$k"; CHECK_SHARD_OF="$of"
+}
+
 # _check_run_bounded <out-file> <fn> [args…] — run a harness callback under CHECK_ROW_SECS with stdout
 # and stderr in <out-file>, and set CHECK_RUN_HUNG to 1 when the bound fired, else 0. Returns the
 # callback's status (124 when the bound fired).
@@ -914,6 +940,10 @@ _check_block_ctl() {
 #      When every row is gated the control is not run either — there is nothing left to control.
 #   2. One full unmutated run must pass; it records each block's assertion count.
 #   3. Each selected block's unmutated control must reproduce that count (skipped in full-suite mode).
+#   1c. ADB_MUTATION_SHARD=<k>/<K> keeps only shard k's rows (#532; `_check_row_shard`). Every other
+#      row is OUTSIDE: never built or run here, scored as neither pass nor failure, and counted in
+#      the summary line, because another job owns it. Validated before anything is built; the
+#      declaration pass still covers the whole table, so every shard refuses the same broken row.
 #   4. Each row runs only its block and that block's dependencies — or the whole suite when
 #      ADB_MUTATION_FULL_SUITE=1, the nightly's mode, which also catches a witness that has drifted.
 #      ADB_MUTATION_FULL_SUITE governs BREADTH per mutant and gating governs WHICH mutants; they are
@@ -921,7 +951,7 @@ _check_block_ctl() {
 check_mutation_rows() {
   local label="$1" wd="$2" suite="$3" prep="$4" run="$5" cap="$6"
   local n i j pool running=0 errs=0 cnt rc b bi text wit full=0 root blocks=" " nblocks=0
-  local applied=0 red=0 scored=0 verdict why
+  local applied=0 red=0 scored=0 verdict why outside=0
   local gate_out gate_rc gate_line gi gd gate_bad=0 gated=0 gated_tgts=""
   local -a gate_dec=()
   n="${#CHECK_ROW_NAMES[@]}"
@@ -931,6 +961,7 @@ check_mutation_rows() {
   fi
   [ "${ADB_MUTATION_FULL_SUITE:-0}" = 1 ] && full=1
   _check_row_secs "$label" || return 1
+  _check_row_shard "$label" "$n" || return 1
   pool="$(adb_pool_size "$cap")"
   # A FRESH workdir: counts and verdicts are read back by name, so a previous run's files would be scored.
   if [ -e "$wd" ] && [ -n "$(ls -A "$wd" 2>/dev/null)" ]; then
@@ -1030,15 +1061,25 @@ check_mutation_rows() {
       gate_line="RUN-ALL: $suite — the row gate failed with rc $gate_rc (fail-closed)" ;;
   esac
   printf '%s\n' "$gate_line"
+  # 1c. the shard — AFTER the gate, so a row outside it is `shard` whatever the gate said of it, and
+  # `gated` below counts only rows this job would otherwise have run.
+  if [ "$CHECK_SHARD_OF" -gt 0 ]; then
+    for (( i = 0; i < n; i++ )); do
+      [ $(( i % CHECK_SHARD_OF )) -eq $(( CHECK_SHARD_K - 1 )) ] && continue
+      gate_dec[$i]=shard; outside=$((outside + 1))
+    done
+    printf '%s --mutation: shard %d/%d — %d of %d row(s) belong to it (row index mod %d = %d, from 0); the other %d are scored by the other shard(s), never here\n' \
+      "$label" "$CHECK_SHARD_K" "$CHECK_SHARD_OF" "$((n - outside))" "$n" "$CHECK_SHARD_OF" "$((CHECK_SHARD_K - 1))" "$outside"
+  fi
   for (( i = 0; i < n; i++ )); do
     [ "${gate_dec[$i]}" = skip ] || continue
     gated=$((gated + 1))
     case "$gated_tgts" in *" ${CHECK_ROW_TGT[$i]} "*) ;; *) gated_tgts="$gated_tgts ${CHECK_ROW_TGT[$i]} " ;; esac
   done
-  if [ "$gated" -eq "$n" ]; then
+  if [ $((gated + outside)) -eq "$n" ]; then
     # NO CONTROL EITHER: it exists to give the rows a green baseline, and there are no rows.
     printf '\n%s --mutation: 0/%d row(s) run — every row gated (targets:%s)\n' \
-      "$label" "$n" "${gated_tgts% }"
+      "$label" "$((n - outside))" "${gated_tgts% }"
     return 0
   fi
 
@@ -1083,6 +1124,10 @@ check_mutation_rows() {
       printf 'gated|its target %s is unchanged\n' "${CHECK_ROW_TGT[$i]}" > "$wd/row-$i/verdict"
       continue
     fi
+    if [ "${gate_dec[$i]}" = shard ]; then
+      printf 'outside|it belongs to shard %d/%d\n' "$(( i % CHECK_SHARD_OF + 1 ))" "$CHECK_SHARD_OF" > "$wd/row-$i/verdict"
+      continue
+    fi
     if [ "$full" -eq 0 ] && [ "$(cat "$wd/ctl-${b//,/+}.verdict" 2>/dev/null)" != ok ]; then
       printf 'bad|control failed for block %s: %s\n' "$b" "$(cut -d'|' -f2- "$wd/ctl-${b//,/+}.verdict" 2>/dev/null)" > "$wd/row-$i/verdict"
       continue
@@ -1101,9 +1146,10 @@ check_mutation_rows() {
     IFS='|' read -r verdict why < "$wd/row-$i/verdict"
     if [ "$verdict" = ok ]; then
       ok; red=$((red + 1)); applied=$((applied + 1))
-    elif [ "$verdict" = gated ]; then
+    elif [ "$verdict" = gated ] || [ "$verdict" = outside ]; then
       # NEITHER ok NOR bad: a gated row made no claim, so counting it as a passing assertion would
-      # manufacture the evidence the gate exists to defer. It is counted, named and reported.
+      # manufacture the evidence the gate exists to defer. It is counted, named and reported. A row
+      # outside this shard is the same: its claim is made by the job that owns it.
       :
     else
       bad "mutation '${CHECK_ROW_NAMES[$i]}': $why"
@@ -1114,15 +1160,16 @@ check_mutation_rows() {
     fi
   done
   [ "$scored" -eq "$n" ] || bad "$label --mutation: scored $scored of $n row(s)"
-  local ran=$((n - gated)) gatedsuffix=""
+  local ran=$((n - gated - outside)) gatedsuffix=""
   [ "$gated" -gt 0 ] && gatedsuffix="; $gated row(s) gated (targets unchanged:${gated_tgts% })"
+  [ "$outside" -gt 0 ] && gatedsuffix="$gatedsuffix; shard $CHECK_SHARD_K/$CHECK_SHARD_OF, $outside row(s) left to the other shard(s)"
   if [ "$full" -eq 1 ]; then
     printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; full suite per mutant; row deadline %ss%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$CHECK_ROW_SECS" "$gatedsuffix"
   else
     printf '\n%s --mutation: %d/%d mutation(s) applied, %d observed RED on their own witness (pool=%s; per-block, %d block(s) controlled; row deadline %ss%s)\n' "$label" "$applied" "$ran" "$red" "$pool" "$nblocks" "$CHECK_ROW_SECS" "$gatedsuffix"
   fi
-  # AGAINST THE ROWS THAT RAN, not the table: a gated row was never meant to apply, and comparing
-  # to `n` would turn every gated run red. `scored -eq n` above is what still proves no row was
+  # AGAINST THE ROWS THAT RAN, not the table: a gated or outside row was never meant to apply, and
+  # comparing to `n` would turn every gated or sharded run red. `scored -eq n` above is what still proves no row was
   # silently dropped — gating removes a row from the POOL, never from the scoring.
   [ "$applied" -eq "$ran" ] || bad "$label --mutation: only $applied of $ran mutations actually applied — the rest tested nothing"
 }
