@@ -120,8 +120,8 @@ jobs:
     # 360 is GitHub's hosted-job maximum. Unsharded, full-suite `settings-fragment-mutation` ranged
     # 179-316 minutes at 289-294 rows (#532), too close to it. Sharded three ways at 295 rows, its
     # jobs took 66, 77 and 110 minutes (run 40431642069), so the slowest left about 250 minutes.
-    # The equal row counts spread 1.7x, so size by the slowest shard. A harness that nears this
-    # bound gets another shard, not a longer one.
+    # Nearly equal row counts spread 1.7x, so size by the slowest shard. A harness that nears
+    # this bound gets another shard, not a longer one.
     timeout-minutes: 360
     strategy:
       # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
