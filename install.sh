@@ -1628,7 +1628,7 @@ EOF
       "            uninstall first (an older installer must not run over what this one wrote), then:" \
       "              cd $_adb_rel_q && ./uninstall.sh$_adb_rel_agents" \
       "              git -C $_adb_rel_q fetch --tags origin" \
-      "              git -C $_adb_rel_q checkout --detach \"\$(gh release view -R $_adb_rel_slug --json tagName --jq .tagName)\"" \
+      "              git -C $_adb_rel_q checkout --detach \"\$(gh release view -R github.com/$_adb_rel_slug --json tagName --jq .tagName)\"" \
       "              cd $_adb_rel_q && ./install.sh$_adb_rel_agents$_adb_rel_flags" \
       "            To follow main deliberately, set [updates] channel = \"main\" in $(adb_display_value "$(adb_global_manifest)")." >&2
   fi

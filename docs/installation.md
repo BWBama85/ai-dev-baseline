@@ -39,7 +39,7 @@ the clone forward from one release to the next on its own.
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
 cd ~/Code/ai-dev-baseline
-git checkout --detach "$(gh release view -R BWBama85/ai-dev-baseline --json tagName --jq .tagName)"
+git checkout --detach "$(gh release view -R github.com/BWBama85/ai-dev-baseline --json tagName --jq .tagName)"
 ```
 
 Without `gh`, take the tag from the repository's Releases page. On the release channel,
@@ -720,7 +720,7 @@ fork's install follows the fork's releases.
 - **Integrity before any move.** The release's tag in the clone must equal origin's: a release tag
   that origin has deleted and re-created elsewhere is refused (`tag-moved`), never followed. The
   release's commit must also be on `origin/<default>` (`release-off-branch` otherwise). Both exit
-  `40`, and both automatic triggers report them in every mode.
+  `40`, and both automatic triggers report them in `auto` and `notify` (`off` checks nothing).
 - **Nothing falls back to `main`.** When `gh` is missing or unauthenticated, the API fails or takes
   longer than `ADB_RELEASE_TIMEOUT_SECS` (default 30), or a tag name is not `vX.Y.Z`, the answer is
   `release-unresolvable` (`30`) and nothing changes; a repository with no stable release at all is

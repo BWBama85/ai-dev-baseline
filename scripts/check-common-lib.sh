@@ -3395,12 +3395,12 @@ out="$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1)"
 has "$out" "release" "channel: a NUL-bearing manifest → release"
 has "$out" "NUL byte" "channel: ...naming why"
 # Malformed scalars the lenient reader would repair into "main" are NOT a choice of main.
-for v in 'main' '"main' '"main" junk' "'main" '"mai"'; do
-  printf '[updates]\nchannel = %s\n' "$v" > "$chmf"
+for v in 'main' '"main' '"main" junk' "'main" '"mai"' '"main"\v' '"main"\f'; do
+  printf '[updates]\nchannel = %b\n' "$v" > "$chmf"
   eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: malformed [$v] → release"
   has "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1 >/dev/null)" 'is not "release" or "main"' "channel: malformed [$v] is diagnosed"
 done
-for v in "'main'" '"main"   # follow main' "\"main\"\t"; do
+for v in "'main'" '"main"   # follow main' "\"main\"\t" '"main"\r'; do
   printf '[updates]\nchannel = %b\n' "$v" > "$chmf"
   eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: well-formed [$v] → main"
 done

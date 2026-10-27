@@ -2,13 +2,15 @@
 # ai-dev-baseline — install-currency TRIGGER POLICY (issues #36 + #139).
 #
 # `bin/baseline update` already does the work, safely, and owns the unsafe-state ladder (dirty /
-# in-progress / ahead / diverged / detached / not-default are all refused) plus its own flock. What
+# in-progress / non-default / unpushed work are refused; an install ahead of the newest release is
+# held; a moved release tag is refused) plus its own flock. What
 # this library owns is the layer above it: WHEN running it is safe and free of surprises, and what
 # a given outcome should be reported as. That policy used to live inside the Claude `SessionStart`
 # hook, which made it unreachable from anywhere else — and #139 is what that cost: currency had
 # exactly ONE trigger, bound to `source: startup`, so the baseline's own loop
 # (`/implement-issue -> merge -> /cleanup -> /clear -> /roadmap`) never re-checked. Staleness
-# begins at the merge and the next step in the loop could not notice.
+# begins when a release is published (or, on channel = "main", at the merge), and nothing in the
+# loop noticed.
 #
 # TWO CALLERS, ONE POLICY:
 #   - agents/claude/scripts/session-currency.sh   (trigger `startup`, unattended)
@@ -456,6 +458,9 @@ CU_DIGEST
       # Includes exit 1: git advanced but the install did not fully heal. That one MUST be loud —
       # a half-repaired global install is the silent-staleness failure this exists to prevent.
       if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+        if [ "$channel" = release ]; then
+          before="${before_label:-$before}"; after="$(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")"
+        fi
         _adb_cu_emit failed "clone updated $before → $after but the global install needs repair — run 'baseline update'."
       else
         _adb_cu_emit failed "'baseline update' failed (exit $rc) — run it manually to see why."

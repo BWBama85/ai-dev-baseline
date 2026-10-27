@@ -28,7 +28,7 @@ reviews, debugging, or other roles.
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
 cd ~/Code/ai-dev-baseline
-git checkout --detach "$(gh release view -R BWBama85/ai-dev-baseline --json tagName --jq .tagName)"   # the newest stable release
+git checkout --detach "$(gh release view -R github.com/BWBama85/ai-dev-baseline --json tagName --jq .tagName)"   # the newest stable release
 ./install.sh --agent claude            # add --agent codex --agent gemini as needed
 export PATH="$HOME/Code/ai-dev-baseline/bin:$PATH"   # for `agent-init`
 ```

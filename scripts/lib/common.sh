@@ -4420,7 +4420,8 @@ adb_is_release_tag() {
 # never echoed.
 adb_update_channel() {
   local c="${ADB_UPDATE_CHANNEL:-}" where="ADB_UPDATE_CHANNEL" raw rc mf
-  local re='^("(release|main)"|'"'"'(release|main)'"'"')[[:space:]]*(#.*)?$'
+  # TOML whitespace is space or tab only; any other byte after the value is malformed.
+  local re='^("(release|main)"|'"'"'(release|main)'"'"')[ '$'\t'']*(#.*)?$'
   if [ -z "$c" ]; then
     mf="$(adb_global_manifest)"
     raw="$(adb_toml_get "$mf" updates channel --raw 2>/dev/null)"; rc=$?
@@ -4524,15 +4525,17 @@ _adb_release_tag_at() {
 
 # adb_release_label <root> [<rev>] — a printable name for a commit, built only from validated tag
 # names and hex: `vX.Y.Z` when a release tag names it exactly (the highest, when several do),
-# `vX.Y.Z+N (abc1234)` when it is N commits past the nearest one, else the short hash.
+# `vX.Y.Z+N (abc1234)` when it contains release tags — the highest-versioned one, and N commits
+# past it — else the short hash.
 adb_release_label() {
   local root="$1" rev="${2:-HEAD}" sha short t base n
   sha="$(git -C "$root" rev-parse --verify --quiet "$rev^{commit}" 2>/dev/null)" || return 1
   short="$(git -C "$root" rev-parse --short "$sha" 2>/dev/null)" || return 1
   t="$(_adb_release_tag_at "$root" "$sha")"
   [ -n "$t" ] && { printf '%s' "$t"; return 0; }
-  # The highest-versioned RELEASE tag the commit contains (releases are cut in order on the default
-  # branch, so that is the nearest one); every candidate passes the grammar before it counts.
+  # The highest-versioned RELEASE tag the commit contains. On a line released in order that is also
+  # the nearest; on a maintenance history it need not be, and the label says which version, not
+  # which tag is closest. Every candidate passes the grammar before it counts.
   t="$(git -C "$root" tag --merged "$sha" --list 'v[0-9]*' --sort=-v:refname 2>/dev/null \
         | while IFS= read -r _adb_rt; do adb_is_release_tag "$_adb_rt" && { printf '%s' "$_adb_rt"; break; }; done)"
   if [ -n "$t" ] && base="$(git -C "$root" rev-parse --verify --quiet "$t^{commit}" 2>/dev/null)"; then
@@ -5371,7 +5374,7 @@ adb_toml_get() {
     intbl && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)   # strip "key =" and the space after it
-      if (raw == 1) { sub(/[[:space:]]*$/, "", line); printf "%s", line; found = 1; exit }
+      if (raw == 1) { sub(/\r$/, "", line); sub(/[ \t]*$/, "", line); printf "%s", line; found = 1; exit }
       if (substr(line, 1, 1) == "\"") {
         # Quoted scalar: walk to the closing quote, skipping backslash-escaped chars
         # (so \" does not close and # inside the string is not a comment). Reconstruct

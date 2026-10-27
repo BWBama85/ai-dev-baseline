@@ -18,8 +18,8 @@ only by a release it upgrades to. These entries are the notes for both.
   the newest release (every install that followed `main` until now) is **held** until a release
   containing it is published, then moves onto that tag. Before any move the release's tag must
   match origin's and its commit must be on the default branch; a moved tag (`tag-moved`) or an
-  off-branch release (`release-off-branch`) exits `40` and is reported by both triggers in every
-  mode. A release that cannot be resolved never falls back to `main`. Currency lines name versions
+  off-branch release (`release-off-branch`) exits `40` and is reported by both triggers in `auto`
+  and `notify`. A release that cannot be resolved never falls back to `main`. Currency lines name versions
   (`updated v3.1.0 → v3.1.1.`). To keep following `main`, set `[updates] channel = "main"` in the
   global `agents.toml` (or `ADB_UPDATE_CHANNEL=main`); that channel behaves as before and re-attaches
   a clone the release channel left detached. Pinned `status` and `notice` use the same resolver, so a

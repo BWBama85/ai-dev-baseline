@@ -878,6 +878,21 @@ eq "${ rel_update; }" "20" "main channel: a failed switch onto main → exit 20"
 eq "$(rel_head) $(rel_detached) $(git -C "$relsrc" rev-parse refs/heads/main)" "$V110 detached $V100" \
   "main channel: a failed switch → HEAD still detached where it was, and main put back"
 rm -f "$relgit/index.lock"
+# ...but when git switched and THEN failed (a post-checkout hook), the switch stands: HEAD is on
+# main, and rolling the branch back would rewind the branch HEAD now names.
+relhk="$work/relhooks"; mkdir -p "$relhk"; printf '#!/bin/sh\nexit 1\n' > "$relhk/post-checkout"; chmod +x "$relhk/post-checkout"
+git -C "$relsrc" config core.hooksPath "$relhk"
+eq "${ rel_update; }" "0" "main channel: a post-checkout hook failing after the switch → the re-attach stands (0)"
+eq "$(git -C "$relsrc" symbolic-ref -q --short HEAD) $(rel_head)" "main $(git -C "$relsrc" rev-parse origin/main)" \
+  "main channel: ...HEAD on main at origin/main, not rolled back"
+git -C "$relsrc" config --unset core.hooksPath
+# Re-attaching at the commit HEAD is already on is the same-HEAD path: links verified, no installer
+# re-run unless one is broken (a repair there exits 6, which a HEAD-watching caller can see).
+git -C "$relsrc" checkout -q --detach origin/main
+: > "$work/install.log"
+eq "${ rel_update; }" "0" "main channel: re-attach at the same commit, links fine → 0"
+has "$(cat "$work/rel.out")" "re-attached $relsrc to main at the commit it was on" "main channel: ...says so"
+[ -s "$work/install.log" ] && bad "main channel: a same-commit re-attach must take the same-HEAD path, not re-run the installer as a move" || ok
 # A host other than github.com is never resolved against a same-named GitHub repository.
 rm -f "$relfh/.config/ai-dev-baseline/agents.toml"
 git -C "$relsrc" remote set-url origin "https://gitlab.com/acme/widget.git"
@@ -885,6 +900,21 @@ eq "${ rel_check; }" "release-unresolvable|30" "release: an origin on another ho
 has "$(rel_err)" "origin does not name a github.com owner/repo" "release: ...naming why"
 eq "$(grep -c . "$work/gh.log")" "0" "release: ...without asking gh about another repository"
 git -C "$relsrc" remote set-url origin "$GHURL"
+# Release channel: a checkout that git completed before a hook failed is still healed; one that never
+# happened takes back the local tag this run recorded for it.
+git -C "$relsrc" checkout -q --detach v1.0.0
+git -C "$relsrc" config core.hooksPath "$relhk"
+: > "$work/install.log"
+eq "${ rel_update; }|$(rel_head)" "0|$V110" "release: checkout done, then a hook failed → the move stands (0)"
+[ -s "$work/install.log" ] && ok || bad "release: ...and the installer still re-runs"
+git -C "$relsrc" config --unset core.hooksPath
+git -C "$relsrc" checkout -q --detach v1.0.0
+git -C "$relsrc" tag -d v1.1.0 >/dev/null
+: > "$relgit/index.lock"
+eq "${ rel_update; }|$(rel_head)" "20|$V100" "release: a checkout that never happened → 20, HEAD unchanged"
+git -C "$relsrc" rev-parse --verify --quiet refs/tags/v1.1.0 >/dev/null && bad "release: ...and the tag this run recorded is taken back" || ok
+rm -f "$relgit/index.lock"
+eq "${ rel_update; }|$(rel_head)" "0|$V110" "release: ...and the next run moves it"
 rm -f "$relfh/.config/ai-dev-baseline/agents.toml"
 
 # =============== #539: a missing or occupied root doc, against the REAL installer ===============
