@@ -10,6 +10,17 @@ only by a published release, which is what these entries are the notes for.
 
 ### Changed
 
+- **The nightly shards `settings-fragment-mutation` by row (#532).** Run unsharded, the full-suite
+  harness took 179 to 316 minutes, and a hosted job may run for at most 360. The nightly now runs it as three
+  jobs, `mutation-nightly (settings-fragment-mutation, shard <k> of 3)`. Each job scores its own
+  third of the rows against the whole suite, so every row is still scored daily and exactly once.
+  `check_mutation_rows` reads `ADB_MUTATION_SHARD=<k>/<K>` and runs the rows whose index modulo K is
+  k-1. A row outside the shard is counted, never as a pass, and a malformed or impossible value is
+  refused before anything is built. `mutation-gate.sh steps --matrix --shards <step>=<K>` builds the
+  matrix and refuses a list it cannot read whole or a matrix past GitHub's 256-job limit. A dispatch
+  of the step runs all three shards, and its first hosted run took 66, 77 and 110 minutes.
+  Unsharded harnesses keep their job names (D142). The `pr-watch` suite's `ci-decl-reason-on-stderr` witness no longer depends on how
+  many polls fit in three seconds: under load one poll let that mutant pass it.
 - **The shell practice names both shells' behaviour (#577).** It said an unquoted variable "will
   word-split or glob-expand", which is true in bash and false in zsh, the shell an agent's tool
   usually runs on macOS. The rules now say what each shell does, and a new rule says never to rely

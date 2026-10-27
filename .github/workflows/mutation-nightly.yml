@@ -22,8 +22,15 @@ name: Mutation nightly
 # itself, rather than trusting this comment.
 #
 # THE MATRIX IS THE REGISTRY, by construction: the plan job reads it from `selfcheck.sh --list`
-# through `mutation-gate.sh steps --json`, so no list of harnesses lives in this file to drift.
+# through `mutation-gate.sh steps --matrix`, so no list of harnesses lives in this file to drift.
 # `check-mutation-gate.sh` pins that wiring.
+#
+# A HARNESS TOO BIG FOR ONE JOB IS SHARDED BY ROW (#532, D142). The plan's `SHARDS` names it and a
+# count K; the matrix then carries K jobs for it, and job k hands `k/K` to the harness as
+# `ADB_MUTATION_SHARD`. Each job scores its own rows against the WHOLE suite, so the daily
+# whole-suite answer is unchanged, and the K jobs partition the table: every row is scored by
+# exactly one of them. A shard that fails or is cancelled leaves the run without a success
+# conclusion, as any harness does, and that conclusion is what every PR's summary reports.
 #
 # WHO SEES A RED RUN: GitHub sends scheduled-workflow failure notifications to the user who last
 # modified the cron line below, PROVIDED that user has Actions notifications enabled — a setting
@@ -69,7 +76,7 @@ jobs:
       && (github.event_name != 'pull_request' || github.event.label.name == 'run-mutations')
     timeout-minutes: 10
     outputs:
-      steps: ${{ steps.plan.outputs.steps }}
+      matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -87,35 +94,40 @@ jobs:
         run: bash scripts/check-bash-floor.sh --runtime
 
       # The input reaches the shell through `env`, never interpolated into the script, and
-      # `--only` refuses (2) anything that is not a registered *-mutation step.
+      # `--only` refuses (2) anything that is not a registered *-mutation step. A dispatch of one
+      # sharded step runs all of its shards.
       - name: Read the harness list from the registry
         id: plan
         env:
           ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.step || '' }}
+          # <step>=<shards>, comma-separated: each harness here outgrew one job's bound (#532).
+          SHARDS: 'settings-fragment-mutation=3'
         run: |
           set -uo pipefail
           if [ -n "$ONLY" ]; then
-            steps="$(bash scripts/mutation-gate.sh steps --json --only "$ONLY")" || exit 1
+            matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS" --only "$ONLY")" || exit 1
           else
-            steps="$(bash scripts/mutation-gate.sh steps --json)" || exit 1
+            matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")" || exit 1
           fi
-          printf 'steps=%s\n' "$steps" >> "$GITHUB_OUTPUT"
-          printf 'harnesses: %s\n' "$steps"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf 'harnesses: %s\n' "$matrix"
 
   mutation-nightly:
-    name: mutation-nightly (${{ matrix.step }})
+    # An unsharded harness keeps the plain name, which is what `/implement-issue` correlates on.
+    name: mutation-nightly (${{ matrix.step }}${{ matrix.shards > 1 && format(', shard {0} of {1}', matrix.shard, matrix.shards) || '' }})
     needs: plan
     runs-on: ubuntu-26.04
-    # Sized for the largest harness: full-suite `settings-fragment-mutation` took 307 minutes on a
-    # hosted runner at 289 rows (run 38455721958, D129), about 53 minutes under this bound. 360 is
-    # GitHub's hosted-job maximum, so further growth is met by splitting the work (#532).
+    # 360 is GitHub's hosted-job maximum. Unsharded, full-suite `settings-fragment-mutation` ranged
+    # 179-316 minutes at 289-294 rows (#532), too close to it. Sharded three ways at 295 rows, its
+    # jobs took 66, 77 and 110 minutes (run 40431642069), so the slowest left about 250 minutes.
+    # Nearly equal row counts spread 1.7x, so size by the slowest shard. A harness that nears
+    # this bound gets another shard, not a longer one.
     timeout-minutes: 360
     strategy:
       # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer
       # the others were about to give.
       fail-fast: false
-      matrix:
-        step: ${{ fromJSON(needs.plan.outputs.steps) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what
@@ -145,6 +157,8 @@ jobs:
           # Each whole-suite pool's workdir runs here (#519): a failed one leaves its verdict stream
           # and every row's output, a passing one removes itself. The upload step below publishes it.
           ADB_MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-artifacts
+          # This job's share of the rows (#532); `1/1` for an unsharded harness is every row.
+          ADB_MUTATION_SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
 
       # A SEPARATE STEP, as in ci.yml's `selfcheck-macos`: a step that is killed never reaches its
       # own trailing code. It never fails the job — it is a reporter.
@@ -154,7 +168,7 @@ jobs:
           set -uo pipefail
           log="$RUNNER_TEMP/selfcheck.log"
           {
-            printf '## %s went RED (%s run)\n\n' "${{ matrix.step }}" "${{ github.event_name }}"
+            printf '## %s (shard %s of %s) went RED (%s run)\n\n' "${{ matrix.step }}" "${{ matrix.shard }}" "${{ matrix.shards }}" "${{ github.event_name }}"
             printf 'No harness runs in the per-PR CI (#456); this run is where the red was seen. Diagnose before re-running (base/practices/ci-discipline.md).\n\n'
           } >> "$GITHUB_STEP_SUMMARY"
           if [ -f "$log" ]; then
@@ -171,7 +185,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: mutation-artifacts-${{ matrix.step }}
+          name: mutation-artifacts-${{ matrix.step }}-shard-${{ matrix.shard }}-of-${{ matrix.shards }}
           path: ${{ runner.temp }}/mutation-artifacts
           if-no-files-found: ignore
           retention-days: 14

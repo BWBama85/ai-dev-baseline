@@ -209,6 +209,36 @@ if [ "$MODE" = mutation ]; then
     "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]*-mutation\$/'" \
     "awk -F'\\t' '\$1 ~ /^[a-z0-9-]+-mutation\$/'" \
     'is listed, not dropped'
+  # --- `steps --matrix --shards` (#532): a wrong answer here is a row no job scores, or two jobs
+  # scoring one row while another goes unscored.
+  shmutant_mut matrix-last-shard-dropped \
+    'for (( k = 1; k <= of; k++ )); do' \
+    'for (( k = 1; k < of; k++ )); do' \
+    'carries every shard 1..K'
+  shmutant_mut shards-unknown-step-accepted \
+    '        if [ -z "$found" ]; then' \
+    '        if false; then' \
+    "steps --matrix --shards 'no-such-mutation=2': refused (2)"
+  shmutant_mut shards-step-named-twice \
+    '[ -z "${shard_of[$sname]:-}" ] || {' \
+    'true || {' \
+    'a step named twice is named'
+  shmutant_mut shards-count-unbounded \
+    'if [ "$scount" -lt 1 ] || [ "$scount" -gt "$MATRIX_MAX" ]; then' \
+    'if false; then' \
+    'a count out of range is named'
+  shmutant_mut shards-list-split-unread \
+    '*[!A-Za-z0-9_=,-]*|,*|*,|*,,*)' \
+    '__never__)' \
+    'not one comma-separated line is named'
+  shmutant_mut matrix-limit-unchecked \
+    'if [ "$total" -gt "$MATRIX_MAX" ]; then' \
+    'if false; then' \
+    'a matrix of 257 jobs is refused (2)'
+  shmutant_mut shards-outside-matrix \
+    '[ -z "$shards_set" ] || [ "$fmt" = matrix ] || usage' \
+    ': || usage' \
+    'shard counts mean nothing outside --matrix'
   shmutant_mut steps-filter-status-dropped \
     '|| { printf '"'"'the registry filter failed — refusing a list it may have cut short\n'"'"' >&2; return 1; }   # row-filter' \
     '|| true   # row-filter' \
@@ -270,21 +300,33 @@ if [ "$MODE" = mutation ]; then
   shmutant_reset
   shmutant_target .github/workflows/mutation-nightly.yml
   shmutant_mut nightly-static-matrix \
-    'step: ${{ fromJSON(needs.plan.outputs.steps) }}' \
-    'step: [fact-mutation]' \
+    'matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}' \
+    'matrix: { step: [fact-mutation] }' \
     'matrix is not read from the plan job'
   shmutant_mut nightly-plan-output-constant \
-    '      steps: ${{ steps.plan.outputs.steps }}' \
-    '      steps: '"'"'["fact-mutation"]'"'"'' \
+    '      matrix: ${{ steps.plan.outputs.matrix }}' \
+    '      matrix: '"'"'{"include":[]}'"'"'' \
     'does not export its'
   shmutant_mut nightly-plan-not-published \
-    'printf '"'"'steps=%s\n'"'"' "$steps" >> "$GITHUB_OUTPUT"' \
-    'printf '"'"'steps=%s\n'"'"' "$steps" >> /dev/null' \
+    'printf '"'"'matrix=%s\n'"'"' "$matrix" >> "$GITHUB_OUTPUT"' \
+    'printf '"'"'matrix=%s\n'"'"' "$matrix" >> /dev/null' \
     'does not publish the list'
   shmutant_mut nightly-plan-overwritten \
-    'steps="$(bash scripts/mutation-gate.sh steps --json)" || exit 1' \
-    "steps='[\"fact-mutation\"]'" \
+    'matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")" || exit 1' \
+    "matrix='{\"include\":[{\"step\":\"fact-mutation\",\"shard\":1,\"shards\":1}]}'" \
     'PUBLISHES exactly'
+  shmutant_mut nightly-shards-dropped \
+    "SHARDS: 'settings-fragment-mutation=3'" \
+    "SHARDS: 'fact-mutation=1'" \
+    'splits settings-fragment-mutation into more than one shard'
+  shmutant_mut nightly-shard-unwired \
+    'ADB_MUTATION_SHARD: ${{ matrix.shard }}/${{ matrix.shards }}' \
+    'ADB_MUTATION_SHARD: 1/1' \
+    "hand its job's shard to the harness"
+  shmutant_mut nightly-artifact-collides \
+    'name: mutation-artifacts-${{ matrix.step }}-shard-${{ matrix.shard }}-of-${{ matrix.shards }}' \
+    'name: mutation-artifacts-${{ matrix.step }}' \
+    'artifact name does not carry the shard'
   shmutant_mut nightly-plan-merge-commit \
     "ref: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-plan-ref" \
     "ref: ''   # row-plan-ref" \
@@ -306,8 +348,8 @@ if [ "$MODE" = mutation ]; then
     'bash scripts/selfcheck.sh --only "fact-mutation"' \
     'does not run its own'
   shmutant_mut nightly-dispatch-unvalidated \
-    'steps="$(bash scripts/mutation-gate.sh steps --json --only "$ONLY")" || exit 1' \
-    'steps="[\"$ONLY\"]"' \
+    'matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS" --only "$ONLY")" || exit 1' \
+    'matrix="{\"include\":[{\"step\":\"$ONLY\",\"shard\":1,\"shards\":1}]}"' \
     'does not validate a dispatched step'
   shmutant_mut nightly-label-widened \
     '    types: [labeled]' \
@@ -761,6 +803,55 @@ gate "$R" steps --bogus
 eq "$RC_" "2" "steps --bogus: usage"
 gate "$R" steps --json --only ''
 eq "$RC_" "2" "steps --only '': usage, never widened to every harness"
+# --matrix (#532): one entry per (step, shard), and a step's shards are exactly 1..K, so its jobs
+# partition its rows. Asked of the parsed JSON, not of its spelling.
+gate "$R" steps --matrix --only gated-mutation
+eq "$OUT" '{"include":[{"step":"gated-mutation","shard":1,"shards":1}]}' "steps --matrix: an unsharded step is one shard of one"
+gate "$R" steps --matrix --only gated-mutation --shards gated-mutation=3
+eq "$(printf '%s' "$OUT" | jq -c '[.include[] | [.step, .shard, .shards]]')" '[["gated-mutation",1,3],["gated-mutation",2,3],["gated-mutation",3,3]]' \
+   "steps --matrix --shards: a one-step dispatch of a sharded step carries every shard 1..K"
+gate "$R" steps --matrix --only rows-mutation --shards gated-mutation=3
+eq "$OUT" '{"include":[{"step":"rows-mutation","shard":1,"shards":1}]}' "steps --matrix: another step's shard entry does not leak into this one"
+gate "$R" steps --matrix --shards gated-mutation=2,rows-mutation=5
+eq "$RC_" "0" "steps --matrix --shards: two entries are read"
+eq "$(printf '%s' "$OUT" | jq -r '[.include[].step] | unique | .[]' | LC_ALL=C sort | tr '\n' ' ')" \
+   "$(cd "$R" && bash scripts/mutation-gate.sh steps --lines | LC_ALL=C sort | tr '\n' ' ')" \
+   "steps --matrix: every registered harness is in the matrix, sharded or not"
+eq "$(printf '%s' "$OUT" | jq -c '[.include | group_by(.step)[] | select(([.[].shard] | sort) != [range(1; (.[0].shards) + 1)] or ([.[].shards] | unique | length) != 1)] | length')" "0" \
+   "steps --matrix: every step's shards are exactly 1..K with one K — each row has exactly one job"
+eq "$(printf '%s' "$OUT" | jq -c '[.include[] | select(.step == "gated-mutation" or .step == "rows-mutation") | .shards] | unique')" '[2,5]' \
+   "steps --matrix --shards: each step takes its own count"
+for _bad in no-such-mutation=2 bare=2 gated-mutation=0 gated-mutation=257 gated-mutation=03 gated-mutation=x gated-mutation= gated-mutation =2 \
+            gated-mutation=2,gated-mutation=3 gated-mutation=2,,rows-mutation=2 'gated-mutation=2,' ',gated-mutation=2' \
+            $'\ngated-mutation=2' $'gated-mutation=2\nno-such-mutation=2'; do
+  gate "$R" steps --matrix --shards "$_bad"
+  eq "$RC_" "2" "steps --matrix --shards '$_bad': refused (2)"
+  eq "$(printf '%s' "$OUT" | grep -c '"include"')" "0" "steps --matrix --shards '$_bad': …and no matrix is printed"
+done
+gate "$R" steps --matrix --shards gated-mutation=2,gated-mutation=3
+has "$OUT" "given a shard count twice" "steps --matrix --shards: a step named twice is named"
+gate "$R" steps --matrix --shards gated-mutation=257
+has "$OUT" "must be an integer from 1 to 256" "steps --matrix --shards: a count out of range is named"
+# THE WHOLE ARGUMENT is read: an entry after a newline or a stray comma is refused, never dropped.
+gate "$R" steps --matrix --shards $'gated-mutation=2\nno-such-mutation=2'
+has "$OUT" "no empty entry" "steps --matrix --shards: a list that is not one comma-separated line is named"
+# GitHub runs at most 256 jobs from one matrix: the fixture's other harnesses take one job each, so
+# gated-mutation at 256 minus their count fits exactly, and one more job is refused.
+_others=$(( $(cd "$R" && bash scripts/mutation-gate.sh steps --lines | wc -l) - 1 ))
+gate "$R" steps --matrix --shards "gated-mutation=$(( 256 - _others ))"
+eq "$RC_" "0" "steps --matrix: a matrix of exactly 256 jobs is accepted"
+eq "$(printf '%s' "$OUT" | jq '.include | length')" "256" "…and carries 256 entries"
+gate "$R" steps --matrix --shards "gated-mutation=$(( 257 - _others ))"
+eq "$RC_" "2" "steps --matrix: a matrix of 257 jobs is refused (2)"
+has "$OUT" "GitHub runs at most 256" "…and says why"
+gate "$R" steps --matrix --only gated-mutation --shards gated-mutation=256
+eq "$RC_" "0" "steps --matrix: the limit is counted on the matrix as emitted, after --only"
+gate "$R" steps --matrix --only rows-mutation --shards no-such-mutation=2
+eq "$RC_" "2" "steps --matrix --shards: a typo is refused even when --only selects another step"
+gate "$R" steps --json --shards gated-mutation=2
+eq "$RC_" "2" "steps --json --shards: usage — shard counts mean nothing outside --matrix"
+gate "$R" steps --matrix --shards ''
+eq "$RC_" "2" "steps --matrix --shards '': usage"
 # A registry that cannot be read is exit 3, never an empty list — a matrix of nothing is green.
 NR="$work/noreg"; mkrepo "$NR" || bad "fixture setup: could not build the registry-less repository"
 gate "$NR" steps --json
@@ -1045,17 +1136,17 @@ if [ -f "$NIGHTLY" ]; then
   has "$nt" "ADB_MUTATION_FULL_SUITE: '1'" "the scheduled workflow runs every mutant against the full suite (ADB_MUTATION_FULL_SUITE)"
   grep -qE '^  schedule:' "$NIGHTLY" && ok || bad "the scheduled workflow has no schedule: trigger"
   grep -qE '^      step:$' "$NIGHTLY" && ok || bad "the scheduled workflow's workflow_dispatch has no 'step' input (#456)"
-  grep -qE '^[[:space:]]*step: \$\{\{ fromJSON\(needs\.plan\.outputs\.steps\) \}\}[[:space:]]*$' "$NIGHTLY" && ok \
-    || bad "the scheduled workflow's matrix is not read from the plan job (step: \${{ fromJSON(needs.plan.outputs.steps) }})"
+  grep -qE '^      matrix: \$\{\{ fromJSON\(needs\.plan\.outputs\.matrix\) \}\}$' "$NIGHTLY" && ok \
+    || bad "the scheduled workflow's matrix is not read from the plan job (matrix: \${{ fromJSON(needs.plan.outputs.matrix) }})"
   # …and the WHOLE connection behind it, link by link: the plan step publishes the list it read, the
   # job exports that step's output, and the matrix job needs the plan. A constant at any link would
   # pass a pin that checked only the two ends (review finding).
   grep -qE '^      - name: Read the harness list from the registry$' "$NIGHTLY" \
     && grep -qE '^        id: plan$' "$NIGHTLY" && ok || bad "the plan job's registry step is not 'id: plan'"
-  grep -qE '^          printf .steps=%s\\n. "\$steps" >> "\$GITHUB_OUTPUT"$' "$NIGHTLY" && ok \
+  grep -qE '^          printf .matrix=%s\\n. "\$matrix" >> "\$GITHUB_OUTPUT"$' "$NIGHTLY" && ok \
     || bad "the plan step does not publish the list it read to GITHUB_OUTPUT"
-  grep -qE '^      steps: \$\{\{ steps\.plan\.outputs\.steps \}\}$' "$NIGHTLY" && ok \
-    || bad "the plan job does not export its step's output (outputs.steps: \${{ steps.plan.outputs.steps }})"
+  grep -qE '^      matrix: \$\{\{ steps\.plan\.outputs\.matrix \}\}$' "$NIGHTLY" && ok \
+    || bad "the plan job does not export its step's output (outputs.matrix: \${{ steps.plan.outputs.matrix }})"
   grep -qE '^    needs: plan$' "$NIGHTLY" && ok || bad "the matrix job does not need the plan job"
   # …and the two CONSUMER links: the dispatch input reaches the plan through `ONLY`, and each matrix
   # job runs ITS OWN step. A constant at either would run every harness for a one-step dispatch, or
@@ -1064,28 +1155,52 @@ if [ -f "$NIGHTLY" ]; then
     || bad "the plan step does not bind ONLY to the dispatch input"
   grep -qE '^          bash scripts/selfcheck\.sh --only "\$\{\{ matrix\.step \}\}" 2>&1 \| tee ' "$NIGHTLY" && ok \
     || bad "the matrix job does not run its own matrix.step"
+  # SHARDS (#532): the harness step hands the job's own shard to the harness, and each job's
+  # failure evidence and name carry it — two shards of one step would otherwise collide on the
+  # artifact name (an upload-artifact v4+ error) and be indistinguishable in the run.
+  run_step="$(wf_step_text "$NIGHTLY" mutation-nightly '^[[:space:]]*- name: Run the harness unconditionally$')"
+  printf '%s\n' "$run_step" | grep -qE '^          ADB_MUTATION_SHARD: \$\{\{ matrix\.shard \}\}/\$\{\{ matrix\.shards \}\}$' && ok \
+    || bad "the harness step does not hand its job's shard to the harness (ADB_MUTATION_SHARD: \${{ matrix.shard }}/\${{ matrix.shards }})"
+  grep -qE '^          name: mutation-artifacts-\$\{\{ matrix\.step \}\}-shard-\$\{\{ matrix\.shard \}\}-of-\$\{\{ matrix\.shards \}\}$' "$NIGHTLY" && ok \
+    || bad "the failed-pool artifact name does not carry the shard, so two shards of one step collide"
+  has "$nt" "    name: mutation-nightly (\${{ matrix.step }}\${{ matrix.shards > 1 && format(', shard {0} of {1}', matrix.shard, matrix.shards) || '' }})" \
+    "the matrix job's name keeps the plain step name unsharded and names the shard otherwise"
   # WHAT THE PLAN PUBLISHES, by RUNNING its script: the plan step's `run: |` body is executed with a
   # scratch GITHUB_OUTPUT, for no input, a one-step input and an unregistered one. A reassignment
   # between the registry read and the publish would pass every spelling check above.
   plan_body="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*- name: Read the harness list from the registry$' | wf_run_body)"
   [ -n "$plan_body" ] && ok || bad "could not extract the plan step's run block from the scheduled workflow (the scan matched nothing)"
-  run_plan() {  # run_plan <ONLY> — sets PLAN_RC and PLAN_OUT (the published `steps=` value)
+  # The shard list is the plan step's own `SHARDS` env, read from the file and handed to the body as
+  # the runner would.
+  plan_shards="$(sed -n "s/^          SHARDS: '\(.*\)'\$/\1/p" "$NIGHTLY")"
+  [ -n "$plan_shards" ] && ok || bad "could not read the plan step's SHARDS list from the scheduled workflow"
+  run_plan() {  # run_plan <ONLY> — sets PLAN_RC and PLAN_OUT (the published `matrix=` value)
     : > "$work/plan-output"
-    (cd "$ROOT" && ONLY="$1" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
-    PLAN_OUT="$(sed -n 's/^steps=//p' "$work/plan-output")"
+    (cd "$ROOT" && ONLY="$1" SHARDS="$plan_shards" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
+    PLAN_OUT="$(sed -n 's/^matrix=//p' "$work/plan-output")"
   }
   run_plan ""
   eq "$PLAN_RC" "0" "the plan step succeeds with no dispatch input"
-  eq "$PLAN_OUT" "$(bash "$ROOT/scripts/mutation-gate.sh" steps --json)" "the plan PUBLISHES exactly the registry's *-mutation steps as the matrix"
+  eq "$PLAN_OUT" "$(bash "$ROOT/scripts/mutation-gate.sh" steps --matrix --shards "$plan_shards")" "the plan PUBLISHES exactly the registry's *-mutation steps as the matrix"
+  eq "$(printf '%s' "$PLAN_OUT" | jq -r '[.include[].step] | unique | .[]' | LC_ALL=C sort | tr '\n' ' ')" \
+     "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" "the published matrix carries every registered harness"
+  # THE HARNESS THAT OUTGREW ONE JOB (#532) is split: a plan that dropped its entry would put the
+  # whole table back in one job, which took up to 316 of the 360 minutes a hosted job may run.
+  eq "$(printf '%s' "$PLAN_OUT" | jq '[.include[] | select(.step == "settings-fragment-mutation") | .shard] | length > 1')" "true" \
+     "the published matrix splits settings-fragment-mutation into more than one shard"
   run_plan fact-mutation
-  eq "$PLAN_OUT" '["fact-mutation"]' "the plan PUBLISHES exactly the one dispatched step"
+  eq "$PLAN_OUT" '{"include":[{"step":"fact-mutation","shard":1,"shards":1}]}' "the plan PUBLISHES exactly the one dispatched step"
+  run_plan settings-fragment-mutation
+  eq "$(printf '%s' "$PLAN_OUT" | jq -c '[.include[] | .step] | unique')" '["settings-fragment-mutation"]' "a dispatch of a sharded step publishes only that step"
+  eq "$(printf '%s' "$PLAN_OUT" | jq -c '[.include[].shard] == [range(1; (.include[0].shards) + 1)]')" "true" \
+     "a dispatch of a sharded step publishes every one of its shards"
   run_plan no-such-mutation
   no "$PLAN_RC" "the plan step FAILS on an unregistered dispatch input rather than publishing a matrix"
   eq "$PLAN_OUT" "" "…and publishes nothing for it"
-  grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json --only "\$ONLY"\)" \|\| exit 1$' "$NIGHTLY" && ok \
-    || bad "the plan job does not validate a dispatched step through 'mutation-gate.sh steps --json --only' (with a failure exit)"
-  grep -qE '^[[:space:]]*steps="\$\(bash scripts/mutation-gate\.sh steps --json\)" \|\| exit 1$' "$NIGHTLY" && ok \
-    || bad "the plan job does not read the full matrix through 'mutation-gate.sh steps --json' (with a failure exit)"
+  grep -qE '^[[:space:]]*matrix="\$\(bash scripts/mutation-gate\.sh steps --matrix --shards "\$SHARDS" --only "\$ONLY"\)" \|\| exit 1$' "$NIGHTLY" && ok \
+    || bad "the plan job does not validate a dispatched step through 'mutation-gate.sh steps --matrix --only' (with a failure exit)"
+  grep -qE '^[[:space:]]*matrix="\$\(bash scripts/mutation-gate\.sh steps --matrix --shards "\$SHARDS"\)" \|\| exit 1$' "$NIGHTLY" && ok \
+    || bad "the plan job does not read the full matrix through 'mutation-gate.sh steps --matrix' (with a failure exit)"
   # The input reaches the shell through env, never interpolated into the script body.
   if grep -nE '^[[:space:]]*(run:|[a-z]).*\$\{\{ *(inputs|github\.event\.inputs)\.step' "$NIGHTLY" | grep -vE '^[0-9]+:[[:space:]]*ONLY:' | grep -q .; then
     bad "the dispatch input is interpolated outside the plan step's env (script injection)"

@@ -305,7 +305,19 @@ not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names 
 the required contexts are too.
 
 **Where they run instead: `mutation-nightly.yml`, three ways.** Its matrix is the registry, read by a
-plan job through `mutation-gate.sh steps --json`, so there is no list in that file to drift.
+plan job through `mutation-gate.sh steps --matrix`, so there is no list in that file to drift.
+
+**A harness too big for one job is sharded by row** (#532, D142). A hosted job may run at most 360
+minutes, and unsharded `settings-fragment-mutation` ranged 179-316 minutes. The plan step's
+`SHARDS` (`settings-fragment-mutation=3`) gives that harness K jobs, named
+`mutation-nightly (<step>, shard <k> of <K>)`; an unsharded harness keeps the plain
+`mutation-nightly (<step>)`. Job k sets `ADB_MUTATION_SHARD=<k>/<K>`, and `check_mutation_rows` then
+runs only the rows whose index modulo K is k-1, each still against the whole suite. Every shard
+validates the whole row table and runs its own unmutated control. A row outside the shard is
+counted in the summary line, never as a pass, and the K jobs together score every row exactly once.
+A dispatch of a sharded step runs all of its shards, and a shard that fails or is cancelled leaves
+the run without a success conclusion, as any harness does. Measured on run 40431642069, the three
+shards took 66, 77 and 110 minutes for 99, 98 and 98 rows.
 
 - **Scheduled**, daily, every harness against `main`, with `ADB_MUTATION_RUN_ALL=1` (nothing gated)
   and `ADB_MUTATION_FULL_SUITE=1` (a per-test-row harness, #468 / D103, scores every row against
