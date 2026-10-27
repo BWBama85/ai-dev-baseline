@@ -2015,10 +2015,15 @@ if check_block the-post-pull-path-asks-both-questions round-41-identity-when-the
 #
 # It exited 0 on any successful heal, so an update that also lost the protections was rendered as a
 # plain `updated` with the installer's own warning suppressed by the wrapper.
-awk '/^  behind\)/{f=1}
+# The post-move steps live in ONE function every forward move ends in (#534: a release checkout, a
+# main-channel re-attach, a fast-forward pull), so the question is asked there, and every move in the
+# `behind` arm must hand over to it.
+awk '/^_bl_after_move\(\) \{/{f=1}
      f && /adb_settings_downgraded_now/{print "ok"; exit}
      f && /baseline: update complete\./{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "the post-pull path must ask whether the protections were downgraded before it reports the update complete"
+[ "$(awk '/^  behind\)/{f=1} f && /^  ahead-of-release\)/{exit} f && /^ *_bl_after_move /{n++} END{print n+0}' "$ROOT/bin/baseline")" -eq 3 ] && ok \
+  || bad "every forward move in the behind arm (release checkout, re-attach, pull) must end in _bl_after_move"
 [ "$(grep -c 'adb_settings_downgraded_now' "$ROOT/bin/baseline")" -ge 3 ] && ok \
   || bad "...through the shared predicate both self-heal paths use, not a second copy of the question"
 fi
@@ -2133,7 +2138,7 @@ awk '/adb_self_heal && adb_verify_links/{f=1}
   || bad "the same-HEAD repair path must ask whether the policy came back refused BEFORE it reports \"repaired\""
 grep -qE '\[ "\$LINKS_OK" -eq 1 \] && exit 7' "$ROOT/bin/baseline" && \
   bad "the refusal must not be gated on LINKS_OK — a run that also repaired a link would report the repair and drop the refusal" || ok
-awk '/^  behind\)/{f=1} f && /adb_settings_refused_now/{print "ok"; exit} f && /^  dirty\)/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
+awk '/^_bl_after_move\(\) \{/{f=1} f && /adb_settings_refused_now/{print "ok"; exit} f && /^}/{exit}' "$ROOT/bin/baseline" | grep -q ok && ok \
   || bad "...and the post-pull path must ask before it reports the update complete"
 grep -qE '^\s*7\)' "$ROOT/scripts/lib/currency-lib.sh" && ok \
   || bad "currency-lib.sh must classify that code explicitly — falling through to the catch-all reports it as a failure it is not"

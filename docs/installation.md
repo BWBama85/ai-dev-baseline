@@ -720,9 +720,10 @@ fork's install follows the fork's releases.
   that origin has deleted and re-created elsewhere is refused (`tag-moved`), never followed. The
   release's commit must also be on `origin/<default>` (`release-off-branch` otherwise). Both exit
   `40`, and both automatic triggers report them in every mode.
-- **Nothing falls back to `main`.** When `gh` is missing or unauthenticated, the API fails, or a tag
-  name is not `vX.Y.Z`, the answer is `release-unresolvable` (`30`) and nothing changes; a
-  repository with no stable release at all is `no-release` (`30`).
+- **Nothing falls back to `main`.** When `gh` is missing or unauthenticated, the API fails or takes
+  longer than `ADB_RELEASE_TIMEOUT_SECS` (default 30), or a tag name is not `vX.Y.Z`, the answer is
+  `release-unresolvable` (`30`) and nothing changes; a repository with no stable release at all is
+  `no-release` (`30`).
 - **Release cadence is delivery cadence.** A fix merged to `main` reaches release-channel installs
   only when the next release is published. That is the point: the contract is no longer that
   `main` must always be fit to run, but that *a published release reaches every release-channel

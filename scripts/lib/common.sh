@@ -4456,14 +4456,15 @@ adb_origin_url_slug() {
 #   1  the repository has no published stable release; prints nothing
 #   2  unresolvable; prints a short fixed reason (no gh, gh failed, timed out, a malformed or
 #      possibly truncated answer, no or several releases marked latest, a tag failing the grammar)
-# The gh call is bounded by ADB_RELEASE_TIMEOUT_SECS (default 60). The list is read to a limit and
+# The gh call is bounded by ADB_RELEASE_TIMEOUT_SECS (default 30, inside the SessionStart hook's
+# own 60 s harness timeout). The list is read to a limit and
 # a full page is refused as possibly incomplete rather than read as the whole answer.
 # Usage: adb_latest_release_tag <owner/repo>
 adb_latest_release_tag() {
-  local repo="${1:-}" secs="${ADB_RELEASE_TIMEOUT_SECS:-60}" lim=1000 out rc count latest n
+  local repo="${1:-}" secs="${ADB_RELEASE_TIMEOUT_SECS:-30}" lim=1000 out rc count latest n
   adb_is_path_safe_repo_slug "$repo" || { printf 'invalid repository'; return 2; }
   command -v gh >/dev/null 2>&1 || { printf 'gh not found'; return 2; }
-  case "$secs" in ''|*[!0-9]*) secs=60 ;; *) [ "$secs" -gt 0 ] 2>/dev/null || secs=60 ;; esac
+  case "$secs" in ''|*[!0-9]*) secs=30 ;; *) [ "$secs" -gt 0 ] 2>/dev/null || secs=30 ;; esac
   out="$(adb_run_bounded "$secs" 5 gh release list -R "$repo" --exclude-drafts --exclude-pre-releases \
           --limit "$lim" --json tagName,isLatest \
           --jq '(length | tostring), (.[] | select(.isLatest == true) | .tagName)' 2>/dev/null)"; rc=$?

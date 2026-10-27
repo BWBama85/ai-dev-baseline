@@ -986,9 +986,11 @@ _bl_word_rc() {
 # --- the release channel's network half ------------------------------------------
 # Sets REL_REPO, REL_TAG (validated), REL_OBJ (the tag object origin serves) and REL_SHA (its
 # commit), or REL_WORD (+ REL_REASON, a fixed string) naming why not. Origin is fetched, then the
-# ONE tag explicitly into FETCH_HEAD: a plain fetch keeps a local tag that origin has moved and
-# still exits 0, so only the explicit fetch plus the object comparison can see it. Nothing is
-# forced, and no local tag is written here.
+# ONE tag explicitly into a ref private to this process: a plain fetch keeps a local tag that origin
+# has moved and still exits 0, so only the explicit fetch plus the object comparison can see it.
+# Not FETCH_HEAD: `--check` takes no lock, so a concurrent run could overwrite it between the fetch
+# and the read and hand this one another tag's object. The private ref is created (never forced,
+# since nothing else names it) and deleted again; no local tag is written here.
 _bl_release_resolve() {
   REL_REPO=""; REL_TAG=""; REL_OBJ=""; REL_SHA=""; REL_WORD=""; REL_REASON=""
   local out rc lobj
@@ -1002,11 +1004,16 @@ _bl_release_resolve() {
     1) REL_WORD=no-release; return 1 ;;
     *) REL_WORD=release-unresolvable; REL_REASON="$out"; return 1 ;;
   esac
+  local priv="refs/adb-release-fetch/$$-${RANDOM:-0}"
+  git -C "$SRC" update-ref -d "$priv" 2>/dev/null || true
   if ! git -C "$SRC" fetch --quiet origin 2>/dev/null \
-     || ! git -C "$SRC" fetch --quiet --no-tags origin "refs/tags/$REL_TAG" 2>/dev/null; then
+     || ! git -C "$SRC" fetch --quiet --no-tags origin "refs/tags/$REL_TAG:$priv" 2>/dev/null; then
+    git -C "$SRC" update-ref -d "$priv" 2>/dev/null || true
     REL_WORD=fetch-failed; return 1
   fi
-  if ! REL_OBJ="$(git -C "$SRC" rev-parse --verify --quiet FETCH_HEAD 2>/dev/null)"; then
+  REL_OBJ="$(git -C "$SRC" rev-parse --verify --quiet "$priv" 2>/dev/null)"; rc=$?
+  git -C "$SRC" update-ref -d "$priv" 2>/dev/null || true
+  if [ "$rc" -ne 0 ] || [ -z "$REL_OBJ" ]; then
     REL_WORD=release-unresolvable; REL_REASON="the fetched tag could not be read"; return 1
   fi
   lobj="$(git -C "$SRC" rev-parse --verify --quiet "refs/tags/$REL_TAG" 2>/dev/null || true)"
@@ -1107,7 +1114,7 @@ elif [ "$CHECK" -eq 1 ]; then
   case "$STATUS" in
     local-ok|detached)
       if _bl_release_resolve; then
-        STATUS="$(adb_release_sync_state "$SRC" "$DEFAULT" "$REL_SHA")" || STATUS="not-a-repo"
+        STATUS="$(adb_release_sync_state "$SRC" "$DEFAULT" "$REL_SHA")" || STATUS="release-unresolvable"
         _bl_say_versions
       else
         STATUS="$REL_WORD"

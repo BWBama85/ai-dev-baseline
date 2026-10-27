@@ -713,6 +713,7 @@ eq "$(rel_detached)" "detached" "release: behind → HEAD is detached at the rel
 has "$(cat "$work/rel.out")" "v1.0.0 → v1.1.0" "release: behind → stdout names the move"
 has "$(cat "$work/gh.log")" "--exclude-drafts" "release: the resolver excludes drafts"
 has "$(cat "$work/gh.log")" "--exclude-pre-releases" "release: the resolver excludes prereleases"
+eq "$(git -C "$relsrc" for-each-ref refs/adb-release-fetch | grep -c .)" "0" "release: the private tag-fetch ref is removed after use"
 
 # current: detached at the newest release.
 eq "${ rel_check; }" "current|0" "release: detached at v1.1.0 → current (0)"
