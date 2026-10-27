@@ -465,7 +465,8 @@ CU_DIGEST
   return 0
 }
 
-# _adb_cu_digest — reduce bin/baseline's merged output stream to three lines, in constant memory:
+# _adb_cu_digest — reduce bin/baseline's merged output stream to three lines, holding one line at a
+# time (so memory is bounded by the longest line, not by the stream):
 # its exit code (the `$_ADB_CU_RC` line this library appends), its `--check` status word (the one
 # line that is a single lowercase word), and the tag from its LAST versions line
 # (`baseline: installed … (channel release), newest vX.Y.Z`), which the caller validates. Nothing

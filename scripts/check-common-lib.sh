@@ -3436,11 +3436,12 @@ eq "${ lrt '[{"tagName":"v1.0.0","isLatest":false},{"tagName":"v1.1.0","isLatest
 eq "${ lrt '[{"tagName":"v0.9.0","isLatest":false},{"tagName":"v1.1.0","isLatest":true}]'; }" "0|v1.1.0" "latest release: a backfill listed first is not chosen"
 has "$(cat "$work/relgh.args")" "--exclude-drafts" "latest release: drafts are excluded in the query"
 has "$(cat "$work/relgh.args")" "--exclude-pre-releases" "latest release: prereleases are excluded in the query"
-has "$(cat "$work/relgh.args")" "-R acme/widget" "latest release: asks the named repository"
+has "$(cat "$work/relgh.args")" "-R github.com/acme/widget" "latest release: asks the named repository, host pinned (GH_HOST cannot redirect it)"
 eq "${ lrt '[]'; }" "1|" "latest release: no stable release → 1"
 eq "${ lrt '[{"tagName":"v1.0.0","isLatest":false}]'; }" "2|no release is marked latest" "latest release: none marked latest → 2"
 eq "${ lrt '[{"tagName":"v1.0.0","isLatest":true},{"tagName":"v1.1.0","isLatest":true}]'; }" "2|more than one release is marked latest" "latest release: two marked latest → 2"
 eq "${ lrt '[{"tagName":"v1.1.0;x","isLatest":true}]'; }" "2|the latest tag name failed validation" "latest release: a bad tag name → 2"
+eq "${ lrt '[{"tagName":"v1.1.0\n","isLatest":true}]'; }" "2|the latest tag name failed validation" "latest release: a tag name ending in a newline → 2 (never trimmed into a valid one)"
 eq "${ lrt 'not json'; }" "2|gh failed (exit 5)" "latest release: an answer jq cannot read → 2"
 full="$(jq -cn '[range(1000) | {tagName: "v1.0.\(.)", isLatest: (. == 0)}]')"
 eq "${ lrt "$full"; }" "2|the release list may be incomplete" "latest release: a full page is refused as possibly incomplete"
@@ -3495,6 +3496,9 @@ adb_git_is_ancestor "$nlb" HEAD 0000000000000000000000000000000000000001; eq "$?
 check_git "$lbr" -c tag.gpgsign=false tag -a v2 -m v2
 check_git "$lbr" commit -q --allow-empty -m d
 eq "$(adb_release_label "$lbr")" "v1.0.1+3 ($(git -C "$lbr" rev-parse --short HEAD))" "label: a nearer invalid tag (v2) is skipped"
+check_git "$lbr" -c tag.gpgsign=false tag -a v2.0.0junk -m junk
+check_git "$lbr" commit -q --allow-empty -m e
+eq "$(adb_release_label "$lbr")" "v1.0.1+4 ($(git -C "$lbr" rev-parse --short HEAD))" "label: a nearer version-shaped invalid tag (v2.0.0junk) is skipped"
 
 # --- --mutation: the manifest guards must be OBSERVED failing (#324) ----------------------------
 #

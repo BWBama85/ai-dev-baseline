@@ -714,6 +714,10 @@ has "$(cat "$work/rel.out")" "v1.0.0 → v1.1.0" "release: behind → stdout nam
 has "$(cat "$work/gh.log")" "--exclude-drafts" "release: the resolver excludes drafts"
 has "$(cat "$work/gh.log")" "--exclude-pre-releases" "release: the resolver excludes prereleases"
 eq "$(git -C "$relsrc" for-each-ref refs/adb-release-fetch | grep -c .)" "0" "release: the private tag-fetch ref is removed after use"
+# ...and one a killed run left behind (its process gone) is swept by the next run.
+git -C "$relsrc" update-ref refs/adb-release-fetch/999999-1 HEAD
+rel_check >/dev/null
+eq "$(git -C "$relsrc" for-each-ref refs/adb-release-fetch | grep -c .)" "0" "release: a dead run's private ref is swept"
 
 # current: detached at the newest release.
 eq "${ rel_check; }" "current|0" "release: detached at v1.1.0 → current (0)"
@@ -1097,11 +1101,12 @@ for _wt in untagged tagged; do
   wh="$work/rh-warn-$_wt"; mkdir -p "$wh"
   [ "$_wt" = tagged ] && check_git "$rsrc" -c tag.gpgsign=false tag -a v9.9.9 -m v9.9.9
   ( cd "$rsrc" && env -u ADB_UPDATE_CHANNEL HOME="$wh" CODEX_HOME="$wh/.codex" PATH="$rbin:$PATH" \
-      ./install.sh --agent claude --no-hooks ) >/dev/null 2>"$work/warn.err"
+      ./install.sh --agent claude --agent codex --no-hooks ) >/dev/null 2>"$work/warn.err"
   eq "$?" "0" "install.sh, release channel, $_wt clone → installs"
   if [ "$_wt" = untagged ]; then
     has "$(cat "$work/warn.err")" "not at a version tag" "install.sh, untagged clone → warns"
-    has "$(cat "$work/warn.err")" "./uninstall.sh" "install.sh, untagged clone → ...naming the safe way back to a release"
+    has "$(cat "$work/warn.err")" "./uninstall.sh --agent claude --agent codex" "install.sh, untagged clone → ...uninstalling the same agent set"
+    has "$(cat "$work/warn.err")" "./install.sh --agent claude --agent codex --no-hooks" "install.sh, untagged clone → ...and reinstalling with the same agents and preferences"
   else
     hasnt "$(cat "$work/warn.err")" "not at a version tag" "install.sh, clone at a version tag → no warning"
     git -C "$rsrc" tag -d v9.9.9 >/dev/null

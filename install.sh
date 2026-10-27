@@ -1610,15 +1610,26 @@ if [ "$(adb_update_channel 2>/dev/null)" = release ] && git -C "$REPO" rev-parse
   if ! adb_is_release_tag "$_adb_rel_label"; then
     _adb_rel_slug="$(adb_origin_url_slug "$REPO" 2>/dev/null)" || _adb_rel_slug="OWNER/REPO"
     _adb_rel_q="$(adb_display_value "$REPO")"
+    # The SAME agent set and preferences on both sides of the round trip: a bare reinstall would
+    # default to Claude and drop a hook or sandbox opt-out this run was given.
+    _adb_rel_agents=""; _adb_rel_flags=""
+    for _adb_a in "${AGENTS[@]}"; do _adb_rel_agents="$_adb_rel_agents --agent $(adb_display_value "$_adb_a")"; done
+    [ "$WIRE_HOOKS" -eq 0 ] && _adb_rel_flags="$_adb_rel_flags --no-hooks"
+    [ "$WIRE_SETTINGS" -eq 0 ] && _adb_rel_flags="$_adb_rel_flags --no-sandbox"
+    while IFS= read -r _adb_h; do
+      [ -n "$_adb_h" ] && _adb_rel_flags="$_adb_rel_flags --skip-hook $(adb_display_value "$_adb_h")"
+    done <<EOF
+$SKIP_HOOKS
+EOF
     printf '%s\n' \
       "install.sh: WARNING — this clone is at ${_adb_rel_label:-an unknown commit}, not at a version tag, and every" \
       "            project on this machine now runs it. 'baseline update' moves it forward to the newest" \
       "            stable release when that is newer, and holds it otherwise. To run the newest release now," \
       "            uninstall first (an older installer must not run over what this one wrote), then:" \
-      "              cd $_adb_rel_q && ./uninstall.sh   # with the same --agent flags you installed with" \
+      "              cd $_adb_rel_q && ./uninstall.sh$_adb_rel_agents" \
       "              git -C $_adb_rel_q fetch --tags origin" \
       "              git -C $_adb_rel_q checkout --detach \"\$(gh release view -R $_adb_rel_slug --json tagName --jq .tagName)\"" \
-      "              cd $_adb_rel_q && ./install.sh" \
+      "              cd $_adb_rel_q && ./install.sh$_adb_rel_agents$_adb_rel_flags" \
       "            To follow main deliberately, set [updates] channel = \"main\" in $(adb_display_value "$(adb_global_manifest)")." >&2
   fi
 fi

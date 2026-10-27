@@ -11180,22 +11180,24 @@ survive is the part a later reader needs.
                 nothing reachable from HEAD can be lost), the main channel's `ahead`/`diverged` for
                 unpushed work, `ahead-of-release` (the release an ancestor of HEAD, HEAD on origin's
                 history), else `detached` or `diverged`.
-             5. **Integrity before any move, exit 40.** origin's tag object is read with `ls-remote`,
-                the default branch and that object are fetched by origin's URL with `--no-tags` and
-                no destination for the tag, and the object is compared with the local tag: a plain
-                fetch keeps a tag origin moved and still exits 0 (executed on git 2.54), so only the
-                explicit comparison sees it (`tag-moved`). By URL, not by remote name, so a remote's
-                own `tagOpt = --tags` or forced tag refspec cannot overwrite the local tag first; and
-                FETCH_HEAD is never read, because `--check` takes no lock and a concurrent run could
-                overwrite it. The release commit must be an ancestor of `origin/<default>`
+             5. **Integrity before any move, exit 40.** The default branch and the release tag are
+                fetched by origin's URL with `--no-tags`, the tag into a ref private to the process
+                (created, read, deleted; a dead run's is swept), and the object read back from that
+                ref — what was fetched, not what was advertised — is compared with the local tag and
+                is the one checked out: a plain fetch keeps a tag origin moved and still exits 0
+                (executed on git 2.54), so only the explicit comparison sees it (`tag-moved`). By URL,
+                not by remote name, so a remote's own `tagOpt = --tags` or forced tag refspec cannot
+                overwrite the local tag first; and FETCH_HEAD is never read, because `--check` takes no
+                lock and a concurrent run could overwrite it. The gh lookup names
+                `github.com/<owner>/<repo>`, so `GH_HOST` cannot redirect it. The release commit must be an ancestor of `origin/<default>`
                 (`release-off-branch`), mirroring `release.sh`'s producer-side check; a git error in
                 that question is `release-unresolvable`, never an answer. Both integrity words are
                 reported by both triggers in both modes, as `refused`; no new outcome word.
              6. **`channel = "main"` is the pre-#534 behaviour, plus a safe re-attach** (owner
                 decision, gap BLOCKING #2): a detached clone whose HEAD and local `<default>` are both
                 on `origin/<default>`'s history has the local branch advanced first — compare-and-swap
-                against the exact value the classification validated — then checked out, so HEAD never
-                moves backward; a failed switch puts the branch back (or deletes the one it created).
+                against the exact value the classification validated, to the exact origin SHA the
+                ancestry was proved against — then checked out, so HEAD never moves backward; a failed switch puts the branch back (or deletes the one it created).
              7. **Fresh installs:** the docs clone the newest release, and `install.sh` warns, offline
                 and never refusing, when a release-channel clone is not at a version tag (offline it
                 cannot tell an unpublished tag from a release; the first `baseline update` can). Its

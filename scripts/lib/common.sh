@@ -4487,9 +4487,12 @@ adb_latest_release_tag() {
   adb_is_path_safe_repo_slug "$repo" || { printf 'invalid repository'; return 2; }
   command -v gh >/dev/null 2>&1 || { printf 'gh not found'; return 2; }
   case "$secs" in ''|*[!0-9]*) secs=30 ;; *) [ "$secs" -gt 0 ] 2>/dev/null || secs=30 ;; esac
-  out="$(adb_run_bounded "$secs" 5 gh release list -R "$repo" --exclude-drafts --exclude-pre-releases \
+  # `github.com/` IN THE REPOSITORY, so GH_HOST cannot point the lookup at another host. The tag
+  # names come back as JSON strings, one per line: a name carrying a newline cannot be cut short by
+  # the command substitution and then pass the grammar below.
+  out="$(adb_run_bounded "$secs" 5 gh release list -R "github.com/$repo" --exclude-drafts --exclude-pre-releases \
           --limit "$lim" --json tagName,isLatest \
-          --jq '(length | tostring), (.[] | select(.isLatest == true) | .tagName)' 2>/dev/null)"; rc=$?
+          --jq '(length | tostring), (.[] | select(.isLatest == true) | .tagName | tojson)' 2>/dev/null)"; rc=$?
   case "$rc" in
     0)   : ;;
     124) printf 'timed out'; return 2 ;;
@@ -4508,6 +4511,7 @@ adb_latest_release_tag() {
   [ "$n" -eq 1 ] || {
     [ "$n" -eq 0 ] && printf 'no release is marked latest' || printf 'more than one release is marked latest'
     return 2; }
+  case "$latest" in '"'*'"') latest="${latest#\"}"; latest="${latest%\"}" ;; *) latest="" ;; esac
   adb_is_release_tag "$latest" || { printf 'the latest tag name failed validation'; return 2; }
   printf '%s' "$latest"
 }
@@ -4527,13 +4531,14 @@ adb_release_label() {
   short="$(git -C "$root" rev-parse --short "$sha" 2>/dev/null)" || return 1
   t="$(_adb_release_tag_at "$root" "$sha")"
   [ -n "$t" ] && { printf '%s' "$t"; return 0; }
-  base="$(git -C "$root" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' \
-          --exclude '*.*.*.*' "$sha" 2>/dev/null)"
-  base="$(git -C "$root" rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)" \
-    && t="$(_adb_release_tag_at "$root" "$base")" && [ -n "$t" ] && {
+  # The highest-versioned RELEASE tag the commit contains (releases are cut in order on the default
+  # branch, so that is the nearest one); every candidate passes the grammar before it counts.
+  t="$(git -C "$root" tag --merged "$sha" --list 'v[0-9]*' --sort=-v:refname 2>/dev/null \
+        | while IFS= read -r _adb_rt; do adb_is_release_tag "$_adb_rt" && { printf '%s' "$_adb_rt"; break; }; done)"
+  if [ -n "$t" ] && base="$(git -C "$root" rev-parse --verify --quiet "$t^{commit}" 2>/dev/null)"; then
     n="$(git -C "$root" rev-list --count "$base..$sha" 2>/dev/null)"
     case "$n" in ''|*[!0-9]*) : ;; *) printf '%s+%s (%s)' "$t" "$n" "$short"; return 0 ;; esac
-  }
+  fi
   printf '%s' "$short"
 }
 

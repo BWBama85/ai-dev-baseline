@@ -749,10 +749,12 @@ advanced to `origin/<default>` first, then checked out). Switching back from `ma
 while ahead of the newest release holds the clone until the next release.
 
 **Going back to an older release by hand** is possible and deliberately not automated: an older
-installer re-run under hook entries and a sandbox receipt it may not know can orphan them. If you
+installer run over hook entries and a sandbox receipt it may not know can orphan them. If you
 must, first set `[updates] session_start = "notify"` (or `"off"`) so the automatic path does not
-move the clone forward again, then `git checkout --detach vX.Y.Z` in the clone and re-run
-`./install.sh`. The supported answer to a bad release is the next (patch) release.
+move the clone forward again, then **uninstall, check out, install** — `./uninstall.sh` with your
+`--agent` flags, `git checkout --detach vX.Y.Z` in the clone, and `./install.sh` with the same
+flags as before — so the older installer starts from a clean slate. The supported answer to a bad
+release is the next (patch) release.
 
 `baseline update` is deliberately conservative on both channels — currency is a convenience, never
 a cause of lost work:
@@ -760,9 +762,10 @@ a cause of lost work:
 - It moves the clone **only** when it is **clean and free of an in-progress git operation**, and
   either on its default branch or (release channel, or a release install on `main`) detached. A
   dirty / mid-rebase / non-default clone, or one with unpushed or diverged commits, is **surfaced and
-  left untouched** — you reconcile it by hand. Those refusals are decided from **local state before
-  any network**, so a run that will refuse costs no round trip; on the release channel the release
-  lookup and the fetch also happen only **after** the update lock is taken.
+  left untouched** — you reconcile it by hand. The dirty, mid-rebase and non-default refusals are
+  decided from **local state before any network**, so such a run costs no round trip; unpushed or
+  diverged work is seen after the fetch. On the release channel the release lookup and the fetch
+  for the clone happen only **after** the update lock is taken.
 - After a move it **always** re-runs the **idempotent** installer (a pulled commit
   may add a new skill or script that existing links don't cover, so "links resolve" does
   not imply "everything is linked"), preserving the exact agent set and hook preference
