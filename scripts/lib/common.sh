@@ -4420,16 +4420,20 @@ adb_is_release_tag() {
 # never echoed.
 adb_update_channel() {
   local c="${ADB_UPDATE_CHANNEL:-}" where="ADB_UPDATE_CHANNEL" raw rc mf
+  local re='^("(release|main)"|'"'"'(release|main)'"'"')[[:space:]]*(#.*)?$'
   if [ -z "$c" ]; then
     mf="$(adb_global_manifest)"
-    raw="$(adb_toml_get "$mf" updates channel 2>/dev/null)"; rc=$?
+    raw="$(adb_toml_get "$mf" updates channel --raw 2>/dev/null)"; rc=$?
     if [ "$rc" -ge 2 ]; then
       adb_toml_read_error "$mf" "$rc"
       printf 'baseline: following the release channel until that manifest is readable\n' >&2
       printf 'release\n'; return 0
     fi
     [ "$rc" -eq 0 ] || { printf 'release\n'; return 0; }
-    c="$(adb_toml_unquote "$raw")"; where="[updates] channel in $mf"
+    # The RAW scalar, checked against the whole grammar: a bare word, an unterminated quote or
+    # trailing junk is not a choice of `main`, however the lenient reader would repair it.
+    where="[updates] channel in $mf"; c="invalid"
+    if [[ $raw =~ $re ]]; then c="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"; fi
   fi
   case "$c" in
     release|main) printf '%s\n' "$c" ;;
@@ -4438,14 +4442,32 @@ adb_update_channel() {
   esac
 }
 
-# adb_origin_url_slug <root> — the `owner/repo` that <root>'s `origin` remote names, from the RAW
-# configured URL (before any `url.<base>.insteadOf` rewrite), case-folded. Non-zero when it names
-# no GitHub-shaped pair. A fork's install therefore follows the fork's releases.
+# adb_origin_url_slug <root> — the `owner/repo` that <root>'s `origin` remote names on github.com,
+# from the RAW configured URL (before any `url.<base>.insteadOf` rewrite), case-folded. Non-zero for
+# any other host — the releases of a same-named GitHub repository are not this clone's — and for a
+# URL naming no pair. A fork's install therefore follows the fork's releases.
 adb_origin_url_slug() {
-  local slug
-  slug="$(_adb_remote_url_slug "$(git -C "$1" config --get remote.origin.url 2>/dev/null)")" || return 1
+  local url host slug
+  url="$(git -C "$1" config --get remote.origin.url 2>/dev/null)" || return 1
+  case "$url" in
+    *://*) host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"; host="${host%%:*}" ;;
+    *:*)   host="${url%%:*}"; host="${host##*@}" ;;
+    *)     return 1 ;;
+  esac
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in github.com|ssh.github.com|www.github.com) ;; *) return 1 ;; esac
+  slug="$(_adb_remote_url_slug "$url")" || return 1
   adb_is_path_safe_repo_slug "$slug" || return 1
   printf '%s' "$slug"
+}
+
+# adb_git_is_ancestor <root> <a> <b> — 0 when <a> is an ancestor of (or equal to) <b>, 1 when it is
+# not, 2 when git could not answer (a missing object, a corrupt repository). `merge-base
+# --is-ancestor` documents 1 for "no" and other codes for errors, and folding those into "no" would
+# turn a broken repository into an ordinary classification.
+adb_git_is_ancestor() {
+  git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null
+  case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
 # adb_latest_release_tag <owner/repo> — the tag of the newest STABLE release: published, not a
@@ -4505,7 +4527,8 @@ adb_release_label() {
   short="$(git -C "$root" rev-parse --short "$sha" 2>/dev/null)" || return 1
   t="$(_adb_release_tag_at "$root" "$sha")"
   [ -n "$t" ] && { printf '%s' "$t"; return 0; }
-  base="$(git -C "$root" describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "$sha" 2>/dev/null)"
+  base="$(git -C "$root" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' \
+          --exclude '*.*.*.*' "$sha" 2>/dev/null)"
   base="$(git -C "$root" rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)" \
     && t="$(_adb_release_tag_at "$root" "$base")" && [ -n "$t" ] && {
     n="$(git -C "$root" rev-list --count "$base..$sha" 2>/dev/null)"
@@ -4527,18 +4550,25 @@ adb_release_label() {
 #   diverged          attached, and neither side contains the other
 # Returns 1 (printing nothing) on a git error.
 adb_release_sync_state() {
-  local root="$1" default="$2" rel="$3" head attached=1 origin="refs/remotes/origin/$2"
+  local root="$1" default="$2" rel="$3" head attached=1 origin="refs/remotes/origin/$2" r
   head="$(git -C "$root" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || return 1
   git -C "$root" symbolic-ref --quiet HEAD >/dev/null 2>&1 || attached=0
   git -C "$root" rev-parse --verify --quiet "$origin" >/dev/null 2>&1 || { printf 'no-remote\n'; return 0; }
   [ "$head" = "$rel" ] && { printf 'current\n'; return 0; }
-  git -C "$root" merge-base --is-ancestor "$head" "$rel" 2>/dev/null && { printf 'behind\n'; return 0; }
-  if [ "$attached" -eq 1 ] && ! git -C "$root" merge-base --is-ancestor "$head" "$origin" 2>/dev/null; then
-    adb_branch_sync_state "$root" "$default"; return $?
+  adb_git_is_ancestor "$root" "$head" "$rel"; r=$?
+  [ "$r" -eq 2 ] && return 1
+  [ "$r" -eq 0 ] && { printf 'behind\n'; return 0; }
+  if [ "$attached" -eq 1 ]; then
+    adb_git_is_ancestor "$root" "$head" "$origin"; r=$?
+    [ "$r" -eq 2 ] && return 1
+    [ "$r" -eq 1 ] && { adb_branch_sync_state "$root" "$default"; return $?; }
   fi
-  if git -C "$root" merge-base --is-ancestor "$rel" "$head" 2>/dev/null \
-     && git -C "$root" merge-base --is-ancestor "$head" "$origin" 2>/dev/null; then
-    printf 'ahead-of-release\n'; return 0
+  adb_git_is_ancestor "$root" "$rel" "$head"; r=$?
+  [ "$r" -eq 2 ] && return 1
+  if [ "$r" -eq 0 ]; then
+    adb_git_is_ancestor "$root" "$head" "$origin"; r=$?
+    [ "$r" -eq 2 ] && return 1
+    [ "$r" -eq 0 ] && { printf 'ahead-of-release\n'; return 0; }
   fi
   [ "$attached" -eq 1 ] && printf 'diverged\n' || printf 'detached\n'
 }
@@ -5289,13 +5319,17 @@ adb_occupant_class() {
 # `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
 # a value the operator never wrote. Reported by the declared reviewer on PR #429.
 # An EMPTY <table> names the top level — the keys before the first `[table]` header.
-# Usage: adb_toml_get <file> <table> <key>
+# `--raw` prints the right-hand side exactly as written (trailing whitespace stripped, nothing
+# repaired), for a caller that must validate a scalar's grammar itself: the default form re-closes an
+# unterminated quote and drops anything after the closing one.
+# Usage: adb_toml_get <file> <table> <key> [--raw]
 adb_toml_get() {
-  local file="$1" table="$2" key="$3"
+  local file="$1" table="$2" key="$3" raw=0
+  [ "${4:-}" = --raw ] && raw=1
   [ -f "$file" ] || return 1
   [ -r "$file" ] || return 2
   adb_nul_free "$file" || { [ "$?" -eq 1 ] && return 3; return 2; }
-  awk -v tbl="$table" -v key="$key" '
+  awk -v tbl="$table" -v key="$key" -v raw="$raw" '
     BEGIN { intbl = (tbl == "") }
     # A table header toggles whether we are inside the target table. The header name is
     # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
@@ -5332,6 +5366,7 @@ adb_toml_get() {
     intbl && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
       line = $0
       sub(/^[^=]*=[[:space:]]*/, "", line)   # strip "key =" and the space after it
+      if (raw == 1) { sub(/[[:space:]]*$/, "", line); printf "%s", line; found = 1; exit }
       if (substr(line, 1, 1) == "\"") {
         # Quoted scalar: walk to the closing quote, skipping backslash-escaped chars
         # (so \" does not close and # inside the string is not a comment). Reconstruct

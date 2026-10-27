@@ -2,9 +2,9 @@
 
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is by git tag. A **global**
-install is symlinks into a clone that follows the newest stable release (#534), so a
-published release reaches every global install at its next currency check, and a merge to
-`main` reaches nobody until it is released. A **release-pinned** project (#285) is reached
+install is symlinks into a clone that, on the default release channel, follows the newest
+stable release (#534): a published release reaches it at its next automatic currency check
+(or the next `baseline update`), and a merge to `main` reaches it only once released. A **release-pinned** project (#285) is reached
 only by a release it upgrades to. These entries are the notes for both.
 
 ## [Unreleased]
@@ -24,8 +24,9 @@ only by a release it upgrades to. These entries are the notes for both.
   global `agents.toml` (or `ADB_UPDATE_CHANNEL=main`); that channel behaves as before and re-attaches
   a clone the release channel left detached. Pinned `status` and `notice` use the same resolver, so a
   backfilled release no longer reads as the newest. `install.sh` warns when a release-channel clone
-  is not at a release tag, and the docs clone the newest release. Delivery now waits for a release:
-  a merge to `main` reaches no global install until it is released (D143).
+  is not at a version tag, and the docs clone the newest release. On the release channel, delivery
+  now waits for a release: a merge to `main` reaches no release-channel install until it is
+  released (D143).
 - **The nightly shards `settings-fragment-mutation` by row (#532).** Run unsharded, the full-suite
   harness took 179 to 316 minutes, and a hosted job may run for at most 360. The nightly now runs it as three
   jobs, `mutation-nightly (settings-fragment-mutation, shard <k> of 3)`. Each job scores its own

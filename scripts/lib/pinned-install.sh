@@ -83,8 +83,8 @@ PI_NS="adb"
 # The ONE statement of which shipped Claude hooks a pinned project does NOT get.
 # `adb_claude_hook_scripts` in common.sh remains the enumeration of the hook set; this is the
 # single exclusion on top of it, so a hook added there is vendored and wired here automatically
-# instead of being silently omitted. `session-currency.sh` fast-forwards the install-source clone,
-# and a pinned project has none.
+# instead of being silently omitted. `session-currency.sh` moves the install-source clone (to the
+# newest release, or along main), and a pinned project has none.
 PI_HOOKS_EXCLUDED="session-currency.sh"
 
 # Codex reads project AGENTS.md files only up to `project_doc_max_bytes`, a budget whose default is

@@ -985,17 +985,20 @@ _bl_word_rc() {
 
 # --- the release channel's network half ------------------------------------------
 # Sets REL_REPO, REL_TAG (validated), REL_OBJ (the tag object origin serves) and REL_SHA (its
-# commit), or REL_WORD (+ REL_REASON, a fixed string) naming why not. Origin is fetched, then the
-# ONE tag explicitly into a ref private to this process: a plain fetch keeps a local tag that origin
-# has moved and still exits 0, so only the explicit fetch plus the object comparison can see it.
-# Not FETCH_HEAD: `--check` takes no lock, so a concurrent run could overwrite it between the fetch
-# and the read and hand this one another tag's object. The private ref is created (never forced,
-# since nothing else names it) and deleted again; no local tag is written here.
+# commit), or REL_WORD (+ REL_REASON, a fixed string) naming why not.
+#
+# EVERY READ GOES TO origin's URL, NOT TO THE REMOTE NAME, so the remote's own configuration
+# (`tagOpt = --tags`, a forced `+refs/tags/*:refs/tags/*` fetch refspec) can neither overwrite the
+# local tag before it is compared nor turn a moved tag into a fetch failure. origin's tag object is
+# read with `ls-remote`, the default branch and that object are fetched with `--no-tags` and no
+# destination for the tag (no local ref is written, and FETCH_HEAD is never read), and the object
+# is then compared with the local tag: a plain fetch keeps a tag origin has moved and still exits
+# 0, so only this comparison can see it.
 _bl_release_resolve() {
   REL_REPO=""; REL_TAG=""; REL_OBJ=""; REL_SHA=""; REL_WORD=""; REL_REASON=""
-  local out rc lobj
+  local out rc lobj url
   if ! REL_REPO="$(adb_origin_url_slug "$SRC")"; then
-    REL_REPO="origin"; REL_WORD=release-unresolvable; REL_REASON="origin does not name a GitHub owner/repo"
+    REL_REPO="origin"; REL_WORD=release-unresolvable; REL_REASON="origin does not name a github.com owner/repo"
     return 1
   fi
   out="$(adb_latest_release_tag "$REL_REPO")"; rc=$?
@@ -1004,49 +1007,58 @@ _bl_release_resolve() {
     1) REL_WORD=no-release; return 1 ;;
     *) REL_WORD=release-unresolvable; REL_REASON="$out"; return 1 ;;
   esac
-  local priv="refs/adb-release-fetch/$$-${RANDOM:-0}"
-  git -C "$SRC" update-ref -d "$priv" 2>/dev/null || true
-  if ! git -C "$SRC" fetch --quiet origin 2>/dev/null \
-     || ! git -C "$SRC" fetch --quiet --no-tags origin "refs/tags/$REL_TAG:$priv" 2>/dev/null; then
-    git -C "$SRC" update-ref -d "$priv" 2>/dev/null || true
+  if ! url="$(git -C "$SRC" remote get-url origin 2>/dev/null)" || [ -z "$url" ]; then
+    REL_WORD=release-unresolvable; REL_REASON="origin has no URL"; return 1
+  fi
+  if ! out="$(git -C "$SRC" ls-remote --tags -- "$url" "refs/tags/$REL_TAG" 2>/dev/null)"; then
     REL_WORD=fetch-failed; return 1
   fi
-  REL_OBJ="$(git -C "$SRC" rev-parse --verify --quiet "$priv" 2>/dev/null)"; rc=$?
-  git -C "$SRC" update-ref -d "$priv" 2>/dev/null || true
-  if [ "$rc" -ne 0 ] || [ -z "$REL_OBJ" ]; then
-    REL_WORD=release-unresolvable; REL_REASON="the fetched tag could not be read"; return 1
+  REL_OBJ="$(printf '%s\n' "$out" | awk -v r="refs/tags/$REL_TAG" '$2 == r { print $1; exit }')"
+  case "$REL_OBJ" in
+    '') REL_WORD=release-unresolvable; REL_REASON="origin has no tag for the release"; return 1 ;;
+    *[!0-9a-f]*) REL_WORD=release-unresolvable; REL_REASON="origin answered an unreadable object id"; return 1 ;;
+  esac
+  if ! git -C "$SRC" fetch --quiet --no-tags -- "$url" \
+       "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT" "refs/tags/$REL_TAG" 2>/dev/null; then
+    REL_WORD=fetch-failed; return 1
+  fi
+  if ! git -C "$SRC" cat-file -e "$REL_OBJ" 2>/dev/null; then
+    REL_WORD=release-unresolvable; REL_REASON="origin's tag changed during the fetch"; return 1
   fi
   lobj="$(git -C "$SRC" rev-parse --verify --quiet "refs/tags/$REL_TAG" 2>/dev/null || true)"
   if [ -n "$lobj" ] && [ "$lobj" != "$REL_OBJ" ]; then REL_WORD=tag-moved; return 1; fi
   if ! REL_SHA="$(git -C "$SRC" rev-parse --verify --quiet "$REL_OBJ^{commit}" 2>/dev/null)"; then
     REL_WORD=release-unresolvable; REL_REASON="the tag does not name a commit"; return 1
   fi
-  if ! git -C "$SRC" rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT" >/dev/null 2>&1; then
-    REL_WORD=no-remote; return 1
-  fi
-  if ! git -C "$SRC" merge-base --is-ancestor "$REL_SHA" "refs/remotes/origin/$DEFAULT" 2>/dev/null; then
-    REL_WORD=release-off-branch; return 1
-  fi
-  return 0
+  adb_git_is_ancestor "$SRC" "$REL_SHA" "refs/remotes/origin/$DEFAULT"; rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) REL_WORD=release-off-branch; return 1 ;;
+    *) REL_WORD=release-unresolvable; REL_REASON="git could not compare the release with origin/$DEFAULT"; return 1 ;;
+  esac
 }
 
-# The release-channel stops, each with its exit code. Only the validated tag name and fixed
-# strings enter these lines; a release's name and body never do.
-_bl_release_stop() {
+# The release-channel stops: one stderr line each (`--check` prints it too), and their exit code.
+# Only the validated tag name and fixed strings enter these lines; a release's name and body never do.
+_bl_release_say() {
   case "$REL_WORD" in
     no-release)
-      echo "baseline: $REL_REPO has no published stable release — nothing to follow on the release channel." >&2; exit 30 ;;
+      echo "baseline: $REL_REPO has no published stable release — nothing to follow on the release channel." >&2 ;;
     release-unresolvable)
-      echo "baseline: could not resolve the newest release of $REL_REPO ($REL_REASON) — currency not verified; nothing changed." >&2; exit 30 ;;
+      echo "baseline: could not resolve the newest release of $REL_REPO ($REL_REASON) — currency not verified; nothing changed." >&2 ;;
     fetch-failed)
-      echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency; nothing changed." >&2; exit 30 ;;
+      echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency; nothing changed." >&2 ;;
     tag-moved)
-      echo "baseline: tag $REL_TAG in $SRC does not match origin's — refusing to move; a release tag must never move." >&2; exit 40 ;;
+      echo "baseline: tag $REL_TAG in $SRC does not match origin's — refusing to move; a release tag must never move." >&2 ;;
     release-off-branch)
-      echo "baseline: release $REL_TAG of $REL_REPO is not on origin/$DEFAULT — refusing to move to it; nothing changed." >&2; exit 40 ;;
+      echo "baseline: release $REL_TAG of $REL_REPO is not on origin/$DEFAULT — refusing to move to it; nothing changed." >&2 ;;
     *)
-      echo "baseline: origin/$DEFAULT is missing in $SRC — cannot determine currency; nothing changed." >&2; exit 30 ;;
+      echo "baseline: origin/$DEFAULT is missing in $SRC — cannot determine currency; nothing changed." >&2 ;;
   esac
+}
+_bl_release_stop() {
+  _bl_release_say
+  _bl_word_rc "$REL_WORD"; exit $?
 }
 
 # The release channel's one audit line, on stderr. Its shape is a contract: currency-lib.sh reads
@@ -1057,34 +1069,54 @@ _bl_say_versions() {
 
 # --- the main channel's detached case ---------------------------------------------
 # A clone left detached by the release channel is re-attached when that only moves forward: HEAD
-# and any local <default> both on origin/<default>'s history. Anything else keeps today's
-# refusal word. Needs a prior fetch.
-_bl_main_detached_state() {
-  local o="refs/remotes/origin/$DEFAULT"
-  git -C "$SRC" rev-parse --verify --quiet "$o" >/dev/null 2>&1 || { echo no-remote; return 0; }
-  git -C "$SRC" merge-base --is-ancestor HEAD "$o" 2>/dev/null || { echo detached; return 0; }
-  if git -C "$SRC" rev-parse --verify --quiet "refs/heads/$DEFAULT" >/dev/null 2>&1 \
-     && ! git -C "$SRC" merge-base --is-ancestor "refs/heads/$DEFAULT" "$o" 2>/dev/null; then
-    adb_branch_sync_state "$SRC" "$DEFAULT"; return 0
+# and any local <default> both on origin/<default>'s history. Sets STATUS (`behind` to re-attach,
+# else the refusal word) and MAIN_OLD, the local <default> SHA it validated (empty when there is no
+# such branch) — the exact value _bl_reattach then requires, so a branch that moves between the
+# two is never overwritten. Needs a prior fetch. Called directly, never in `$( )`, so the globals
+# survive.
+_bl_main_detached_classify() {
+  local o="refs/remotes/origin/$DEFAULT" r
+  MAIN_OLD=""
+  git -C "$SRC" rev-parse --verify --quiet "$o" >/dev/null 2>&1 || { STATUS=no-remote; return 0; }
+  adb_git_is_ancestor "$SRC" HEAD "$o"; r=$?
+  [ "$r" -eq 2 ] && { STATUS=""; return 0; }
+  [ "$r" -eq 1 ] && { STATUS=detached; return 0; }
+  MAIN_OLD="$(git -C "$SRC" rev-parse --verify --quiet "refs/heads/$DEFAULT" 2>/dev/null || true)"
+  if [ -n "$MAIN_OLD" ]; then
+    adb_git_is_ancestor "$SRC" "$MAIN_OLD" "$o"; r=$?
+    [ "$r" -eq 2 ] && { STATUS=""; return 0; }
+    [ "$r" -eq 1 ] && { STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"; return 0; }
   fi
-  echo behind
+  STATUS=behind
 }
 
-# Advance (or create) the local <default> to origin/<default> FIRST, with its old value checked,
-# then switch onto it. HEAD never moves backward, and a failed switch leaves HEAD detached where it
-# was. A <default> checked out in another worktree is never moved under it.
+# Advance (or create) the local <default> to origin/<default> FIRST — compare-and-swap against
+# MAIN_OLD, the value the classification validated — then switch onto it. HEAD never moves
+# backward. If the switch fails the branch is put back (or the branch this attempt created is
+# deleted), so a failure leaves both HEAD and the branch where they were. A <default> checked out in
+# another worktree is never moved under it.
 _bl_reattach() {
-  local new old
+  local new wt
   new="$(git -C "$SRC" rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT" 2>/dev/null)" || return 1
-  if git -C "$SRC" worktree list --porcelain 2>/dev/null | grep -qx "branch refs/heads/$DEFAULT"; then
+  if ! wt="$(git -C "$SRC" worktree list --porcelain 2>/dev/null)"; then
+    echo "baseline: could not list $SRC's worktrees — not re-attaching; nothing changed." >&2
+    return 1
+  fi
+  if printf '%s\n' "$wt" | grep -qxF "branch refs/heads/$DEFAULT"; then
     echo "baseline: $DEFAULT is checked out in another worktree — not re-attaching; nothing changed." >&2
     return 1
   fi
-  old="$(git -C "$SRC" rev-parse --verify --quiet "refs/heads/$DEFAULT" 2>/dev/null || true)"
-  git -C "$SRC" update-ref -m "baseline: re-attach $DEFAULT at origin/$DEFAULT" "refs/heads/$DEFAULT" "$new" "$old" 2>/dev/null \
+  git -C "$SRC" update-ref -m "baseline: re-attach $DEFAULT at origin/$DEFAULT" "refs/heads/$DEFAULT" "$new" "$MAIN_OLD" 2>/dev/null \
     || { echo "baseline: $DEFAULT moved while re-attaching — nothing changed." >&2; return 1; }
-  git -C "$SRC" checkout --quiet "$DEFAULT" \
-    || { echo "baseline: could not switch $SRC onto $DEFAULT — HEAD is unchanged." >&2; return 1; }
+  if ! git -C "$SRC" checkout --quiet "$DEFAULT"; then
+    if [ -n "$MAIN_OLD" ]; then
+      git -C "$SRC" update-ref -m "baseline: undo re-attach" "refs/heads/$DEFAULT" "$MAIN_OLD" "$new" 2>/dev/null
+    else
+      git -C "$SRC" update-ref -d "refs/heads/$DEFAULT" "$new" 2>/dev/null
+    fi || echo "baseline: could not put $DEFAULT back — it now points at origin/$DEFAULT." >&2
+    echo "baseline: could not switch $SRC onto $DEFAULT — HEAD is unchanged." >&2
+    return 1
+  fi
   git -C "$SRC" branch --quiet --set-upstream-to="origin/$DEFAULT" "$DEFAULT" >/dev/null 2>&1 || true
   return 0
 }
@@ -1108,7 +1140,7 @@ if [ "$CHANNEL" = main ]; then
         exit 30
       fi
       if [ "$STATUS" = local-ok ]; then STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"
-      else STATUS="$(_bl_main_detached_state)"; fi ;;
+      else _bl_main_detached_classify; fi ;;
   esac
 elif [ "$CHECK" -eq 1 ]; then
   case "$STATUS" in
@@ -1117,7 +1149,7 @@ elif [ "$CHECK" -eq 1 ]; then
         STATUS="$(adb_release_sync_state "$SRC" "$DEFAULT" "$REL_SHA")" || STATUS="release-unresolvable"
         _bl_say_versions
       else
-        STATUS="$REL_WORD"
+        STATUS="$REL_WORD"; _bl_release_say
       fi ;;
   esac
 fi
@@ -1138,13 +1170,17 @@ fi
 # this command must never be able to express one.
 #
 # AFTER `--check` returns, so that predicate stays exactly what it documents — one status word on
-# stdout, no changes, and no network it did not already need.
+# stdout, no changes, and no network it did not already need. It is the one lookup that runs before
+# the lock: it is about the PINNED PROJECT in the working directory, not this clone, it is silent
+# and offline everywhere else (exit 11 before any network), and a refused or locked-out update
+# must not cost that project its notice.
 bash "$REPO/scripts/lib/pinned-install.sh" notice --check-latest || true
 
 # --- serialize the mutating path ---------------------------------------------
 #
 # Taken AFTER the local classification (a read-only run needs no lock) and BEFORE any mutation —
-# and, on the release channel, before ANY network: a run that steps aside costs nothing. When
+# and, on the release channel, before any network for this clone: a run that steps aside costs
+# nothing (the pinned-project notice above is the one exception, and only in a pinned project). When
 # another update holds it, exit 5 rather than waiting: the caller is either a human who can
 # re-run, or the SessionStart hook, which must not stall a session behind a peer's update.
 #
@@ -1180,7 +1216,7 @@ STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
 REATTACH=0
 case "$CHANNEL:$STATUS" in
   main:local-ok) STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")" ;;
-  main:detached) STATUS="$(_bl_main_detached_state)"; REATTACH=1 ;;
+  main:detached) _bl_main_detached_classify; REATTACH=1 ;;
   release:local-ok|release:detached)
     _bl_release_resolve || _bl_release_stop
     _bl_say_versions
@@ -1195,7 +1231,8 @@ case "$STATUS" in
       # At the release commit but still on a branch (a main install a release caught up with):
       # detach in place. HEAD does not move, and a stray `git pull` can no longer leave the channel.
       if ! git -C "$SRC" rev-parse --verify --quiet "refs/tags/$REL_TAG" >/dev/null 2>&1; then
-        git -C "$SRC" update-ref "refs/tags/$REL_TAG" "$REL_OBJ" "" 2>/dev/null || true
+        git -C "$SRC" update-ref "refs/tags/$REL_TAG" "$REL_OBJ" "" 2>/dev/null \
+          || { echo "baseline: could not record tag $REL_TAG in $SRC — nothing changed." >&2; exit 20; }
       fi
       if git -C "$SRC" symbolic-ref --quiet HEAD >/dev/null 2>&1; then
         git -c advice.detachedHead=false -C "$SRC" checkout --quiet --detach \

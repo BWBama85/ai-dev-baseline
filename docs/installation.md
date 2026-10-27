@@ -160,9 +160,10 @@ sourced by `install.sh`) that is **idempotent**:
 - If it's a real file or directory, it's **backed up** first (see below),
   then replaced with the symlink.
 
-Because these are real symlinks (not copies), `git pull` inside
-`~/Code/ai-dev-baseline` immediately updates the practices, skills, and gates
-in **every** project on the machine — there is no per-repo sync step.
+Because these are real symlinks (not copies), whatever `~/Code/ai-dev-baseline` has checked
+out is what **every** project on the machine runs — so moving it to a new release (which
+`baseline update` does) updates the practices, skills, and gates everywhere at once, with no
+per-repo sync step.
 
 ### Global lifecycle hooks
 
@@ -824,10 +825,12 @@ worth reporting.
 | the last step of `/cleanup` | after every sweep | Claude · Codex · Gemini | #139 |
 
 **Why two.** The hook fires only on `startup`, and the documented loop is
-`/implement-issue → merge → /cleanup → /clear → /roadmap`, with `/clear` excluded by design. On the
-release channel the install goes stale when a **release is published**, not at a merge — and a
-release is cut by the same loop (`/release` ends with a merge too), so `/cleanup` is the boundary
-that follows it. It runs immediately before the `/clear` that the hook skips, and because it is
+`/implement-issue → merge → /cleanup → /clear → /roadmap`, with `/clear` excluded by design, so the
+loop itself never re-checked. On the release channel the install goes stale when a **release is
+published**, which happens at the end of `/release` (after its changelog PR merges and the tag is
+pushed), so a `/cleanup` run after that merge may still precede the publication — the next sweep or
+session start then catches it. On `main` it goes stale at every merge, which `/cleanup` follows
+directly. It runs immediately before the `/clear` that the hook skips, and because it is
 agent-neutral it is also the only currency Codex and Gemini get.
 
 The `SessionStart` hook is deliberately narrow about when it acts:
@@ -1008,8 +1011,8 @@ Four of those choices are decisions rather than layout, and each is load-bearing
   copies is rewritten to `$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.<agent>/adb/lib/`
   instead, so two projects pinned to different versions cannot reach into each other, and no
   absolute path is committed.
-- **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a
-  pinned project has none. `session-context.sh` **is**: it reads the project's own `.claude/state`.
+- **`session-currency.sh` is not vendored.** It moves the install-source clone (to the newest
+  release, or along `main`), and a pinned project has none. `session-context.sh` **is**: it reads the project's own `.claude/state`.
 
 Everything else the repository ships — `base/`, `bin/`, `docs/`, `templates/`, the `scripts/check-*`
 suites, the build — stays out. It is the framework's own development surface, not a runtime.

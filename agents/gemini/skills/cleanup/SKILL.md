@@ -24,8 +24,9 @@ branch or the state of a live run. Two kinds of debris and one currency check, o
   artifacts from a finished run. These accumulate unboundedly and are exactly the kind of dead
   state a sweep exists to remove.
 - **The installed baseline's currency** (step 7) — the install goes stale when a release is
-  published (#534), which is itself a merge `/cleanup` follows, and `/cleanup` runs right before
-  `/clear`, which is the step that cannot re-check. So this is where `baseline update` belongs (#139). It is housekeeping, never a gate: it can
+  published (#534), or at every merge on `[updates] channel = "main"`, and `/cleanup` runs right
+  before `/clear`, which is the step that cannot re-check. So this is where `baseline update`
+  belongs (#139). It is housekeeping, never a gate: it can
   never fail the sweep, and it says nothing when the install is already current.
 
 Argument selects branch scope: `local` (default), `remote`, or `all`. Run-state is swept in
@@ -1232,12 +1233,13 @@ REPORT_OUT="$({
 
 The sweep is done, so this is the last action of the run — and the right place for it. The
 installed baseline follows the newest stable **release** (#534), so it goes stale when a release is
-published, not at every merge — and a release is cut by a merge too (`/release` ships its changelog
-stamp as a PR), which `/cleanup` follows. It also sits **immediately before `/clear`**, the step
-that cannot re-check: currency's other trigger is a `SessionStart` hook matched on `startup` only,
-so the loop `merge → /cleanup → /clear → /roadmap` never re-checked before this existed. An install
-that follows `main` instead (`[updates] channel = "main"`) does go stale at every merge, which is
-the case this step was first written for (#139).
+published — at the end of `/release`, after its changelog PR has merged, so a sweep straight after
+that merge can still precede the publication and the next check catches it. An install that follows
+`main` instead (`[updates] channel = "main"`) goes stale at every merge, which `/cleanup` follows
+directly; that is the case this step was first written for (#139). Either way it sits **immediately
+before `/clear`**, the step that cannot re-check: currency's other trigger is a `SessionStart` hook
+matched on `startup` only, so the loop `merge → /cleanup → /clear → /roadmap` never re-checked before
+this existed.
 
 Every decision is `bash "$HOME/.gemini/scripts/lib/currency-lib.sh"`'s: the mode (`[updates] session_start` in the global
 `agents.toml`, or `ADB_SESSION_UPDATE`; `off` disables this too), the install-source, the

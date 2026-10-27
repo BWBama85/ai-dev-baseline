@@ -770,7 +770,13 @@ orig110="$(git -C "$relc2" rev-parse refs/tags/v1.1.0)"
 check_git "$relc2" tag -d v1.1.0 >/dev/null
 git -C "$relc2" push -q origin :refs/tags/v1.1.0
 rel_tag v1.1.0 "$V100"
+# ...even when the remote's own configuration would fetch tags, forced: the release channel reads
+# origin by URL, so neither tagOpt nor a forced tag refspec can overwrite the local tag first.
+git -C "$relsrc" config remote.origin.tagOpt --tags
+git -C "$relsrc" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
+local110="$(git -C "$relsrc" rev-parse refs/tags/v1.1.0)"
 eq "${ rel_check; }" "tag-moved|40" "release: origin moved v1.1.0 → tag-moved (40)"
+eq "$(git -C "$relsrc" rev-parse refs/tags/v1.1.0)" "$local110" "release: tag-moved → the local tag is not overwritten, whatever the remote config"
 eq "${ rel_update; }" "40" "release: tag-moved → update refuses (40)"
 eq "$(rel_head)" "$V110" "release: tag-moved → HEAD unchanged"
 has "$(rel_err)" "tag v1.1.0 in $relsrc does not match origin's — refusing to move; a release tag must never move." "release: tag-moved → the refusal names the tag"
@@ -783,6 +789,8 @@ for m in notify auto; do
   done
 done
 eq "$(rel_head)" "$V110" "release: tag-moved → no trigger moved HEAD"
+git -C "$relsrc" config --unset remote.origin.tagOpt
+git -C "$relsrc" config --unset remote.origin.fetch '\+refs/tags/\*:refs/tags/\*'
 check_git "$relc2" tag -d v1.1.0 >/dev/null
 git -C "$relc2" push -q origin :refs/tags/v1.1.0
 git -C "$relc2" push -q origin "$orig110:refs/tags/v1.1.0"
@@ -857,6 +865,22 @@ check_git "$relsrc" commit -q --allow-empty -m unpushed
 git -C "$relsrc" checkout -q --detach "$V110"
 eq "${ rel_check; }" "ahead|20" "main channel: detached, local main has unpushed commits → ahead (20)"
 eq "$(rel_head)" "$V110" "main channel: ...and HEAD unchanged"
+# ...and a switch that fails after the branch was advanced puts the branch back: HEAD and the
+# branch both end where they were.
+git -C "$relsrc" checkout -q -B main "$V100"
+git -C "$relsrc" checkout -q --detach "$V110"
+: > "$relgit/index.lock"
+eq "${ rel_update; }" "20" "main channel: a failed switch onto main → exit 20"
+eq "$(rel_head) $(rel_detached) $(git -C "$relsrc" rev-parse refs/heads/main)" "$V110 detached $V100" \
+  "main channel: a failed switch → HEAD still detached where it was, and main put back"
+rm -f "$relgit/index.lock"
+# A host other than github.com is never resolved against a same-named GitHub repository.
+rm -f "$relfh/.config/ai-dev-baseline/agents.toml"
+git -C "$relsrc" remote set-url origin "https://gitlab.com/acme/widget.git"
+eq "${ rel_check; }" "release-unresolvable|30" "release: an origin on another host → release-unresolvable"
+has "$(rel_err)" "origin does not name a github.com owner/repo" "release: ...naming why"
+eq "$(grep -c . "$work/gh.log")" "0" "release: ...without asking gh about another repository"
+git -C "$relsrc" remote set-url origin "$GHURL"
 rm -f "$relfh/.config/ai-dev-baseline/agents.toml"
 
 # =============== #539: a missing or occupied root doc, against the REAL installer ===============
@@ -1066,6 +1090,23 @@ out="$(cd "$rsrc" && renv "$h" ./uninstall.sh --agent claude 2>&1)"
 hasnt "$out" "installed from another clone" "legacy receipt, root doc missing → uninstall does not call it another clone's"
 [ ! -e "$(adb_claude_settings_receipt "$h")" ] && ok || bad "legacy receipt, root doc missing → the receipt is removed"
 jq -e '.sandbox == null' "$h/.claude/settings.json" >/dev/null && ok || bad "legacy receipt, root doc missing → the sandbox keys are removed"
+
+# The release channel's first-install warning (#534): on a clone not at a version tag the real
+# installer warns and still installs; at a version tag it is silent.
+for _wt in untagged tagged; do
+  wh="$work/rh-warn-$_wt"; mkdir -p "$wh"
+  [ "$_wt" = tagged ] && check_git "$rsrc" -c tag.gpgsign=false tag -a v9.9.9 -m v9.9.9
+  ( cd "$rsrc" && env -u ADB_UPDATE_CHANNEL HOME="$wh" CODEX_HOME="$wh/.codex" PATH="$rbin:$PATH" \
+      ./install.sh --agent claude --no-hooks ) >/dev/null 2>"$work/warn.err"
+  eq "$?" "0" "install.sh, release channel, $_wt clone → installs"
+  if [ "$_wt" = untagged ]; then
+    has "$(cat "$work/warn.err")" "not at a version tag" "install.sh, untagged clone → warns"
+    has "$(cat "$work/warn.err")" "./uninstall.sh" "install.sh, untagged clone → ...naming the safe way back to a release"
+  else
+    hasnt "$(cat "$work/warn.err")" "not at a version tag" "install.sh, clone at a version tag → no warning"
+    git -C "$rsrc" tag -d v9.9.9 >/dev/null
+  fi
+done
 
 # LAST, because it moves origin: a pulled commit that adds a skill links it AND re-links the root
 # doc on the behind path.

@@ -3394,9 +3394,26 @@ printf '[updates]\nchannel = "ma\000in"\n' > "$chmf"
 out="$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1)"
 has "$out" "release" "channel: a NUL-bearing manifest → release"
 has "$out" "NUL byte" "channel: ...naming why"
-rm -f "$chmf"; mkdir "$chmf"
-eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: an unreadable manifest → release"
-rmdir "$chmf"
+# Malformed scalars the lenient reader would repair into "main" are NOT a choice of main.
+for v in 'main' '"main' '"main" junk' "'main" '"mai"'; do
+  printf '[updates]\nchannel = %s\n' "$v" > "$chmf"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: malformed [$v] → release"
+  has "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1 >/dev/null)" 'is not "release" or "main"' "channel: malformed [$v] is diagnosed"
+done
+for v in "'main'" '"main"   # follow main' "\"main\"\t"; do
+  printf '[updates]\nchannel = %b\n' "$v" > "$chmf"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: well-formed [$v] → main"
+done
+# An UNREADABLE manifest (a file that exists and cannot be read) — not one that is absent.
+printf '[updates]\nchannel = "main"\n' > "$chmf"; chmod 000 "$chmf"
+if [ -r "$chmf" ]; then
+  ok   # running as root: an unreadable file cannot be made here, so the case is not reachable
+else
+  out="$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1 >/dev/null)"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: an unreadable manifest → release"
+  has "$out" "could not be read" "channel: ...naming why"
+fi
+chmod 600 "$chmf"; rm -f "$chmf"
 
 # adb_latest_release_tag through a stub gh that answers from a file, applying --jq with the real jq.
 relgh="$work/relgh"; mkdir -p "$relgh"
@@ -3459,8 +3476,25 @@ eq "$(adb_release_label "$nlb")" "$(git -C "$nlb" rev-parse --short HEAD)" "labe
 git -C "$nlb" remote add origin https://github.com/Acme/Widget.git
 git -C "$nlb" config url./nowhere.insteadOf https://github.com/
 eq "$(adb_origin_url_slug "$nlb")" "acme/widget" "origin slug: the configured URL, case-folded"
-git -C "$nlb" remote set-url origin /some/path
-adb_origin_url_slug "$nlb" >/dev/null && bad "origin slug: a path remote names no repository" || ok
+for u in git@github.com:Acme/Widget.git ssh://git@github.com/acme/widget https://user@github.com:443/acme/widget/; do
+  git -C "$nlb" remote set-url origin "$u"
+  eq "$(adb_origin_url_slug "$nlb")" "acme/widget" "origin slug: $u"
+done
+for u in /some/path https://gitlab.com/acme/widget.git git@gitlab.com:acme/widget.git https://github.com.evil.example/acme/widget; do
+  git -C "$nlb" remote set-url origin "$u"
+  adb_origin_url_slug "$nlb" >/dev/null && bad "origin slug: $u must name no GitHub repository" || ok
+done
+
+# adb_git_is_ancestor keeps git's error apart from "no".
+check_git "$nlb" commit -q --allow-empty -m b2
+adb_git_is_ancestor "$nlb" HEAD~1 HEAD; eq "$?" "0" "is-ancestor: yes → 0"
+adb_git_is_ancestor "$nlb" HEAD HEAD~1; eq "$?" "1" "is-ancestor: no → 1"
+adb_git_is_ancestor "$nlb" HEAD 0000000000000000000000000000000000000001; eq "$?" "2" "is-ancestor: a missing object → 2, never 'no'"
+
+# A nearer tag that is not a release tag never hides an older one that is.
+check_git "$lbr" -c tag.gpgsign=false tag -a v2 -m v2
+check_git "$lbr" commit -q --allow-empty -m d
+eq "$(adb_release_label "$lbr")" "v1.0.1+3 ($(git -C "$lbr" rev-parse --short HEAD))" "label: a nearer invalid tag (v2) is skipped"
 
 # --- --mutation: the manifest guards must be OBSERVED failing (#324) ----------------------------
 #

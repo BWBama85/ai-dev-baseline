@@ -1244,7 +1244,8 @@ fact session-start-config "fixed:session_start" -- \
 # in one place leaves the others describing a knob that silently does nothing.
 fact update-channel 'regex:channel = \\?"(release|main)' -- \
   templates/agents.toml scripts/lib/currency-lib.sh docs/installation.md
-fact update-channel 'fixed:updates channel' -- scripts/lib/common.sh
+# The reader's EXECUTABLE line, not a phrase its comments could also carry.
+fact update-channel 'fixed:adb_toml_get "$mf" updates channel --raw' -- scripts/lib/common.sh
 # The contract #534 retired: a global install no longer runs whatever `main` says, so neither
 # "keep `main` releasable" nor "`git pull` reaches every project" may come back into the files
 # that stated it. D143 keeps the history.
@@ -1255,6 +1256,16 @@ fact retired-main-delivery 'absent:git pull.{0,60}(reaches|updates) every projec
   'fires:- `git pull` in the cloned repo updates every project at once' \
   'fires:# mean `git pull` in this repo updates every project at once. Existing files are' -- \
   docs/installation.md README.md docs/philosophy.md install.sh CONTRIBUTING.md CHANGELOG.md
+# The same claim as it was wrapped across two lines, and the updater described as a fast-forward of
+# the clone. CHANGELOG.md is not scanned for the second: its released entries are history.
+fact retired-main-delivery 'absent:immediately updates the practices' \
+  'fires:`~/Code/ai-dev-baseline` immediately updates the practices, skills, and gates' -- \
+  docs/installation.md README.md docs/philosophy.md CONTRIBUTING.md
+fact retired-main-delivery 'absent:fast-forwards? the install-source clone' \
+  'fires:- **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a' \
+  'fires:baseline update            # fast-forward the install-source clone + self-heal links' -- \
+  docs/installation.md README.md bin/baseline scripts/lib/pinned-install.sh templates/agents.toml \
+  agents/claude/scripts/session-currency.sh
 # The event this hook binds to. The settings entry, the script's own source gate, and the docs
 # must name the SAME trigger: a matcher the script did not also enforce would let a `/clear` or
 # a `compact` swap tooling mid-session.

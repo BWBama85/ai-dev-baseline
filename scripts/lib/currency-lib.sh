@@ -318,20 +318,21 @@ cmd_check() {
   #    resolves to `offline`, and the two callers then differ exactly as they do everywhere else:
   #    the unattended hook suppresses `offline` (never nag about a missing network at every session
   #    start), `/cleanup` prints it (the operator just asked).
-  local status rc channel errf newest
+  local status rc channel newest digest
   # The channel decides the WORDING only — `baseline` decides what to do. On the release channel a
   # message names versions (validated tag names, never commit counts); on `main` it is unchanged.
   channel="$(adb_update_channel 2>/dev/null)"
-  # bin/baseline's stderr is kept (in a private file) only to read its one versions line.
-  errf="$(mktemp "${TMPDIR:-/tmp}/adb-currency.XXXXXX" 2>/dev/null)" || errf=/dev/null
   if [ "$mode" = notify ]; then
     # CAPTURE, then slice. Piping straight into `head` would report only HEAD's status, so a
     # backstop firing (124) or a crashed `baseline` would arrive as an empty answer and be
     # classified `silent` — a failure reported as "you are current".
-    status="$(adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
-                "$src/bin/baseline" update --check 2>"$errf")"; rc=$?
-    status="${status%%$'\n'*}"   # first line, no fork
-    newest="$(_adb_cu_newest "$errf")"; _adb_cu_rm "$errf"
+    digest="$( { adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
+                   "$src/bin/baseline" update --check 2>&1; printf '\n%s%s\n' "$_ADB_CU_RC" "$?"; } | _adb_cu_digest)"
+    { read -r rc; read -r status; read -r newest; } <<CU_DIGEST
+$digest
+CU_DIGEST
+    case "$rc" in ''|*[!0-9]*) rc=1 ;; esac
+    adb_is_release_tag "$newest" || newest=""
     # Branch on the EXIT CODE, which is `--check`'s documented contract — 0 current · 10 behind ·
     # 20 needs attention (a deliberate clone state) · 30 error (fetch-failed / no-remote /
     # not-a-repo) — rather than on the prose word. The auto path below already reads rc for the
@@ -358,10 +359,13 @@ cmd_check() {
   local before_label=""
   before="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || true)"
   [ "$channel" = release ] && before_label="$(adb_release_label "$src" HEAD 2>/dev/null)"
-  adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
-    "$src/bin/baseline" update >/dev/null 2>"$errf"
-  rc=$?
-  newest="$(_adb_cu_newest "$errf")"; _adb_cu_rm "$errf"
+  digest="$( { adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
+                 "$src/bin/baseline" update 2>&1 >/dev/null; printf '\n%s%s\n' "$_ADB_CU_RC" "$?"; } | _adb_cu_digest)"
+  { read -r rc; read -r status; read -r newest; } <<CU_DIGEST
+$digest
+CU_DIGEST
+  case "$rc" in ''|*[!0-9]*) rc=1 ;; esac
+  adb_is_release_tag "$newest" || newest=""
   after="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || true)"
 
   case "$rc" in
@@ -461,18 +465,20 @@ cmd_check() {
   return 0
 }
 
-# The newest release named in bin/baseline's one versions line (`… (channel release), newest vX.Y.Z`),
-# validated, or nothing. A line that does not parse only costs the message its version.
-_adb_cu_newest() {
-  local line t=""
-  [ -f "$1" ] || return 0
-  while IFS= read -r line; do
-    case "$line" in 'baseline: installed '*' (channel release), newest '*) t="${line##*, newest }" ;; esac
-  done < "$1"
-  adb_is_release_tag "$t" && printf '%s' "$t"
-  return 0
+# _adb_cu_digest — reduce bin/baseline's merged output stream to three lines, in constant memory:
+# its exit code (the `$_ADB_CU_RC` line this library appends), its `--check` status word (the one
+# line that is a single lowercase word), and the tag from its LAST versions line
+# (`baseline: installed … (channel release), newest vX.Y.Z`), which the caller validates. Nothing
+# is staged on disk, so a cancelled run leaves nothing behind, and the installer's output, however
+# long, is read and dropped line by line.
+_ADB_CU_RC="adb-currency-rc:"
+_adb_cu_digest() {
+  awk -v mark="$_ADB_CU_RC" '
+    index($0, mark) == 1 { rc = substr($0, length(mark) + 1); next }
+    word == "" && $0 ~ /^[a-z][a-z-]*$/ { word = $0; next }
+    /^baseline: installed .* \(channel release\), newest / { n = $0; sub(/^.*, newest /, "", n); newest = n }
+    END { print rc; print word; print newest }'
 }
-_adb_cu_rm() { [ "$1" = /dev/null ] || rm -f "$1"; }
 
 # An integrity refusal (bin/baseline exit 40) is reported by BOTH triggers in BOTH modes: a release
 # tag that moved, or a release off the default branch, is never `offline` and never silence.
