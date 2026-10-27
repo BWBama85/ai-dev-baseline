@@ -62,8 +62,9 @@
 #       "shards":K},…]}`, one entry per shard k = 1..K of each step, in registry order. A step with
 #       no `--shards` entry is one shard of one. `mutation-nightly.yml`'s plan publishes this, and
 #       each job hands `<k>/<K>` to its harness as `ADB_MUTATION_SHARD`. Refuses (2) an entry that
-#       is not `<step>=<count>`, a step that is not a registered `*-mutation` step, a step named
-#       twice, and a count outside 1..64 — checked against the whole registry even under `--only`.
+#       is not `<step>=<count>`, an empty entry, a step that is not a registered `*-mutation` step,
+#       a step named twice, a count outside 1..256, and a matrix of more than 256 jobs, GitHub's
+#       per-matrix limit — the entries checked against the whole registry even under `--only`.
 #   mutation-gate.sh touched [--base <ref>]
 #       Which harnesses does this change give something new to say (#456)? Asks the same decision
 #       `run` asks, for every `*-mutation` step, and prints each step that would RUN, one per line on
@@ -104,6 +105,8 @@ adb_require_bash "$@"
 set -uo pipefail
 
 ME="${0##*/}"
+# GitHub runs at most this many jobs from one matrix in a workflow run (docs.github.com/en/actions/reference/limits).
+MATRIX_MAX=256
 # The sibling entry points' shape — cd first, then read pwd — never a single self-locating capture
 # that ends in pwd: that form strips a trailing newline from the clone's path and resolves a
 # differently-named tree (D82), and `check-bootstrap.sh`'s open-world scan refuses it in any
@@ -455,6 +458,12 @@ case "$sub" in
     # narrowed it, so a dispatch of one step still refuses a typo in another step's entry.
     declare -A shard_of=()
     if [ -n "$shards_set" ]; then
+      # THE WHOLE ARGUMENT, before it is split: `read -a` stops at a newline and drops a trailing
+      # empty field, so an entry after a newline or a stray comma would otherwise go unread.
+      case "$shards" in
+        *[!A-Za-z0-9_=,-]*|,*|*,|*,,*)
+          printf '%s: steps: the shard list must be <step>=<count>[,<step>=<count>...] with no empty entry, got %q\n' "$ME" "$shards" >&2; exit 2 ;;
+      esac
       IFS=',' read -r -a specs <<< "$shards"
       for spec in "${specs[@]}"; do
         sname="${spec%%=*}" scount="${spec#*=}"
@@ -468,13 +477,22 @@ case "$sub" in
         fi
         [ -z "${shard_of[$sname]:-}" ] || {
           printf '%s: steps: %s is given a shard count twice\n' "$ME" "$sname" >&2; exit 2; }
-        # 1..64: a positive decimal small enough that K jobs of one step stay far inside GitHub's
-        # 256-job matrix limit. A leading zero is refused rather than read, as is anything else.
-        case "$scount" in [1-9]|[1-5][0-9]|6[0-4]) : ;; *)
-          printf '%s: steps: the shard count for %s must be an integer from 1 to 64, got %s\n' "$ME" "$sname" "${scount:-(empty)}" >&2; exit 2 ;;
-        esac
+        # A positive decimal with no leading zero, up to 256: GitHub's limit on the jobs one matrix
+        # may generate in a run, checked again below for the whole matrix.
+        case "$scount" in [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) : ;; *) scount=0 ;; esac
+        if [ "$scount" -lt 1 ] || [ "$scount" -gt "$MATRIX_MAX" ]; then
+          printf '%s: steps: the shard count for %s must be an integer from 1 to %d, got %s\n' "$ME" "$sname" "$MATRIX_MAX" "${spec#*=}" >&2; exit 2
+        fi
         shard_of[$sname]="$scount"
       done
+    fi
+    # THE MATRIX AS EMITTED must fit GitHub's limit, or the workflow fails to start the jobs at all.
+    if [ "$fmt" = matrix ]; then
+      total=0
+      for nm in "${names[@]}"; do total=$(( total + ${shard_of[$nm]:-1} )); done
+      if [ "$total" -gt "$MATRIX_MAX" ]; then
+        printf '%s: steps: the matrix would carry %d jobs, and GitHub runs at most %d per matrix\n' "$ME" "$total" "$MATRIX_MAX" >&2; exit 2
+      fi
     fi
     # Every name matched ^[A-Za-z0-9_-]*-mutation$ in the registry read, so none needs JSON escaping.
     case "$fmt" in

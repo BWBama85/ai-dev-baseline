@@ -29,7 +29,8 @@ name: Mutation nightly
 # count K; the matrix then carries K jobs for it, and job k hands `k/K` to the harness as
 # `ADB_MUTATION_SHARD`. Each job scores its own rows against the WHOLE suite, so the daily
 # whole-suite answer is unchanged, and the K jobs partition the table: every row is scored by
-# exactly one of them. A shard that fails or is cancelled fails the run, as any harness does.
+# exactly one of them. A shard that fails or is cancelled leaves the run without a success
+# conclusion, as any harness does, and that conclusion is what every PR's summary reports.
 #
 # WHO SEES A RED RUN: GitHub sends scheduled-workflow failure notifications to the user who last
 # modified the cron line below, PROVIDED that user has Actions notifications enabled — a setting

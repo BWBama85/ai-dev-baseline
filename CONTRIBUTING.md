@@ -158,7 +158,8 @@ row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a sui
 together score every row once. A row outside the shard is counted but never scored as a pass, and a
 malformed value, k above K, or K above the row count is refused before anything is built. The
 nightly gives a harness too big for one job K shards through its plan step's `SHARDS`; a dispatch
-of that step runs every shard.
+of that step runs every shard. Only `check_mutation_rows` reads the selector: a whole-suite pool in
+the same harness runs in full in every shard, which costs time but loses no row.
 
 **Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each
 block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a

@@ -224,9 +224,17 @@ if [ "$MODE" = mutation ]; then
     'true || {' \
     'a step named twice is named'
   shmutant_mut shards-count-unbounded \
-    'case "$scount" in [1-9]|[1-5][0-9]|6[0-4]) : ;; *)' \
-    'case "$scount" in *) : ;; x)' \
+    'if [ "$scount" -lt 1 ] || [ "$scount" -gt "$MATRIX_MAX" ]; then' \
+    'if false; then' \
     'a count out of range is named'
+  shmutant_mut shards-list-split-unread \
+    '*[!A-Za-z0-9_=,-]*|,*|*,|*,,*)' \
+    '__never__)' \
+    'not one comma-separated line is named'
+  shmutant_mut matrix-limit-unchecked \
+    'if [ "$total" -gt "$MATRIX_MAX" ]; then' \
+    'if false; then' \
+    'a matrix of 257 jobs is refused (2)'
   shmutant_mut shards-outside-matrix \
     '[ -z "$shards_set" ] || [ "$fmt" = matrix ] || usage' \
     ': || usage' \
@@ -813,16 +821,31 @@ eq "$(printf '%s' "$OUT" | jq -c '[.include | group_by(.step)[] | select(([.[].s
    "steps --matrix: every step's shards are exactly 1..K with one K — each row has exactly one job"
 eq "$(printf '%s' "$OUT" | jq -c '[.include[] | select(.step == "gated-mutation" or .step == "rows-mutation") | .shards] | unique')" '[2,5]' \
    "steps --matrix --shards: each step takes its own count"
-for _bad in no-such-mutation=2 bare=2 gated-mutation=0 gated-mutation=65 gated-mutation=03 gated-mutation=x gated-mutation= gated-mutation =2 \
-            gated-mutation=2,gated-mutation=3 gated-mutation=2,,rows-mutation=2; do
+for _bad in no-such-mutation=2 bare=2 gated-mutation=0 gated-mutation=257 gated-mutation=03 gated-mutation=x gated-mutation= gated-mutation =2 \
+            gated-mutation=2,gated-mutation=3 gated-mutation=2,,rows-mutation=2 'gated-mutation=2,' ',gated-mutation=2' \
+            $'\ngated-mutation=2' $'gated-mutation=2\nno-such-mutation=2'; do
   gate "$R" steps --matrix --shards "$_bad"
   eq "$RC_" "2" "steps --matrix --shards '$_bad': refused (2)"
   eq "$(printf '%s' "$OUT" | grep -c '"include"')" "0" "steps --matrix --shards '$_bad': …and no matrix is printed"
 done
 gate "$R" steps --matrix --shards gated-mutation=2,gated-mutation=3
 has "$OUT" "given a shard count twice" "steps --matrix --shards: a step named twice is named"
-gate "$R" steps --matrix --shards gated-mutation=65
-has "$OUT" "must be an integer from 1 to 64" "steps --matrix --shards: a count out of range is named"
+gate "$R" steps --matrix --shards gated-mutation=257
+has "$OUT" "must be an integer from 1 to 256" "steps --matrix --shards: a count out of range is named"
+# THE WHOLE ARGUMENT is read: an entry after a newline or a stray comma is refused, never dropped.
+gate "$R" steps --matrix --shards $'gated-mutation=2\nno-such-mutation=2'
+has "$OUT" "no empty entry" "steps --matrix --shards: a list that is not one comma-separated line is named"
+# GitHub runs at most 256 jobs from one matrix: the fixture's other harnesses take one job each, so
+# gated-mutation at 256 minus their count fits exactly, and one more job is refused.
+_others=$(( $(cd "$R" && bash scripts/mutation-gate.sh steps --lines | wc -l) - 1 ))
+gate "$R" steps --matrix --shards "gated-mutation=$(( 256 - _others ))"
+eq "$RC_" "0" "steps --matrix: a matrix of exactly 256 jobs is accepted"
+eq "$(printf '%s' "$OUT" | jq '.include | length')" "256" "…and carries 256 entries"
+gate "$R" steps --matrix --shards "gated-mutation=$(( 257 - _others ))"
+eq "$RC_" "2" "steps --matrix: a matrix of 257 jobs is refused (2)"
+has "$OUT" "GitHub runs at most 256" "…and says why"
+gate "$R" steps --matrix --only gated-mutation --shards gated-mutation=256
+eq "$RC_" "0" "steps --matrix: the limit is counted on the matrix as emitted, after --only"
 gate "$R" steps --matrix --only rows-mutation --shards no-such-mutation=2
 eq "$RC_" "2" "steps --matrix --shards: a typo is refused even when --only selects another step"
 gate "$R" steps --json --shards gated-mutation=2
@@ -1162,7 +1185,7 @@ if [ -f "$NIGHTLY" ]; then
   eq "$(printf '%s' "$PLAN_OUT" | jq -r '[.include[].step] | unique | .[]' | LC_ALL=C sort | tr '\n' ' ')" \
      "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" "the published matrix carries every registered harness"
   # THE HARNESS THAT OUTGREW ONE JOB (#532) is split: a plan that dropped its entry would put the
-  # whole table back in one job, which the 360-minute hosted maximum has already been seen to cancel.
+  # whole table back in one job, which took up to 316 of the 360 minutes a hosted job may run.
   eq "$(printf '%s' "$PLAN_OUT" | jq '[.include[] | select(.step == "settings-fragment-mutation") | .shard] | length > 1')" "true" \
      "the published matrix splits settings-fragment-mutation into more than one shard"
   run_plan fact-mutation

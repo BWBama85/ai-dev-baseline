@@ -11104,8 +11104,8 @@ survive is the part a later reader needs.
              #587), against 360 minutes, GitHub's maximum for a hosted job. Two earlier runs were
              cancelled at the 240-minute bound that preceded it. A harness that outgrows the bound
              never returns a verdict, and D126 depends on the nightly returning one.
-- decision:  SHARD BY ROW (owner decision 2026-10-26, option 1 of three, with 3 shards and the
-             figure measured on the PR). `check_mutation_rows` reads `ADB_MUTATION_SHARD=<k>/<K>`
+- decision:  SHARD BY ROW (owner decision 2026-10-26: option 1 of three, 3 shards, and the
+             headroom figure to be measured by a dispatch on the PR). `check_mutation_rows` reads `ADB_MUTATION_SHARD=<k>/<K>`
              and runs only the rows whose 0-based index modulo K is k-1. In full-suite mode each
              row costs about one suite run, so shard sizes that differ by at most one row are
              balanced shards, and round-robin needs no range arithmetic to get them.
@@ -11129,8 +11129,8 @@ survive is the part a later reader needs.
              rows that hang together (rows cluster by the code they mutate) would all land on one
              shard, each costing the full row deadline. An aggregate job that re-checks coverage: the
              partition is total by construction, `check-block-rows.sh` and
-             `check-mutation-gate.sh` prove it, and a failed or cancelled shard already fails the
-             run that `mutation-nightly-status.sh` reads.
+             `check-mutation-gate.sh` prove it, and a failed or cancelled shard already denies the
+             run the success conclusion that `mutation-nightly-status.sh` reports.
 - placement: `scripts/check-lib.sh`, `scripts/mutation-gate.sh`, `.github/workflows/mutation-nightly.yml`,
              `scripts/check-block-rows.sh`, `scripts/check-mutation-gate.sh`, `docs/ci-runners.md`,
              `CONTRIBUTING.md`, `CLAUDE.md`, `base/workflows/implement-issue.md`
