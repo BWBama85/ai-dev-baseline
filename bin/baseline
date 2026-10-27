@@ -7,7 +7,8 @@
 # command replaces that ritual with one idempotent entrypoint.
 #
 # Usage:
-#   baseline update            # fast-forward the install-source clone + self-heal links
+#   baseline update            # move the install-source clone to the newest stable release
+#                              #   (or fast-forward main, on channel = "main") + self-heal links
 #   baseline update --check    # report currency only; make NO changes (for a hook)
 #   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
 #                              #   run 'baseline skill-compose -h' for its own usage)
@@ -31,16 +32,24 @@
 #                              #   exits 0 green / 10 red / 11 indeterminate
 #   baseline -h | --help
 #
-# `update` never touches unsafe state: it fast-forwards ONLY when the install-source
-# clone is clean, on its default branch, free of an in-progress git operation, and merely
-# behind origin. A dirty / in-progress / detached / non-default / ahead / diverged clone is
-# surfaced and left untouched — currency is a convenience, never a cause of lost work. Those
-# unsafe states are classified from LOCAL state BEFORE any fetch, so a run that is going to
-# refuse costs no network round trip and writes no remote-tracking refs. After a fast-forward it re-runs the
-# idempotent installer ONLY when an installed path actually moved (a symlink stopped
-# resolving), preserving the exact agent set + hook preference already installed. It first
-# PRUNES orphaned links a rename/removal left behind (ownership-scoped — only a dangling
-# symlink pointing into the clone), then LOUDLY verifies every canonical manifest link resolves.
+# THE CHANNEL (#534, D143). `release`, the default, follows the newest STABLE release of the
+# repository `origin` names: published, not a draft, not a prerelease, carrying GitHub's latest
+# marker. `update` moves the clone FORWARD ONLY, as a detached checkout of that release's commit,
+# and never downgrades — an install ahead of the newest release is HELD until the next one. Before
+# any move the release's tag must equal origin's (a moved tag is refused) and its commit must be on
+# origin/<default>. `main` is the previous behaviour: fast-forward the default branch. It is chosen
+# with `[updates] channel = "main"` in the GLOBAL manifest or ADB_UPDATE_CHANNEL=main for one run;
+# anything unreadable or misspelled means `release`. On `main`, a clone left detached by the
+# release channel is re-attached when that only moves forward.
+#
+# `update` never touches unsafe state: a dirty / in-progress / non-default clone, or one with
+# unpushed or diverged commits, is surfaced and left untouched — currency is a convenience, never a
+# cause of lost work. Those states are classified from LOCAL state BEFORE any fetch, so a run that
+# is going to refuse costs no network round trip and writes no remote-tracking refs. After a move
+# it re-runs the idempotent installer, preserving the exact agent set + hook preference already
+# installed. It first PRUNES orphaned links a rename/removal left behind (ownership-scoped — only a
+# dangling symlink pointing into the clone), then LOUDLY verifies every canonical manifest link
+# resolves.
 #
 # The two-clone dev split: this command operates on the clone the global install
 # points INTO (the "install-source"). Run from any other clone it refuses, so a dev
@@ -49,10 +58,13 @@
 #
 # `--check` exit codes (the stable machine contract the Claude SessionStart currency hook
 # consumes, issue #36): 0 = current · 10 = behind (update available) · 20 = needs attention
-# (dirty|in-progress|ahead|diverged|detached|not-default) · 30 = error (fetch failed | no
-# origin/<default> | not a repo). It prints one status word to stdout and changes nothing in
-# the working tree; it fetches (writing remote-tracking refs) only when local state is
-# otherwise safe, since the refusing states are decided without the network.
+# (dirty|in-progress|ahead|diverged|detached|not-default|ahead-of-release) · 30 = currency unknown
+# (fetch-failed | no-remote | not-a-repo | no-release | release-unresolvable) · 40 = integrity
+# refusal (tag-moved | release-off-branch). It prints one status word to stdout and changes nothing
+# in the working tree; it fetches (writing remote-tracking refs) only when local state is otherwise
+# safe. On the release channel, once the release is resolved, it also prints one stderr line,
+# `baseline: installed <label> (channel release), newest <vX.Y.Z>` — a contract too: currency-lib.sh
+# reads the tag after `newest`.
 #
 # `update` additionally exits 5 when another `baseline update` already holds the per-clone
 # lock. Concurrent updates are ordinary now that a SessionStart hook can start several at
@@ -60,6 +72,9 @@
 # It exits 6 on a SUCCESSFUL same-HEAD repair — the clone was already current but an installed
 # link was broken and has been restored. Distinct from 0 ("nothing to do") because the installed
 # surface changed while HEAD did not, which a caller watching HEAD alone cannot see.
+# It exits 21 when the install is HELD ahead of the newest release (`--check` reports that as 20),
+# so the currency trigger can tell a held install from a clone that needs attention, and 40 on an
+# integrity refusal, as `--check` does.
 
 set -uo pipefail
 
@@ -788,92 +803,16 @@ if ! [ "$SRC" -ef "$REPO" ]; then
 fi
 
 DEFAULT="$(adb_default_branch "$SRC")"
+# `release` (the default) or `main` — global manifest or ADB_UPDATE_CHANNEL only (#534, D143).
+CHANNEL="$(adb_update_channel)"
 
-# --- classify locally, THEN fetch --------------------------------------------
-#
-# Order matters twice over. A clone that is dirty / mid-rebase / detached / on a feature branch
-# will be refused no matter what origin says, so asking origin first is pure cost — and it is
-# not free of side effects either: `git fetch` writes remote-tracking refs and FETCH_HEAD, which
-# `--check` documents itself as never doing. Classifying local state first makes `--check`
-# honest for exactly the states it refuses, and keeps the SessionStart hook off the network on
-# every session started from an unsafe clone.
+# --- the two arms every successful run ends in ----------------------------------
+# _bl_current_arm: HEAD is already where this channel wants it; verify and repair the installed
+# surface. _bl_after_move: HEAD just moved FORWARD; prune, re-run the installer, verify. Both
+# channels end in one of these, and each exits with the codes the header documents.
 
-STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
-if [ "$STATUS" = "local-ok" ]; then
-  if ! git -C "$SRC" fetch --quiet origin 2>/dev/null; then
-    [ "$CHECK" -eq 1 ] && echo "fetch-failed"
-    echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency." >&2
-    exit 30
-  fi
-  STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"
-fi
-
-# --- --check: report only, mutate nothing ------------------------------------
-
-if [ "$CHECK" -eq 1 ]; then
-  echo "$STATUS"
-  case "$STATUS" in
-    current)                                exit 0  ;;
-    behind)                                 exit 10 ;;
-    dirty|ahead|diverged|detached|not-default|in-progress) exit 20 ;;
-    *)                                      exit 30 ;;   # no-remote | not-a-repo
-  esac
-fi
-
-# A PINNED PROJECT IS TOLD, and the global update still runs. The two models are independent:
-# this command's subject is the install-source clone, and a project vendoring its own payload
-# neither blocks nor is served by keeping that clone current — so the notice is purely additive.
-#
-# `--check-latest`, because #285 asks `baseline update` to REPORT a newer release for a pinned
-# project. This is the mutating path, which has already fetched, so the extra read costs a pinned
-# project one call and a global one nothing (the notice exits immediately when no pin says
-# `mode = "pinned"`). It never upgrades: naming the version is the approval, and the two automatic
-# callers of this command must never be able to express one.
-#
-# AFTER `--check` returns, so that predicate stays exactly what it documents — one status word on
-# stdout, no changes, and no network it did not already need.
-bash "$REPO/scripts/lib/pinned-install.sh" notice --check-latest || true
-
-# --- serialize the mutating path ---------------------------------------------
-#
-# Taken AFTER classification (a read-only run needs no lock) and BEFORE any mutation. When
-# another update holds it, exit 5 rather than waiting: the caller is either a human who can
-# re-run, or the SessionStart hook, which must not stall a session behind a peer's pull.
-#
-# Refuse a non-repo BEFORE the lock rather than at the ladder below, because the lock path is
-# derived from the git dir: interpolating an unresolvable one would yield the bare path
-# "/adb-update.lock" and try to write at the filesystem ROOT.
-if [ "$STATUS" = "not-a-repo" ] || ! GITDIR="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)" \
-   || [ -z "$GITDIR" ]; then
-  echo "baseline: cannot determine currency for $SRC — not a git repository." >&2
-  exit 30
-fi
-UPDATE_LOCK="$GITDIR/adb-update.lock"
-if ! adb_update_lock "$UPDATE_LOCK"; then
-  echo "baseline: another 'baseline update' is running for $SRC — skipping this one." >&2
-  # Name the lock. A SIGKILLed updater (the SessionStart hook's own harness timeout is the
-  # likeliest cause) leaves one behind, and without this the message claims a running process
-  # that does not exist and gives no way out.
-  echo "          If nothing is actually running, remove: $UPDATE_LOCK" >&2
-  exit 5
-fi
-# Release on ANY exit path, including a signal — but only if we still own it (adb_update_unlock).
-trap 'adb_update_unlock "$UPDATE_LOCK"' EXIT
-trap 'adb_update_unlock "$UPDATE_LOCK"; exit 143' TERM
-trap 'adb_update_unlock "$UPDATE_LOCK"; exit 130' INT
-
-# Re-classify under the lock: between the read above and this point a peer update may have
-# already pulled (so `behind` became `current`), or the operator may have started editing (so
-# `local-ok` became `dirty`). Acting on the pre-lock reading would be exactly the stale-state
-# trust base/practices/verify-before-asserting.md forbids. The fetch above already ran, so this
-# needs no network — only the composed classification.
-STATUS="$(adb_clone_status "$SRC" "$DEFAULT")"
-
-# --- update ------------------------------------------------------------------
-
-case "$STATUS" in
-  current)
-    echo "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
+_bl_current_arm() {
+    echo "$1"
     adb_report_foreign_root_docs "$SRC"
     # Prune renamed-away orphans first (a prior manual `git pull` may have left one), THEN verify
     # the manifest — so a leftover from a rename doesn't force a needless "broken" repair (#48).
@@ -966,20 +905,10 @@ case "$STATUS" in
     # A success code distinct from "nothing to do" is the machine-readable way to say so — the
     # alternative is parsing this prose, which is precisely what the exit-code contract avoids.
     exit 6
-    ;;
-  behind)
-    echo "baseline: updating $SRC ($DEFAULT is behind origin) …"
-    if ! git -C "$SRC" pull --ff-only --quiet origin "$DEFAULT"; then
-      echo "baseline: 'git pull --ff-only' failed — resolve manually in $SRC (never force-pulled)." >&2
-      exit 20
-    fi
-    # Prune renamed-away orphans only AFTER a successful pull (never mutate the install if the
-    # pull failed), then re-run the idempotent installer. install.sh links each skill and script
-    # as its OWN destination, so a pulled commit that ADDS a skill/script needs a new symlink even
-    # though every pre-existing link still resolves — "links resolve" does NOT imply "all payloads
-    # linked." The installer is idempotent (unchanged links are a no-op); prune removes the links
-    # a rename left dangling that the installer would otherwise never clean up.
-    echo "baseline: pulled to origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
+}
+
+_bl_after_move() {
+    echo "$1"
     adb_report_foreign_root_docs "$SRC"
     adb_prune_orphans "$SRC"
     # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that
@@ -1012,27 +941,307 @@ case "$STATUS" in
     fi
     echo "baseline: self-heal left a broken link — this is loud on purpose (see issue #35)." >&2
     exit 1
+}
+
+# The refusal arms shared by both channels: local state that is never moved.
+_bl_refuse() {
+  case "$STATUS" in
+    dirty)
+      echo "baseline: install-source tree is dirty — skipping (never auto-pulls over uncommitted work)." >&2
+      echo "          Commit or stash in $SRC, then re-run 'baseline update'." >&2
+      exit 20 ;;
+    in-progress)
+      echo "baseline: install-source has a merge/rebase/cherry-pick/bisect in progress — skipping." >&2
+      echo "          $SRC" >&2
+      echo "          Finish or abort that operation, then re-run 'baseline update'." >&2
+      exit 20 ;;
+    ahead|diverged|detached|not-default)
+      echo "baseline: install-source is '$STATUS' on inspection — needs attention, not auto-pulling." >&2
+      echo "          $SRC" >&2
+      if [ "$CHANNEL" = release ]; then
+        echo "          Reconcile it manually (on the release channel the clone sits clean on a release tag, or on $DEFAULT)." >&2
+      else
+        echo "          Reconcile it manually (the install-source clone should sit clean on $DEFAULT)." >&2
+      fi
+      exit 20 ;;
+    *)
+      echo "baseline: cannot determine currency (status '$STATUS') for $SRC." >&2
+      echo "          Is 'origin/$DEFAULT' present? Check the remote and re-run." >&2
+      exit 30 ;;
+  esac
+}
+
+# --check's word -> its exit code. 40 is an integrity refusal, distinct from 20 (a clone state the
+# operator owns) and 30 (currency unknown), because a moved release tag must never read as either.
+_bl_word_rc() {
+  case "$1" in
+    current) return 0 ;;
+    behind)  return 10 ;;
+    dirty|ahead|diverged|detached|not-default|in-progress|ahead-of-release) return 20 ;;
+    tag-moved|release-off-branch) return 40 ;;
+    *) return 30 ;;   # no-remote | not-a-repo | fetch-failed | no-release | release-unresolvable
+  esac
+}
+
+# --- the release channel's network half ------------------------------------------
+# Sets REL_REPO, REL_TAG (validated), REL_OBJ (the tag object origin serves) and REL_SHA (its
+# commit), or REL_WORD (+ REL_REASON, a fixed string) naming why not. Origin is fetched, then the
+# ONE tag explicitly into FETCH_HEAD: a plain fetch keeps a local tag that origin has moved and
+# still exits 0, so only the explicit fetch plus the object comparison can see it. Nothing is
+# forced, and no local tag is written here.
+_bl_release_resolve() {
+  REL_REPO=""; REL_TAG=""; REL_OBJ=""; REL_SHA=""; REL_WORD=""; REL_REASON=""
+  local out rc lobj
+  if ! REL_REPO="$(adb_origin_url_slug "$SRC")"; then
+    REL_REPO="origin"; REL_WORD=release-unresolvable; REL_REASON="origin does not name a GitHub owner/repo"
+    return 1
+  fi
+  out="$(adb_latest_release_tag "$REL_REPO")"; rc=$?
+  case "$rc" in
+    0) REL_TAG="$out" ;;
+    1) REL_WORD=no-release; return 1 ;;
+    *) REL_WORD=release-unresolvable; REL_REASON="$out"; return 1 ;;
+  esac
+  if ! git -C "$SRC" fetch --quiet origin 2>/dev/null \
+     || ! git -C "$SRC" fetch --quiet --no-tags origin "refs/tags/$REL_TAG" 2>/dev/null; then
+    REL_WORD=fetch-failed; return 1
+  fi
+  if ! REL_OBJ="$(git -C "$SRC" rev-parse --verify --quiet FETCH_HEAD 2>/dev/null)"; then
+    REL_WORD=release-unresolvable; REL_REASON="the fetched tag could not be read"; return 1
+  fi
+  lobj="$(git -C "$SRC" rev-parse --verify --quiet "refs/tags/$REL_TAG" 2>/dev/null || true)"
+  if [ -n "$lobj" ] && [ "$lobj" != "$REL_OBJ" ]; then REL_WORD=tag-moved; return 1; fi
+  if ! REL_SHA="$(git -C "$SRC" rev-parse --verify --quiet "$REL_OBJ^{commit}" 2>/dev/null)"; then
+    REL_WORD=release-unresolvable; REL_REASON="the tag does not name a commit"; return 1
+  fi
+  if ! git -C "$SRC" rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT" >/dev/null 2>&1; then
+    REL_WORD=no-remote; return 1
+  fi
+  if ! git -C "$SRC" merge-base --is-ancestor "$REL_SHA" "refs/remotes/origin/$DEFAULT" 2>/dev/null; then
+    REL_WORD=release-off-branch; return 1
+  fi
+  return 0
+}
+
+# The release-channel stops, each with its exit code. Only the validated tag name and fixed
+# strings enter these lines; a release's name and body never do.
+_bl_release_stop() {
+  case "$REL_WORD" in
+    no-release)
+      echo "baseline: $REL_REPO has no published stable release — nothing to follow on the release channel." >&2; exit 30 ;;
+    release-unresolvable)
+      echo "baseline: could not resolve the newest release of $REL_REPO ($REL_REASON) — currency not verified; nothing changed." >&2; exit 30 ;;
+    fetch-failed)
+      echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency; nothing changed." >&2; exit 30 ;;
+    tag-moved)
+      echo "baseline: tag $REL_TAG in $SRC does not match origin's — refusing to move; a release tag must never move." >&2; exit 40 ;;
+    release-off-branch)
+      echo "baseline: release $REL_TAG of $REL_REPO is not on origin/$DEFAULT — refusing to move to it; nothing changed." >&2; exit 40 ;;
+    *)
+      echo "baseline: origin/$DEFAULT is missing in $SRC — cannot determine currency; nothing changed." >&2; exit 30 ;;
+  esac
+}
+
+# The release channel's one audit line, on stderr. Its shape is a contract: currency-lib.sh reads
+# the tag after ", newest " (and validates it) to name the release in its own messages.
+_bl_say_versions() {
+  printf 'baseline: installed %s (channel release), newest %s\n' "$(adb_release_label "$SRC" HEAD)" "$REL_TAG" >&2
+}
+
+# --- the main channel's detached case ---------------------------------------------
+# A clone left detached by the release channel is re-attached when that only moves forward: HEAD
+# and any local <default> both on origin/<default>'s history. Anything else keeps today's
+# refusal word. Needs a prior fetch.
+_bl_main_detached_state() {
+  local o="refs/remotes/origin/$DEFAULT"
+  git -C "$SRC" rev-parse --verify --quiet "$o" >/dev/null 2>&1 || { echo no-remote; return 0; }
+  git -C "$SRC" merge-base --is-ancestor HEAD "$o" 2>/dev/null || { echo detached; return 0; }
+  if git -C "$SRC" rev-parse --verify --quiet "refs/heads/$DEFAULT" >/dev/null 2>&1 \
+     && ! git -C "$SRC" merge-base --is-ancestor "refs/heads/$DEFAULT" "$o" 2>/dev/null; then
+    adb_branch_sync_state "$SRC" "$DEFAULT"; return 0
+  fi
+  echo behind
+}
+
+# Advance (or create) the local <default> to origin/<default> FIRST, with its old value checked,
+# then switch onto it. HEAD never moves backward, and a failed switch leaves HEAD detached where it
+# was. A <default> checked out in another worktree is never moved under it.
+_bl_reattach() {
+  local new old
+  new="$(git -C "$SRC" rev-parse --verify --quiet "refs/remotes/origin/$DEFAULT" 2>/dev/null)" || return 1
+  if git -C "$SRC" worktree list --porcelain 2>/dev/null | grep -qx "branch refs/heads/$DEFAULT"; then
+    echo "baseline: $DEFAULT is checked out in another worktree — not re-attaching; nothing changed." >&2
+    return 1
+  fi
+  old="$(git -C "$SRC" rev-parse --verify --quiet "refs/heads/$DEFAULT" 2>/dev/null || true)"
+  git -C "$SRC" update-ref -m "baseline: re-attach $DEFAULT at origin/$DEFAULT" "refs/heads/$DEFAULT" "$new" "$old" 2>/dev/null \
+    || { echo "baseline: $DEFAULT moved while re-attaching — nothing changed." >&2; return 1; }
+  git -C "$SRC" checkout --quiet "$DEFAULT" \
+    || { echo "baseline: could not switch $SRC onto $DEFAULT — HEAD is unchanged." >&2; return 1; }
+  git -C "$SRC" branch --quiet --set-upstream-to="origin/$DEFAULT" "$DEFAULT" >/dev/null 2>&1 || true
+  return 0
+}
+
+# --- classify locally, THEN fetch --------------------------------------------
+#
+# Order matters twice over. A clone that is dirty / mid-rebase / on a feature branch will be
+# refused no matter what origin says, so asking origin first is pure cost — and it is not free of
+# side effects either: `git fetch` writes remote-tracking refs and FETCH_HEAD, which `--check`
+# documents itself as never doing. Classifying local state first makes `--check` honest for
+# exactly the states it refuses, and keeps the SessionStart hook off the network on every session
+# started from an unsafe clone.
+
+STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
+if [ "$CHANNEL" = main ]; then
+  case "$STATUS" in
+    local-ok|detached)
+      if ! git -C "$SRC" fetch --quiet origin 2>/dev/null; then
+        [ "$CHECK" -eq 1 ] && echo "fetch-failed"
+        echo "baseline: 'git fetch' failed in $SRC (offline?) — cannot determine currency." >&2
+        exit 30
+      fi
+      if [ "$STATUS" = local-ok ]; then STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")"
+      else STATUS="$(_bl_main_detached_state)"; fi ;;
+  esac
+elif [ "$CHECK" -eq 1 ]; then
+  case "$STATUS" in
+    local-ok|detached)
+      if _bl_release_resolve; then
+        STATUS="$(adb_release_sync_state "$SRC" "$DEFAULT" "$REL_SHA")" || STATUS="not-a-repo"
+        _bl_say_versions
+      else
+        STATUS="$REL_WORD"
+      fi ;;
+  esac
+fi
+
+# --- --check: report only, mutate nothing ------------------------------------
+
+if [ "$CHECK" -eq 1 ]; then
+  echo "$STATUS"
+  _bl_word_rc "$STATUS"; exit $?
+fi
+
+# A PINNED PROJECT IS TOLD, and the global update still runs. The two models are independent:
+# this command's subject is the install-source clone, and a project vendoring its own payload
+# neither blocks nor is served by keeping that clone current — so the notice is purely additive.
+#
+# `--check-latest`, because #285 asks `baseline update` to REPORT a newer release for a pinned
+# project. It never upgrades: naming the version is the approval, and the two automatic callers of
+# this command must never be able to express one.
+#
+# AFTER `--check` returns, so that predicate stays exactly what it documents — one status word on
+# stdout, no changes, and no network it did not already need.
+bash "$REPO/scripts/lib/pinned-install.sh" notice --check-latest || true
+
+# --- serialize the mutating path ---------------------------------------------
+#
+# Taken AFTER the local classification (a read-only run needs no lock) and BEFORE any mutation —
+# and, on the release channel, before ANY network: a run that steps aside costs nothing. When
+# another update holds it, exit 5 rather than waiting: the caller is either a human who can
+# re-run, or the SessionStart hook, which must not stall a session behind a peer's update.
+#
+# Refuse a non-repo BEFORE the lock rather than at the ladder below, because the lock path is
+# derived from the git dir: interpolating an unresolvable one would yield the bare path
+# "/adb-update.lock" and try to write at the filesystem ROOT.
+if [ "$STATUS" = "not-a-repo" ] || ! GITDIR="$(git -C "$SRC" rev-parse --absolute-git-dir 2>/dev/null)" \
+   || [ -z "$GITDIR" ]; then
+  echo "baseline: cannot determine currency for $SRC — not a git repository." >&2
+  exit 30
+fi
+UPDATE_LOCK="$GITDIR/adb-update.lock"
+if ! adb_update_lock "$UPDATE_LOCK"; then
+  echo "baseline: another 'baseline update' is running for $SRC — skipping this one." >&2
+  # Name the lock. A SIGKILLed updater (the SessionStart hook's own harness timeout is the
+  # likeliest cause) leaves one behind, and without this the message claims a running process
+  # that does not exist and gives no way out.
+  echo "          If nothing is actually running, remove: $UPDATE_LOCK" >&2
+  exit 5
+fi
+# Release on ANY exit path, including a signal — but only if we still own it (adb_update_unlock).
+trap 'adb_update_unlock "$UPDATE_LOCK"' EXIT
+trap 'adb_update_unlock "$UPDATE_LOCK"; exit 143' TERM
+trap 'adb_update_unlock "$UPDATE_LOCK"; exit 130' INT
+
+# Re-classify under the lock: between the read above and this point a peer update may have
+# already moved the clone, or the operator may have started editing (so `local-ok` became
+# `dirty`). Acting on the pre-lock reading would be exactly the stale-state trust
+# base/practices/verify-before-asserting.md forbids. On the main channel the fetch above already
+# ran, so this needs no network. On the release channel this is where the resolve and the fetch
+# happen, once, and every later step acts on the one commit they produced.
+STATUS="$(adb_clone_local_state "$SRC" "$DEFAULT")"
+REATTACH=0
+case "$CHANNEL:$STATUS" in
+  main:local-ok) STATUS="$(adb_branch_sync_state "$SRC" "$DEFAULT")" ;;
+  main:detached) STATUS="$(_bl_main_detached_state)"; REATTACH=1 ;;
+  release:local-ok|release:detached)
+    _bl_release_resolve || _bl_release_stop
+    _bl_say_versions
+    STATUS="$(adb_release_sync_state "$SRC" "$DEFAULT" "$REL_SHA")" || STATUS="" ;;
+esac
+
+# --- update ------------------------------------------------------------------
+
+case "$STATUS" in
+  current)
+    if [ "$CHANNEL" = release ]; then
+      # At the release commit but still on a branch (a main install a release caught up with):
+      # detach in place. HEAD does not move, and a stray `git pull` can no longer leave the channel.
+      if ! git -C "$SRC" rev-parse --verify --quiet "refs/tags/$REL_TAG" >/dev/null 2>&1; then
+        git -C "$SRC" update-ref "refs/tags/$REL_TAG" "$REL_OBJ" "" 2>/dev/null || true
+      fi
+      if git -C "$SRC" symbolic-ref --quiet HEAD >/dev/null 2>&1; then
+        git -c advice.detachedHead=false -C "$SRC" checkout --quiet --detach \
+          || { echo "baseline: could not detach $SRC at $REL_TAG — resolve manually." >&2; exit 20; }
+      fi
+      _bl_current_arm "baseline: install-source already at the newest release $REL_TAG ($SRC)."
+    fi
+    _bl_current_arm "baseline: install-source already current ($SRC on $DEFAULT, up to date with origin)."
     ;;
-  dirty)
-    echo "baseline: install-source tree is dirty — skipping (never auto-pulls over uncommitted work)." >&2
-    echo "          Commit or stash in $SRC, then re-run 'baseline update'." >&2
-    exit 20
+  behind)
+    if [ "$CHANNEL" = release ]; then
+      # Write the local tag only when absent (create-only: an existing one already equals origin's,
+      # or the resolve would have stopped at tag-moved), then check out the ONE commit resolved.
+      if ! git -C "$SRC" rev-parse --verify --quiet "refs/tags/$REL_TAG" >/dev/null 2>&1; then
+        git -C "$SRC" update-ref "refs/tags/$REL_TAG" "$REL_OBJ" "" 2>/dev/null \
+          || { echo "baseline: could not record tag $REL_TAG in $SRC — nothing changed." >&2; exit 20; }
+      fi
+      FROM="$(adb_release_label "$SRC" HEAD)"
+      echo "baseline: moving $SRC from $FROM to release $REL_TAG …"
+      if ! git -c advice.detachedHead=false -C "$SRC" checkout --quiet --detach "$REL_SHA"; then
+        echo "baseline: checking out $REL_TAG failed — resolve manually in $SRC (nothing was forced)." >&2
+        exit 20
+      fi
+      _bl_after_move "baseline: moved $FROM → $REL_TAG; pruning orphaned links + re-running the idempotent installer …"
+    fi
+    if [ "$REATTACH" -eq 1 ]; then
+      echo "baseline: re-attaching $SRC to $DEFAULT (channel main) …"
+      _bl_reattach || exit 20
+      _bl_after_move "baseline: on $DEFAULT at origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
+    fi
+    echo "baseline: updating $SRC ($DEFAULT is behind origin) …"
+    if ! git -C "$SRC" pull --ff-only --quiet origin "$DEFAULT"; then
+      echo "baseline: 'git pull --ff-only' failed — resolve manually in $SRC (never force-pulled)." >&2
+      exit 20
+    fi
+    # Prune renamed-away orphans only AFTER a successful pull (never mutate the install if the
+    # pull failed), then re-run the idempotent installer. install.sh links each skill and script
+    # as its OWN destination, so a pulled commit that ADDS a skill/script needs a new symlink even
+    # though every pre-existing link still resolves — "links resolve" does NOT imply "all payloads
+    # linked." The installer is idempotent (unchanged links are a no-op); prune removes the links
+    # a rename left dangling that the installer would otherwise never clean up.
+    _bl_after_move "baseline: pulled to origin/$DEFAULT; pruning orphaned links + re-running the idempotent installer …"
     ;;
-  in-progress)
-    echo "baseline: install-source has a merge/rebase/cherry-pick/bisect in progress — skipping." >&2
-    echo "          $SRC" >&2
-    echo "          Finish or abort that operation, then re-run 'baseline update'." >&2
-    exit 20
-    ;;
-  ahead|diverged|detached|not-default)
-    echo "baseline: install-source is '$STATUS' on inspection — needs attention, not auto-pulling." >&2
-    echo "          $SRC" >&2
-    echo "          Reconcile it manually (the install-source clone should sit clean on $DEFAULT)." >&2
-    exit 20
+  ahead-of-release)
+    # HELD, never downgraded: re-running an older installer under hook entries and receipts it may
+    # not know is the hazard #534 names. Exit 21, not 20, so the currency trigger can tell a held
+    # install from a clone that needs attention.
+    echo "baseline: install-source is ahead of the newest release ($(adb_release_label "$SRC" HEAD), newest $REL_TAG) — held, never downgraded." >&2
+    echo "          It moves at the next release. To follow $DEFAULT instead, set [updates] channel = \"main\" in" >&2
+    echo "          $(adb_global_manifest) (or ADB_UPDATE_CHANNEL=main for one run)." >&2
+    exit 21
     ;;
   *)
-    echo "baseline: cannot determine currency (status '$STATUS') for $SRC." >&2
-    echo "          Is 'origin/$DEFAULT' present? Check the remote and re-run." >&2
-    exit 30
+    _bl_refuse
     ;;
 esac

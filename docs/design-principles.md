@@ -143,12 +143,14 @@ enforcement gets secretly turned off.
 ## 6. Never relocate an installed path without a self-healing migration
 
 **Installs are symlinks into this clone, so a path the installer links to is a public API.
-Moving one dangles every existing install's symlink until a re-install — and a plain
-`git pull` does not re-install.** So: **either keep installed paths stable and reorganize
-*behind* them, or move a path only with a self-healing, `git pull`-only migration** — leave
-a compatibility symlink at the OLD path pointing to the new one, so a pull alone keeps a
-stale install working (`baseline update` then self-heals it to the canonical link on its
-next run, loudly verifying every link resolves).
+Moving one dangles every existing install's symlink until a re-install — and a checkout that
+moves the clone (a release-channel move, a `main`-channel pull, or one done by hand) does not
+re-install by itself.** So: **either keep installed paths stable and reorganize *behind* them,
+or move a path only with a self-healing, checkout-only migration** — leave a compatibility
+symlink at the OLD path pointing to the new one, so the checkout alone keeps a stale install
+working (`baseline update` then self-heals it to the canonical link on its next run, loudly
+verifying every link resolves). On the release channel the jump a clone takes is release to
+release, which can span many merges.
 
 - The concrete precedent: PR #34 moved `project-gates.sh` from `agents/claude/scripts/lib/`
   to `scripts/lib/`. The compat symlink `agents/claude/scripts/lib → ../../../scripts/lib`

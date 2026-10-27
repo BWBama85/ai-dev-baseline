@@ -11143,3 +11143,68 @@ survive is the part a later reader needs.
              `scripts/check-block-rows.sh`, `scripts/check-mutation-gate.sh`, `docs/ci-runners.md`,
              `CONTRIBUTING.md`, `CLAUDE.md`, `base/workflows/implement-issue.md`
 - baseline-issue: n/a
+
+## D143 — #534: the global install follows the newest stable release; `main` is opt-in
+- date:      2026-10-27
+- category:  general
+- unknown:   D10 gave the global install an updater and D11 a second trigger, both fast-forwarding
+             `main`. So every merge reached every project on the machine at the next session start,
+             released or not, and "keep `main` releasable" was the only guard. Owner decision
+             (2026-10-13): "ai-dev-baseline is the standard and every project should use the latest
+             stable release." Three things the baseline did not model: what "newest stable release"
+             means to a consumer, what an install ahead of it does, and how a consumer checks a tag
+             it did not publish.
+- decision:  1. **A `[updates] channel` key, `release` (default) | `main`**, in the GLOBAL manifest
+                only (D10's reasoning), overridden for one run by `ADB_UPDATE_CHANNEL`. A misspelled
+                or unreadable value means `release`, with a diagnostic: falling back to `main` would
+                run unreleased code nobody asked for.
+             2. **One resolver** (`adb_latest_release_tag`, common.sh) for the global install and
+                pinned `status`/`notice`: a published, non-draft, non-prerelease Release carrying
+                GitHub's latest marker, never list order; a tag name must be `vX.Y.Z`; a full page,
+                zero or several latest records, or a failed or timed-out `gh` is unresolvable, never
+                `main`. The repository is the one the clone's raw `origin` URL names.
+             3. **Forward only, as a detached checkout of one resolved commit, under the update lock.**
+                The resolve and the fetch happen after the lock is taken (owner decision, gap
+                BLOCKING #3); `--check` stays lock-free. An install ahead of the newest release is
+                HELD (`update` 21, `--check` 20 `ahead-of-release`), because re-running an older
+                installer under hook entries and receipts it cannot read is the hazard. Silent at
+                session start, one line in `/cleanup` (owner decision).
+             4. **State precedence is ancestry first** (owner decision, gap BLOCKING #1): `current`
+                (HEAD is the release commit), `behind` (HEAD a strict ancestor, attached or detached —
+                nothing reachable from HEAD can be lost), the main channel's `ahead`/`diverged` for
+                unpushed work, `ahead-of-release` (the release an ancestor of HEAD, HEAD on origin's
+                history), else `detached` or `diverged`.
+             5. **Integrity before any move, exit 40.** The tag is fetched explicitly into FETCH_HEAD
+                and its object compared with the local tag: a plain fetch keeps a tag origin moved and
+                still exits 0 (executed on git 2.54), so only the explicit comparison sees it
+                (`tag-moved`). The release commit must be an ancestor of `origin/<default>`
+                (`release-off-branch`), mirroring `release.sh`'s producer-side check. Both are
+                reported by both triggers in both modes, as `refused`; no new outcome word.
+             6. **`channel = "main"` is the pre-#534 behaviour, plus a safe re-attach** (owner
+                decision, gap BLOCKING #2): a detached clone whose HEAD and local `<default>` are both
+                on `origin/<default>`'s history has the local branch advanced first (old value
+                checked), then checked out, so HEAD never moves backward and a failed switch leaves it
+                where it was.
+             7. **Fresh installs:** the docs clone the newest release, and `install.sh` warns, offline
+                and never refusing, when a release-channel clone is not at a release tag.
+             8. **"keep `main` releasable" is replaced by "a published release reaches every
+                release-channel install at its next currency check".** Release cadence is delivery
+                cadence.
+- reason:    It is the owner's decision, and the alternatives were weighed in the issue: every
+             project pinned (a per-project upgrade step on every machine) or the global install
+             staying on `main` (the status quo the decision rejects). A detached checkout rather than
+             a local branch fast-forwarded tag to tag, because a stray `git pull` on a detached HEAD
+             fails rather than silently leaving the channel. Authenticating the tag→commit binding is
+             out of scope: release tags cannot be signed (`release.sh` refuses), and immutable
+             releases are a producer-side change.
+- migration: A main-tracking install picks this up through the old code's last fast-forward, is
+             then `ahead-of-release` and held, and moves onto the first release that contains it.
+             Activation therefore needs that release cut.
+- placement: `scripts/lib/common.sh` (resolver, classifier, channel, label), `bin/baseline`,
+             `scripts/lib/currency-lib.sh`, `scripts/lib/pinned-install.sh`, `install.sh`,
+             `templates/agents.toml`, `docs/installation.md`, `README.md`, `CHANGELOG.md`,
+             `CONTRIBUTING.md`, `docs/philosophy.md`, `docs/design-principles.md`,
+             `base/workflows/cleanup.md`, `.claude/skills/release/SKILL.md`; tests in
+             `scripts/check-baseline.sh`, `scripts/check-common-lib.sh`,
+             `scripts/check-pinned-install.sh`, `scripts/check-fact-drift.sh`.
+- baseline-issue: n/a (this repo IS the baseline; #534 is the tracking issue)

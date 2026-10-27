@@ -19,14 +19,16 @@ reviews, debugging, or other roles.
 - **Role-based multi-agent.** A repo's `agents.toml` declares who is `primary`, who
   does `gap_analysis`, who does `review`, who `debug`s — swap `primary = "codex"`
   and Codex drives while Claude reviews, with no change to the workflows.
-- **Single source of truth, live.** Payloads are **symlinked**, so `git pull` in
-  this repo updates every project at once.
+- **Single source of truth, released.** Payloads are **symlinked** into one clone, and
+  that clone follows the newest stable release — so each published release reaches every
+  project on the machine at once (or `main`, if you opt in).
 
 ## Quickstart
 
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
 cd ~/Code/ai-dev-baseline
+git checkout --detach "$(gh release view -R BWBama85/ai-dev-baseline --json tagName --jq .tagName)"   # the newest stable release
 ./install.sh --agent claude            # add --agent codex --agent gemini as needed
 export PATH="$HOME/Code/ai-dev-baseline/bin:$PATH"   # for `agent-init`
 ```
@@ -40,10 +42,11 @@ agent-init          # writes agents.toml (roles), gitignores runtime state, prin
 Existing files are backed up to `~/.claude/backups/ai-dev-baseline-*`; re-running is
 idempotent; `./uninstall.sh` reverses everything. See [docs/installation.md](docs/installation.md).
 
-Keep the install current without remembering a `git pull`:
+Keep the install on the newest stable release without remembering anything (a `SessionStart`
+hook and `/cleanup` run this for you; `[updates] channel = "main"` follows `main` instead):
 
 ```bash
-baseline update            # fast-forward the install-source clone + self-heal links
+baseline update            # move the install-source clone to the newest stable release + self-heal links
 baseline update --check    # report currency only (for a lifecycle hook); changes nothing
 ```
 

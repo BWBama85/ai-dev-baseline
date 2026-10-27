@@ -2,14 +2,30 @@
 
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is by git tag. A **global**
-install is symlinks, so changes on `main` reach that user's clone on their next
-`git pull` — keep `main` releasable. A **release-pinned** project (#285) is reached
-only by a published release, which is what these entries are the notes for.
+install is symlinks into a clone that follows the newest stable release (#534), so a
+published release reaches every global install at its next currency check, and a merge to
+`main` reaches nobody until it is released. A **release-pinned** project (#285) is reached
+only by a release it upgrades to. These entries are the notes for both.
 
 ## [Unreleased]
 
 ### Changed
 
+- **The global install follows the newest stable release, not `main` (#534).** `baseline update`,
+  the `SessionStart` currency hook and `/cleanup`'s currency step now move the install-source clone
+  from one published release to the next: a published, non-draft, non-prerelease GitHub Release
+  carrying the *latest* marker, checked out detached. Moves are forward only. An install ahead of
+  the newest release (every install that followed `main` until now) is **held** until a release
+  containing it is published, then moves onto that tag. Before any move the release's tag must
+  match origin's and its commit must be on the default branch; a moved tag (`tag-moved`) or an
+  off-branch release (`release-off-branch`) exits `40` and is reported by both triggers in every
+  mode. A release that cannot be resolved never falls back to `main`. Currency lines name versions
+  (`updated v3.1.0 → v3.1.1.`). To keep following `main`, set `[updates] channel = "main"` in the
+  global `agents.toml` (or `ADB_UPDATE_CHANNEL=main`); that channel behaves as before and re-attaches
+  a clone the release channel left detached. Pinned `status` and `notice` use the same resolver, so a
+  backfilled release no longer reads as the newest. `install.sh` warns when a release-channel clone
+  is not at a release tag, and the docs clone the newest release. Delivery now waits for a release:
+  a merge to `main` reaches no global install until it is released (D143).
 - **The nightly shards `settings-fragment-mutation` by row (#532).** Run unsharded, the full-suite
   harness took 179 to 316 minutes, and a hosted job may run for at most 360. The nightly now runs it as three
   jobs, `mutation-nightly (settings-fragment-mutation, shard <k> of 3)`. Each job scores its own

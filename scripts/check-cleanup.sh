@@ -1407,6 +1407,9 @@ fi
 
 cuw="$work/cu"
 mkdir -p "$cuw"
+# The fixture fast-forwards `main`: `channel = "main"`, the pre-#534 behaviour that channel keeps
+# exactly. The release channel is exercised in check-baseline.sh.
+export ADB_UPDATE_CHANNEL=main
 CU="$ROOT/scripts/lib/currency-lib.sh"
 # adb_agent_manifest builds the fixture's stub set; re-read the workflow here rather than reuse
 # $wf, which is only set inside section 6's `else` branch.

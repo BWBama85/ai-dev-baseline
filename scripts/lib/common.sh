@@ -4390,6 +4390,158 @@ adb_clone_status() {
   adb_branch_sync_state "$1" "$2"
 }
 
+# --- the release channel (#534, D143) ------------------------------------------------------------
+# The global install follows the newest STABLE release by default, and `main` only on request. The
+# functions below are its shared half: bin/baseline decides and moves, currency-lib.sh reports,
+# pinned-install.sh asks the same resolver. All of them stay parseable and runnable on bash 3.2
+# (D30), because this file is.
+
+# adb_is_release_tag <name> — exit 0 iff <name> is `v` followed by exactly three dot-separated
+# decimal fields. Every release-channel reader applies it before a tag name reaches a ref, a command
+# or a message: a tag name is text from the release's publisher, and only this shape is trusted.
+adb_is_release_tag() {
+  local t="${1:-}" core a b c p
+  case "$t" in v[0-9]*) ;; *) return 1 ;; esac
+  core="${t#v}"
+  a="${core%%.*}"; core="${core#*.}"
+  b="${core%%.*}"; c="${core#*.}"
+  [ "$a.$b.$c" = "${t#v}" ] || return 1
+  for p in "$a" "$b" "$c"; do
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  done
+  return 0
+}
+
+# adb_update_channel — print `release` or `main`, exit 0 always.
+# ADB_UPDATE_CHANNEL wins for one run; otherwise `[updates] channel` in the GLOBAL manifest only (a
+# project's agents.toml must not choose the machine's update channel, D10). Unset means `release`.
+# A misspelled, unreadable or NUL-bearing value also means `release`, with a stderr line: falling
+# back to `main` would run unreleased code the operator never asked for. The bad value itself is
+# never echoed.
+adb_update_channel() {
+  local c="${ADB_UPDATE_CHANNEL:-}" where="ADB_UPDATE_CHANNEL" raw rc mf
+  if [ -z "$c" ]; then
+    mf="$(adb_global_manifest)"
+    raw="$(adb_toml_get "$mf" updates channel 2>/dev/null)"; rc=$?
+    if [ "$rc" -ge 2 ]; then
+      adb_toml_read_error "$mf" "$rc"
+      printf 'baseline: following the release channel until that manifest is readable\n' >&2
+      printf 'release\n'; return 0
+    fi
+    [ "$rc" -eq 0 ] || { printf 'release\n'; return 0; }
+    c="$(adb_toml_unquote "$raw")"; where="[updates] channel in $mf"
+  fi
+  case "$c" in
+    release|main) printf '%s\n' "$c" ;;
+    *) printf 'baseline: %s is not "release" or "main" — following the release channel\n' "$where" >&2
+       printf 'release\n' ;;
+  esac
+}
+
+# adb_origin_url_slug <root> — the `owner/repo` that <root>'s `origin` remote names, from the RAW
+# configured URL (before any `url.<base>.insteadOf` rewrite), case-folded. Non-zero when it names
+# no GitHub-shaped pair. A fork's install therefore follows the fork's releases.
+adb_origin_url_slug() {
+  local slug
+  slug="$(_adb_remote_url_slug "$(git -C "$1" config --get remote.origin.url 2>/dev/null)")" || return 1
+  adb_is_path_safe_repo_slug "$slug" || return 1
+  printf '%s' "$slug"
+}
+
+# adb_latest_release_tag <owner/repo> — the tag of the newest STABLE release: published, not a
+# draft, not a prerelease, and carrying GitHub's latest marker (`isLatest`, which `/release`'s
+# `--latest|--no-latest` sets). Never list order: a backfill created after the newest release must
+# not read as the newest.
+#   0  prints the tag (it passed adb_is_release_tag)
+#   1  the repository has no published stable release; prints nothing
+#   2  unresolvable; prints a short fixed reason (no gh, gh failed, timed out, a malformed or
+#      possibly truncated answer, no or several releases marked latest, a tag failing the grammar)
+# The gh call is bounded by ADB_RELEASE_TIMEOUT_SECS (default 60). The list is read to a limit and
+# a full page is refused as possibly incomplete rather than read as the whole answer.
+# Usage: adb_latest_release_tag <owner/repo>
+adb_latest_release_tag() {
+  local repo="${1:-}" secs="${ADB_RELEASE_TIMEOUT_SECS:-60}" lim=1000 out rc count latest n
+  adb_is_path_safe_repo_slug "$repo" || { printf 'invalid repository'; return 2; }
+  command -v gh >/dev/null 2>&1 || { printf 'gh not found'; return 2; }
+  case "$secs" in ''|*[!0-9]*) secs=60 ;; *) [ "$secs" -gt 0 ] 2>/dev/null || secs=60 ;; esac
+  out="$(adb_run_bounded "$secs" 5 gh release list -R "$repo" --exclude-drafts --exclude-pre-releases \
+          --limit "$lim" --json tagName,isLatest \
+          --jq '(length | tostring), (.[] | select(.isLatest == true) | .tagName)' 2>/dev/null)"; rc=$?
+  case "$rc" in
+    0)   : ;;
+    124) printf 'timed out'; return 2 ;;
+    *)   printf 'gh failed (exit %s)' "$rc"; return 2 ;;
+  esac
+  count="${out%%
+*}"
+  case "$count" in ''|*[!0-9]*) printf 'malformed answer'; return 2 ;; esac
+  [ "$count" -eq 0 ] && return 1
+  [ "$count" -lt "$lim" ] || { printf 'the release list may be incomplete'; return 2; }
+  latest=""
+  case "$out" in *'
+'*) latest="${out#*
+}" ;; esac
+  n="$(printf '%s\n' "$latest" | grep -c .)"
+  [ "$n" -eq 1 ] || {
+    [ "$n" -eq 0 ] && printf 'no release is marked latest' || printf 'more than one release is marked latest'
+    return 2; }
+  adb_is_release_tag "$latest" || { printf 'the latest tag name failed validation'; return 2; }
+  printf '%s' "$latest"
+}
+
+# _adb_release_tag_at <root> <commit> — the highest validated release tag naming <commit>, or nothing.
+_adb_release_tag_at() {
+  git -C "$1" tag --points-at "$2" --list 'v[0-9]*' --sort=-v:refname 2>/dev/null \
+    | while IFS= read -r _adb_rt; do adb_is_release_tag "$_adb_rt" && { printf '%s' "$_adb_rt"; break; }; done
+}
+
+# adb_release_label <root> [<rev>] — a printable name for a commit, built only from validated tag
+# names and hex: `vX.Y.Z` when a release tag names it exactly (the highest, when several do),
+# `vX.Y.Z+N (abc1234)` when it is N commits past the nearest one, else the short hash.
+adb_release_label() {
+  local root="$1" rev="${2:-HEAD}" sha short t base n
+  sha="$(git -C "$root" rev-parse --verify --quiet "$rev^{commit}" 2>/dev/null)" || return 1
+  short="$(git -C "$root" rev-parse --short "$sha" 2>/dev/null)" || return 1
+  t="$(_adb_release_tag_at "$root" "$sha")"
+  [ -n "$t" ] && { printf '%s' "$t"; return 0; }
+  base="$(git -C "$root" describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' "$sha" 2>/dev/null)"
+  base="$(git -C "$root" rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)" \
+    && t="$(_adb_release_tag_at "$root" "$base")" && [ -n "$t" ] && {
+    n="$(git -C "$root" rev-list --count "$base..$sha" 2>/dev/null)"
+    case "$n" in ''|*[!0-9]*) : ;; *) printf '%s+%s (%s)' "$t" "$n" "$short"; return 0 ;; esac
+  }
+  printf '%s' "$short"
+}
+
+# adb_release_sync_state <root> <default-branch> <release-commit> — where HEAD sits relative to the
+# newest release, from already-fetched refs (no network). The caller has already refused dirty /
+# in-progress / not-default, so HEAD is on <default> or detached. One word, in this precedence:
+#   no-remote         origin/<default> does not exist
+#   current           HEAD is the release commit
+#   behind            HEAD is a strict ancestor of it, attached or detached (forward only; nothing
+#                     reachable from HEAD can be lost, because the release contains all of it)
+#   ahead | diverged  attached, and the branch has commits origin/<default> lacks (unpushed work)
+#   ahead-of-release  the release is a strict ancestor of HEAD, and HEAD is on origin's history
+#   detached          detached anywhere else
+#   diverged          attached, and neither side contains the other
+# Returns 1 (printing nothing) on a git error.
+adb_release_sync_state() {
+  local root="$1" default="$2" rel="$3" head attached=1 origin="refs/remotes/origin/$2"
+  head="$(git -C "$root" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || return 1
+  git -C "$root" symbolic-ref --quiet HEAD >/dev/null 2>&1 || attached=0
+  git -C "$root" rev-parse --verify --quiet "$origin" >/dev/null 2>&1 || { printf 'no-remote\n'; return 0; }
+  [ "$head" = "$rel" ] && { printf 'current\n'; return 0; }
+  git -C "$root" merge-base --is-ancestor "$head" "$rel" 2>/dev/null && { printf 'behind\n'; return 0; }
+  if [ "$attached" -eq 1 ] && ! git -C "$root" merge-base --is-ancestor "$head" "$origin" 2>/dev/null; then
+    adb_branch_sync_state "$root" "$default"; return $?
+  fi
+  if git -C "$root" merge-base --is-ancestor "$rel" "$head" 2>/dev/null \
+     && git -C "$root" merge-base --is-ancestor "$head" "$origin" 2>/dev/null; then
+    printf 'ahead-of-release\n'; return 0
+  fi
+  [ "$attached" -eq 1 ] && printf 'diverged\n' || printf 'detached\n'
+}
+
 # Print the path of the GLOBAL agent manifest — the one install.sh writes once and every
 # runtime reader consults. The ONE home for this path: it was previously spelled independently
 # by the writer (install.sh) and each reader, and a third spelling that honored XDG_CONFIG_HOME

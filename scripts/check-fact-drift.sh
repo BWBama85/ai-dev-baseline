@@ -1238,6 +1238,23 @@ fact session-start-config "fixed:session_start" -- \
   templates/agents.toml scripts/lib/currency-lib.sh \
   agents/claude/scripts/session-currency.sh base/workflows/cleanup.md \
   docs/installation.md .ai-dev-baseline/decisions.md
+# --- FACT: the update channel (#534, D143) ------------------------------------
+# The template advertises `channel`, common.sh's adb_update_channel is the one reader, currency-lib.sh
+# names it in the held line it gives /cleanup, and the doc tells the operator how to choose. A rename
+# in one place leaves the others describing a knob that silently does nothing.
+fact update-channel 'regex:channel = \\?"(release|main)' -- \
+  templates/agents.toml scripts/lib/currency-lib.sh docs/installation.md
+fact update-channel 'fixed:updates channel' -- scripts/lib/common.sh
+# The contract #534 retired: a global install no longer runs whatever `main` says, so neither
+# "keep `main` releasable" nor "`git pull` reaches every project" may come back into the files
+# that stated it. D143 keeps the history.
+fact retired-main-delivery 'absent:keep .main. releasable' 'fires:keep `main` releasable' -- \
+  CHANGELOG.md CONTRIBUTING.md README.md docs/installation.md
+fact retired-main-delivery 'absent:git pull.{0,60}(reaches|updates) every project' \
+  'fires:| Updating | `git pull` reaches every project at once |' \
+  'fires:- `git pull` in the cloned repo updates every project at once' \
+  'fires:# mean `git pull` in this repo updates every project at once. Existing files are' -- \
+  docs/installation.md README.md docs/philosophy.md install.sh CONTRIBUTING.md CHANGELOG.md
 # The event this hook binds to. The settings entry, the script's own source gate, and the docs
 # must name the SAME trigger: a matcher the script did not also enforce would let a `/clear` or
 # a `compact` swap tooling mid-session.

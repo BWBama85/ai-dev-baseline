@@ -3,7 +3,8 @@
 #
 # Symlinks this repo's agent payloads into each selected agent's user-level config
 # so your baseline practices, skills, and gates apply in EVERY project. Symlinks
-# mean `git pull` in this repo updates every project at once. Existing files are
+# mean whatever this clone has checked out — the newest stable release, kept there by
+# `baseline update` (#534) — is what every project runs. Existing files are
 # backed up first; re-running is idempotent; `uninstall.sh` reverses it.
 #
 # There is a SECOND install model, and this script is the entry point for both. `--pinned`
@@ -1598,6 +1599,24 @@ for a in "${AGENTS[@]}"; do
   adb_info ""
 done
 write_global_manifest
+
+# The release channel (#534, D143): a first install should run a published release, never
+# unreleased `main` unannounced. Warn — never refuse, and offline: no lookup — when this clone's
+# HEAD carries no release tag. After `baseline update` moves the clone onto a release this is silent.
+if [ "$(adb_update_channel 2>/dev/null)" = release ] && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+  _adb_rel_label="$(adb_release_label "$REPO" HEAD 2>/dev/null)"
+  if ! adb_is_release_tag "$_adb_rel_label"; then
+    _adb_rel_slug="$(adb_origin_url_slug "$REPO" 2>/dev/null)" || _adb_rel_slug="<owner>/<repo>"
+    printf '%s\n' \
+      "install.sh: WARNING — $REPO is at ${_adb_rel_label:-an unknown commit}, not at a release tag," \
+      "            and every project on this machine now runs it. If this is the clone's FIRST install," \
+      "            it is safe to move it back to the newest stable release (never after a newer one ran):" \
+      "              git -C \"$REPO\" fetch --tags origin" \
+      "              git -C \"$REPO\" checkout --detach \"\$(gh release view -R $_adb_rel_slug --json tagName --jq .tagName)\"" \
+      "            then re-run this installer. From then on 'baseline update' follows each new release." \
+      "            To follow main deliberately, set [updates] channel = \"main\" in $(adb_global_manifest)." >&2
+  fi
+fi
 
 adb_info ""
 adb_info "Done. Backups (if any): ${BACKUP_DIR/#$HOME/~}"
