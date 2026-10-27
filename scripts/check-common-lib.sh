@@ -3404,6 +3404,13 @@ for v in "'main'" '"main"   # follow main' "\"main\"\t" '"main"\r'; do
   printf '[updates]\nchannel = %b\n' "$v" > "$chmf"
   eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: well-formed [$v] → main"
 done
+# ...nor is a control byte BEFORE the value or around the key: TOML whitespace is space and tab.
+for l in 'channel = \v"main"' 'channel\v= "main"' '\fchannel = "main"' 'channel =\f"main"'; do
+  printf '[updates]\n%b\n' "$l" > "$chmf"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: control byte in [$l] → release"
+done
+printf '[updates]\n  channel\t=\t"main"\t# follow main\n' > "$chmf"
+eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: tabs and spaces around key and value → main"
 # An UNREADABLE manifest (a file that exists and cannot be read) — not one that is absent.
 printf '[updates]\nchannel = "main"\n' > "$chmf"; chmod 000 "$chmf"
 if [ -r "$chmf" ]; then

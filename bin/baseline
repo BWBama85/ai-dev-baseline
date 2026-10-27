@@ -10,6 +10,7 @@
 #   baseline update            # move the install-source clone to the newest stable release
 #                              #   (or fast-forward main, on channel = "main") + self-heal links
 #   baseline update --check    # report currency only; make NO changes (for a hook)
+#   baseline latest-release    # print the newest stable release tag of this clone's origin (validated)
 #   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
 #                              #   run 'baseline skill-compose -h' for its own usage)
 #   baseline repo …            # hand PR merges to GitHub: 'checks' / 'status' / 'apply' to set
@@ -168,6 +169,23 @@ fi
 if [ "${1:-}" = "adopt" ]; then
   shift
   exec bash "$REPO/scripts/lib/adopt-readiness.sh" "$@"
+fi
+
+# The newest stable release of the repository THIS clone's origin names (#534), validated — the one
+# resolver the release channel uses, for a first install that has nothing to update yet. Prints
+# `vX.Y.Z` and exits 0; 1 none is published; 2 unresolvable (the reason on stderr). Dispatched
+# before the install-source guard: a fresh clone has no install, which is exactly when it is asked.
+if [ "${1:-}" = "latest-release" ]; then
+  [ "$#" -eq 1 ] || { echo "baseline: latest-release takes no arguments" >&2; exit 2; }
+  if ! _lr_repo="$(adb_origin_url_slug "$REPO")"; then
+    echo "baseline: $REPO's origin does not name a github.com owner/repo" >&2; exit 2
+  fi
+  _lr_out="$(adb_latest_release_tag "$_lr_repo")"; _lr_rc=$?
+  case "$_lr_rc" in
+    0) printf '%s\n' "$_lr_out"; exit 0 ;;
+    1) echo "baseline: $_lr_repo has no published stable release" >&2; exit 1 ;;
+    *) echo "baseline: could not resolve the newest release of $_lr_repo ($_lr_out)" >&2; exit 2 ;;
+  esac
 fi
 
 # --- discovery ---------------------------------------------------------------
@@ -814,6 +832,9 @@ CHANNEL="$(adb_update_channel)"
 
 _bl_current_arm() {
     echo "$1"
+    # The installer's offline note about an unverified version tag is moot when this run has just
+    # verified it against the published releases.
+    [ -n "${REL_TAG:-}" ] && export ADB_RELEASE_VERIFIED="$REL_TAG"
     adb_report_foreign_root_docs "$SRC"
     # Prune renamed-away orphans first (a prior manual `git pull` may have left one), THEN verify
     # the manifest — so a leftover from a rename doesn't force a needless "broken" repair (#48).
@@ -910,6 +931,7 @@ _bl_current_arm() {
 
 _bl_after_move() {
     echo "$1"
+    [ -n "${REL_TAG:-}" ] && export ADB_RELEASE_VERIFIED="$REL_TAG"
     adb_report_foreign_root_docs "$SRC"
     adb_prune_orphans "$SRC"
     # ASKED AFTER THE PULL, so the payload compared is the one just pulled — a `git pull` that

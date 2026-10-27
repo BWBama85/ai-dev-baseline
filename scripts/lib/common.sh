@@ -4421,7 +4421,7 @@ adb_is_release_tag() {
 adb_update_channel() {
   local c="${ADB_UPDATE_CHANNEL:-}" where="ADB_UPDATE_CHANNEL" raw rc mf
   # TOML whitespace is space or tab only; any other byte after the value is malformed.
-  local re='^("(release|main)"|'"'"'(release|main)'"'"')[ '$'\t'']*(#.*)?$'
+  local re='^[ '$'\t'']*channel[ '$'\t'']*=[ '$'\t'']*("(release|main)"|'"'"'(release|main)'"'"')[ '$'\t'']*(#.*)?$'
   if [ -z "$c" ]; then
     mf="$(adb_global_manifest)"
     raw="$(adb_toml_get "$mf" updates channel --raw 2>/dev/null)"; rc=$?
@@ -4431,8 +4431,9 @@ adb_update_channel() {
       printf 'release\n'; return 0
     fi
     [ "$rc" -eq 0 ] || { printf 'release\n'; return 0; }
-    # The RAW scalar, checked against the whole grammar: a bare word, an unterminated quote or
-    # trailing junk is not a choice of `main`, however the lenient reader would repair it.
+    # The RAW line, checked against the whole grammar: a bare word, an unterminated quote, trailing
+    # junk or a control byte around the key or the value is not a choice of `main`, however the
+    # lenient reader would repair it.
     where="[updates] channel in $mf"; c="invalid"
     if [[ $raw =~ $re ]]; then c="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"; fi
   fi
@@ -5327,9 +5328,10 @@ adb_occupant_class() {
 # `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
 # a value the operator never wrote. Reported by the declared reviewer on PR #429.
 # An EMPTY <table> names the top level — the keys before the first `[table]` header.
-# `--raw` prints the right-hand side exactly as written (trailing whitespace stripped, nothing
-# repaired), for a caller that must validate a scalar's grammar itself: the default form re-closes an
-# unterminated quote and drops anything after the closing one.
+# `--raw` prints the key's WHOLE LINE exactly as written (only a CRLF's CR removed), for a caller
+# that must validate the grammar itself: the default form re-closes an unterminated quote, drops
+# anything after the closing one, and accepts any `[[:space:]]` around the key and the `=`, where
+# TOML allows only space and tab.
 # Usage: adb_toml_get <file> <table> <key> [--raw]
 adb_toml_get() {
   local file="$1" table="$2" key="$3" raw=0
@@ -5373,8 +5375,8 @@ adb_toml_get() {
     }
     intbl && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
       line = $0
+      if (raw == 1) { sub(/\r$/, "", line); printf "%s", line; found = 1; exit }
       sub(/^[^=]*=[[:space:]]*/, "", line)   # strip "key =" and the space after it
-      if (raw == 1) { sub(/\r$/, "", line); sub(/[ \t]*$/, "", line); printf "%s", line; found = 1; exit }
       if (substr(line, 1, 1) == "\"") {
         # Quoted scalar: walk to the closing quote, skipping backslash-escaped chars
         # (so \" does not close and # inside the string is not a comment). Reconstruct

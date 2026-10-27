@@ -1601,15 +1601,18 @@ done
 write_global_manifest
 
 # The release channel (#534, D143): a first install should run a published release, never
-# unreleased `main` unannounced. Warn — never refuse — when this clone's HEAD carries no VERSION tag
-# (`vX.Y.Z`). The check is offline, so it cannot tell a version tag from a published release (an
-# unpublished tag passes); the first `baseline update` verifies against the published releases.
-# After `baseline update` moves the clone onto a release this is silent.
+# unreleased `main` unannounced. Never a refusal. Offline, so it cannot tell a version tag from a
+# PUBLISHED release: off a version tag (`vX.Y.Z`) it warns and prints the way to the newest release;
+# at one it says that publication is not verified here — unless `baseline update` is the caller and
+# has just verified that very tag (ADB_RELEASE_VERIFIED), which is the case after every move.
 if [ "$(adb_update_channel 2>/dev/null)" = release ] && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
   _adb_rel_label="$(adb_release_label "$REPO" HEAD 2>/dev/null)"
-  if ! adb_is_release_tag "$_adb_rel_label"; then
-    _adb_rel_slug="$(adb_origin_url_slug "$REPO" 2>/dev/null)" || _adb_rel_slug="OWNER/REPO"
-    _adb_rel_q="$(adb_display_value "$REPO")"
+  _adb_rel_q="$(adb_display_value "$REPO")"
+  if adb_is_release_tag "$_adb_rel_label"; then
+    [ "${ADB_RELEASE_VERIFIED:-}" = "$_adb_rel_label" ] || printf '%s\n' \
+      "install.sh: NOTE — this clone is at $_adb_rel_label, a version tag; whether it is a PUBLISHED, newest stable" \
+      "            release is not checked offline. 'bash $_adb_rel_q/bin/baseline update --check' checks it." >&2
+  else
     # The SAME agent set and preferences on both sides of the round trip: a bare reinstall would
     # default to Claude and drop a hook or sandbox opt-out this run was given.
     _adb_rel_agents=""; _adb_rel_flags=""
@@ -1625,11 +1628,11 @@ EOF
       "install.sh: WARNING — this clone is at ${_adb_rel_label:-an unknown commit}, not at a version tag, and every" \
       "            project on this machine now runs it. 'baseline update' moves it forward to the newest" \
       "            stable release when that is newer, and holds it otherwise. To run the newest release now," \
-      "            uninstall first (an older installer must not run over what this one wrote), then:" \
-      "              cd $_adb_rel_q && ./uninstall.sh$_adb_rel_agents" \
-      "              git -C $_adb_rel_q fetch --tags origin" \
-      "              git -C $_adb_rel_q checkout --detach \"\$(gh release view -R github.com/$_adb_rel_slug --json tagName --jq .tagName)\"" \
-      "              cd $_adb_rel_q && ./install.sh$_adb_rel_agents$_adb_rel_flags" \
+      "            uninstall first (an older installer must not run over what this one wrote) — one command," \
+      "            which stops at the first step that fails:" \
+      "              cd $_adb_rel_q && git fetch --tags origin \\" \
+      "                && tag=\"\$(bin/baseline latest-release)\" && ./uninstall.sh$_adb_rel_agents \\" \
+      "                && git checkout --detach \"refs/tags/\$tag\" && ./install.sh$_adb_rel_agents$_adb_rel_flags" \
       "            To follow main deliberately, set [updates] channel = \"main\" in $(adb_display_value "$(adb_global_manifest)")." >&2
   fi
 fi

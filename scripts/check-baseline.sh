@@ -823,7 +823,41 @@ for case_ in gh-fails bad-tag no-release; do
   eq "${ rel_update; }" "30" "release: $case_ → update exits 30"
   has "$(rel_err)" "$msg" "release: $case_ → the message says why"
   eq "$(rel_head) $(rel_reflog)" "$V100 $n0" "release: $case_ → HEAD unchanged and no new reflog entry"
+  out="$(rel_currency auto cleanup)"
+  eq "${out%%[[:space:]]*}" "offline" "release: $case_ → the currency trigger records offline"
+  has "$out" "currency not verified" "release: $case_ → ...saying currency is not verified"
+  hasnt "$out" "unreachable" "release: $case_ → ...not that a reachable remote is unreachable"
 done
+# gh missing altogether: the same 30, HEAD and reflog unchanged. PATH is every tool the run needs
+# except gh, linked into one directory, so no host gh further down the PATH can answer.
+ghless="$work/ghless"; mkdir -p "$ghless"
+printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r _pd; do
+  [ -d "$_pd" ] || continue
+  for _pf in "$_pd"/*; do
+    _pb="${_pf##*/}"
+    [ "$_pb" = gh ] && continue
+    [ -x "$_pf" ] && [ ! -d "$_pf" ] && [ ! -e "$ghless/$_pb" ] && ln -s "$_pf" "$ghless/$_pb" 2>/dev/null
+  done
+done
+if [ -e "$ghless/gh" ] || ! PATH="$ghless" command -v git >/dev/null 2>&1; then
+  bad "fixture: could not build a PATH without gh"
+else
+  rel_json "$REL_LIST"; n0="$(rel_reflog)"
+  out="$(env -u ADB_UPDATE_CHANNEL HOME="$relfh" PATH="$ghless" XDG_CACHE_HOME="$work/relcache" "$relsrc/bin/baseline" update --check 2>"$work/rel.err")"
+  eq "$out|$?" "release-unresolvable|30" "release: gh missing → release-unresolvable (30)"
+  has "$(rel_err)" "(gh not found)" "release: gh missing → ...naming why"
+  env -u ADB_UPDATE_CHANNEL HOME="$relfh" PATH="$ghless" XDG_CACHE_HOME="$work/relcache" "$relsrc/bin/baseline" update >/dev/null 2>&1
+  eq "$?" "30" "release: gh missing → update exits 30"
+  eq "$(rel_head) $(rel_reflog)" "$V100 $n0" "release: gh missing → HEAD unchanged and no new reflog entry"
+fi
+rel_json "$REL_LIST"
+# `baseline latest-release` answers through the same resolver, for a clone with nothing installed.
+eq "$(relenv "$relsrc/bin/baseline" latest-release 2>/dev/null; printf '|%s' "$?")" "v1.1.0
+|0" "latest-release: the newest stable release tag"
+rel_json '[]'
+eq "$(relenv "$relsrc/bin/baseline" latest-release 2>/dev/null; printf '|%s' "$?")" "|1" "latest-release: none published → 1"
+rel_json '[{"tagName":"production","isLatest":true}]'
+eq "$(relenv "$relsrc/bin/baseline" latest-release 2>/dev/null; printf '|%s' "$?")" "|2" "latest-release: a tag that is not vX.Y.Z → 2, nothing printed"
 rel_json "$REL_LIST"
 
 # Local refusals stay local on the release channel: decided before any network (no gh call), and a
@@ -1139,6 +1173,10 @@ for _wt in untagged tagged; do
     has "$(cat "$work/warn.err")" "./install.sh --agent claude --agent codex --no-hooks" "install.sh, untagged clone → ...and reinstalling with the same agents and preferences"
   else
     hasnt "$(cat "$work/warn.err")" "not at a version tag" "install.sh, clone at a version tag → no warning"
+    has "$(cat "$work/warn.err")" "a version tag; whether it is a PUBLISHED" "install.sh, clone at a version tag → notes publication is unverified offline"
+    ( cd "$rsrc" && env -u ADB_UPDATE_CHANNEL ADB_RELEASE_VERIFIED=v9.9.9 HOME="$wh" CODEX_HOME="$wh/.codex" PATH="$rbin:$PATH" \
+        ./install.sh --agent claude --agent codex --no-hooks ) >/dev/null 2>"$work/warn.err"
+    hasnt "$(cat "$work/warn.err")" "PUBLISHED" "install.sh, a tag baseline update just verified → no note"
     git -C "$rsrc" tag -d v9.9.9 >/dev/null
   fi
 done

@@ -39,12 +39,14 @@ the clone forward from one release to the next on its own.
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
 cd ~/Code/ai-dev-baseline
-git checkout --detach "$(gh release view -R github.com/BWBama85/ai-dev-baseline --json tagName --jq .tagName)"
+tag="$(bin/baseline latest-release)" && git checkout --detach "refs/tags/$tag"
 ```
 
-Without `gh`, take the tag from the repository's Releases page. On the release channel,
-`install.sh` warns (and never refuses) when the clone is not at a release tag, and prints these
-commands. To run unreleased `main` on purpose, stay on `main` and set the channel (see
+`baseline latest-release` asks GitHub (through `gh`) for the newest stable release of the
+repository `origin` names and prints its tag only when it is a plain `vX.Y.Z`; the `&&` stops
+there if it cannot. Without `gh`, take the tag from the repository's Releases page. On the release
+channel, `install.sh` warns (and never refuses) when the clone is not at a version tag, and prints
+the way to the newest release; at a version tag it notes that publication is not checked offline. To run unreleased `main` on purpose, stay on `main` and set the channel (see
 [*Keeping the install current*](#keeping-the-install-current)).
 
 ## 2. Run the installer

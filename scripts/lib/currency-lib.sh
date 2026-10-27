@@ -347,7 +347,13 @@ CU_DIGEST
            else
              _adb_cu_emit behind "install-source is behind origin — run 'baseline update'."
            fi ;;
-      30)  _adb_cu_emit offline "install-source remote unreachable (${status:-unknown}) — currency not verified." ;;
+      30)  if [ "$channel" = release ]; then
+             # 30 on the release channel also covers a reachable repository with no release, or one
+             # whose release could not be resolved — so the word, not "unreachable".
+             _adb_cu_emit offline "install-source currency not verified (${status:-unknown}) — run 'baseline update' to see why."
+           else
+             _adb_cu_emit offline "install-source remote unreachable (${status:-unknown}) — currency not verified."
+           fi ;;
       40)  _adb_cu_emit refused "$(_adb_cu_integrity_msg)" ;;
       0|20) _adb_cu_emit silent "" ;;   # current, or a clone state notify stays quiet about (held included)
       *)   _adb_cu_emit failed "'baseline update --check' failed (exit $rc) — run it manually to see why." ;;
@@ -447,7 +453,11 @@ CU_DIGEST
       else
         _adb_cu_emit silent ""
       fi ;;
-    30) _adb_cu_emit offline "install-source remote unreachable — currency not verified." ;;
+    30) if [ "$channel" = release ]; then
+          _adb_cu_emit offline "install-source currency not verified (the remote, or its newest release, could not be resolved) — run 'baseline update' to see why."
+        else
+          _adb_cu_emit offline "install-source remote unreachable — currency not verified."
+        fi ;;
     40) _adb_cu_emit refused "$(_adb_cu_integrity_msg)" ;;
     124)
       # Our own bound fired. Distinct from `offline`: the remote may be fine and something is
