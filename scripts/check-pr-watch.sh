@@ -2415,11 +2415,14 @@ eq "$(ci_lines_with 'pr-watch: ci green')" "0" "ci-wait: the expired bound's CI 
 has "$OUT" "not settled before the bound" "ci-wait: ...it says the green was not settled"
 
 # The declaration's reason rides the ONE CI line — not a stderr line per poll — and passes the same
-# allowlist as a job name, since it echoes issue-body text.
+# allowlist as a job name, since it echoes issue-body text. The CI line itself is asked for the
+# reason: a count of lines carrying it depends on how many polls fit in the bound, and under load
+# one poll made a reason moved to stderr read as exactly one line.
 reset_fx; declare_bots "[\"$CODEX\"]"; ci_runs_fx; ci_status_fx; ci_branch_fx --unprotected; ci_workflows_fx 0
 ci_roadmap_fx $'<!-- release-health: [click](https://example.com) & <x -->\n' "owner" "admin"
 w ci-wait --pr 1 --interval 1 --max-secs 3
-eq "$(ci_lines_with 'roadmap #31')" "1" "ci-wait: the declaration reason rides the one CI line"
+eq "$(printf '%s\n' "$OUT" | grep -E '^pr-watch: ci [a-z]+ ' | grep -cF -- 'roadmap #31')" "1" "ci-wait: the declaration reason rides the one CI line"
+eq "$(ci_lines_with 'roadmap #31')" "1" "ci-wait: ...and no other line repeats it"
 hasnt "$OUT" "<x" "ci-wait: the declaration reason is markup-neutralized"
 # An unreadable poll is an EVENT, and its CI line is printed once, when the wait ends.
 reset_fx; declare_bots "[\"$CODEX\"]"

@@ -65,6 +65,8 @@
 #       is not `<step>=<count>`, an empty entry, a step that is not a registered `*-mutation` step,
 #       a step named twice, a count outside 1..256, and a matrix of more than 256 jobs, GitHub's
 #       per-matrix limit — the entries checked against the whole registry even under `--only`.
+#       Only rows scored by `check_mutation_rows` are split: a harness that never reaches it runs
+#       its whole table in each of its K jobs, which costs time and loses no row.
 #   mutation-gate.sh touched [--base <ref>]
 #       Which harnesses does this change give something new to say (#456)? Asks the same decision
 #       `run` asks, for every `*-mutation` step, and prints each step that would RUN, one per line on

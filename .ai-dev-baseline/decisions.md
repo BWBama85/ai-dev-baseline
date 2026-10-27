@@ -11124,6 +11124,13 @@ survive is the part a later reader needs.
              backstop, and its weekly run would still face the same 360-minute ceiling. Option 3
              (splitting the suite) is the largest diff, and it needs an argument that the smaller
              suites keep the coverage. Sharding costs K-1 extra controls, about one suite run each.
+- measured:  Run 40431642069 (`workflow_dispatch`, `step=settings-fragment-mutation`, head
+             `51c6b1af`, ubuntu-26.04, pool=4): shard 1 scored 99 rows in 77 minutes, shard 2 98 in
+             110 and shard 3 98 in 66 (job wall times; harness 77m08s, 109m32s, 65m30s). Every row
+             was red on its own witness, and 99+98+98 = 295, the whole table. The slowest shard left
+             about 250 of the 360 minutes. Row counts were equal and times spread 1.7x, the same
+             ratio as the unsharded 179-316, so the variance is the runner's and the bound is
+             sized by the slowest shard.
 - rejected:  A sixth `selfcheck.sh --list` field for the shard count: that couples the local runner
              to a CI sizing choice. Contiguous row ranges: equally balanced, but a run of adjacent
              rows that hang together (rows cluster by the code they mutate) would all land on one
