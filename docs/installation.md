@@ -39,10 +39,11 @@ the clone forward from one release to the next on its own.
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
 cd ~/Code/ai-dev-baseline
-tag="$(bin/baseline latest-release)" && git checkout --detach "refs/tags/$tag"
+tag="$(bin/baseline latest-release)" && git checkout --detach "refs/tags/$tag" \
+  || echo "STOP: the clone is not on a release — do not run install.sh until this succeeds."
 ```
 
-`baseline latest-release` asks GitHub (through `gh`) for the newest stable release of the
+Go on to step 2 only when that printed no `STOP`. `baseline latest-release` asks GitHub (through `gh`) for the newest stable release of the
 repository `origin` names and prints its tag only when it is a plain `vX.Y.Z`; the `&&` stops
 there if it cannot. Without `gh`, take the tag from the repository's Releases page. On the release
 channel, `install.sh` warns (and never refuses) when the clone is not at a version tag, and prints
@@ -743,8 +744,11 @@ only (a repo you open must not choose your machine's update channel):
 channel = "main"      # release (default) | main
 ```
 
-`ADB_UPDATE_CHANNEL=main` does the same for one run. A misspelled or unreadable value means
-`release`, with a diagnostic, never `main`. On `main` the behaviour below is exactly the pre-#534
+`ADB_UPDATE_CHANNEL=main` does the same for one run. A misspelled, malformed or unreadable value
+means `release`, with a diagnostic, never `main` — checked on the key's own line, which must be a
+plain one-line `channel = "release"` or `channel = "main"` (an optional `# comment` after it). The
+baseline's TOML reader is a minimal subset: a multi-line string, an inline table, or the key defined
+twice (the first wins) are not supported and not validated, so keep the key that simple. On `main` the behaviour below is exactly the pre-#534
 one — fast-forward the default branch — plus one addition: a clone left **detached** by the release
 channel is re-attached to the default branch when that only moves forward (the local branch is
 advanced to `origin/<default>` first, then checked out). Switching back from `main` to `release`

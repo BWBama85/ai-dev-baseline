@@ -4417,11 +4417,13 @@ adb_is_release_tag() {
 # project's agents.toml must not choose the machine's update channel, D10). Unset means `release`.
 # A misspelled, unreadable or NUL-bearing value also means `release`, with a stderr line: falling
 # back to `main` would run unreleased code the operator never asked for. The bad value itself is
-# never echoed.
+# never echoed. What is enforced is the KEY'S OWN LINE: the shared reader decides which line that
+# is, and the TOML it does not support — multi-line strings, inline tables, a key defined twice
+# (the first wins) — is unsupported here too (D143), not validated.
 adb_update_channel() {
   local c="${ADB_UPDATE_CHANNEL:-}" where="ADB_UPDATE_CHANNEL" raw rc mf
   # TOML whitespace is space or tab only; any other byte after the value is malformed.
-  local re='^[ '$'\t'']*channel[ '$'\t'']*=[ '$'\t'']*("(release|main)"|'"'"'(release|main)'"'"')[ '$'\t'']*(#.*)?$'
+  local re='^[ '$'\t'']*channel[ '$'\t'']*=[ '$'\t'']*("(release|main)"|'"'"'(release|main)'"'"')[ '$'\t'']*(#([^[:cntrl:]]|'$'\t'')*)?$'
   if [ -z "$c" ]; then
     mf="$(adb_global_manifest)"
     raw="$(adb_toml_get "$mf" updates channel --raw 2>/dev/null)"; rc=$?
@@ -4451,9 +4453,13 @@ adb_update_channel() {
 adb_origin_url_slug() {
   local url host slug
   url="$(git -C "$1" config --get remote.origin.url 2>/dev/null)" || return 1
+  # Network transports only: `file://github.com/…` is a local path to git, whatever it names.
   case "$url" in
-    *://*) host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"; host="${host%%:*}" ;;
-    *:*)   host="${url%%:*}"; host="${host##*@}" ;;
+    https://*|http://*|ssh://*|git://*|git+ssh://*|ssh+git://*)
+           host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"; host="${host%%:*}" ;;
+    *://*) return 1 ;;
+    *:*)   host="${url%%:*}"; host="${host##*@}"
+           case "$host" in */*) return 1 ;; esac ;;   # `dir/x:y` is a local path, not scp syntax
     *)     return 1 ;;
   esac
   host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"

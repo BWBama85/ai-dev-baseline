@@ -11156,10 +11156,14 @@ survive is the part a later reader needs.
              it did not publish.
 - decision:  1. **A `[updates] channel` key, `release` (default) | `main`**, in the GLOBAL manifest
                 only (D10's reasoning), overridden for one run by `ADB_UPDATE_CHANNEL`. A misspelled,
-                malformed (a bare word, an unterminated quote, trailing junk — validated on the raw
-                text through `adb_toml_get --raw`, since the default reader repairs those) or
-                unreadable value means `release`, with a diagnostic: falling back to `main` would
-                run unreleased code nobody asked for.
+                malformed (a bare word, an unterminated quote, trailing junk, a control byte —
+                validated on the key's whole raw line through `adb_toml_get --raw`, since the default
+                reader repairs those) or unreadable value means `release`, with a diagnostic: falling
+                back to `main` would run unreleased code nobody asked for. The claim is scoped to the
+                key's own line (owner decision, after three review passes found TOML shapes beyond
+                it): which line that is stays the shared minimal reader's choice, and what that reader
+                does not support — multi-line strings, inline tables, a duplicate key (first wins),
+                control bytes in a table header — is documented as unsupported, not validated.
              2. **One resolver** (`adb_latest_release_tag`, common.sh) for the global install and
                 pinned `status`/`notice`: a published, non-draft, non-prerelease Release carrying
                 GitHub's latest marker, never list order; a tag name must be `vX.Y.Z`; a full page,

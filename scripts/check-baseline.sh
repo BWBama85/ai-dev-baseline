@@ -704,6 +704,13 @@ eq "$(rel_head)" "$V100" "release: notify moves nothing"
 out="$(rel_currency auto cleanup)"
 has "$out" "updated v1.0.0 → v1.1.0." "release: auto reports the move in versions"
 hasnt "$out" "commit" "release: auto never counts commits on the release channel"
+# The destination named is the release baseline verified, never another local tag on that commit.
+git -C "$relsrc" checkout -q --detach v1.0.0
+check_git "$relsrc" -c tag.gpgsign=false tag -a v2.0.0 -m unpublished "$V110"
+out="$(rel_currency auto cleanup)"
+has "$out" "updated v1.0.0 → v1.1.0." "release: auto names the verified release, not an unpublished tag on the same commit"
+hasnt "$out" "v2.0.0" "release: ...and never the unpublished one"
+git -C "$relsrc" tag -d v2.0.0 >/dev/null
 git -C "$relsrc" checkout -q --detach v1.0.0
 : > "$work/install.log"
 eq "${ rel_update; }" "0" "release: behind → update exits 0"

@@ -380,7 +380,9 @@ CU_DIGEST
     0)
       # Unchanged HEAD means it was already current — nothing worth reporting.
       if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ] && [ "$channel" = release ]; then
-        _adb_cu_emit updated "updated ${before_label:-$before} → $(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")."
+        # The destination is the release baseline VERIFIED (its versions line), not a local tag that
+        # happens to name the same commit — an unpublished one can.
+        _adb_cu_emit updated "updated ${before_label:-$before} → ${newest:-$(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")}."
       elif [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
         n="$(git -C "$src" rev-list --count "$before..$after" 2>/dev/null)"
         case "$n" in ''|*[!0-9]*) n="" ;; esac
@@ -469,7 +471,7 @@ CU_DIGEST
       # a half-repaired global install is the silent-staleness failure this exists to prevent.
       if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
         if [ "$channel" = release ]; then
-          before="${before_label:-$before}"; after="$(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")"
+          before="${before_label:-$before}"; after="${newest:-$(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")}"
         fi
         _adb_cu_emit failed "clone updated $before → $after but the global install needs repair — run 'baseline update'."
       else

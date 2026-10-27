@@ -3405,7 +3405,7 @@ for v in "'main'" '"main"   # follow main' "\"main\"\t" '"main"\r'; do
   eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: well-formed [$v] → main"
 done
 # ...nor is a control byte BEFORE the value or around the key: TOML whitespace is space and tab.
-for l in 'channel = \v"main"' 'channel\v= "main"' '\fchannel = "main"' 'channel =\f"main"'; do
+for l in 'channel = \v"main"' 'channel\v= "main"' '\fchannel = "main"' 'channel =\f"main"' 'channel = "main" #\v'; do
   printf '[updates]\n%b\n' "$l" > "$chmf"
   eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: control byte in [$l] → release"
 done
@@ -3488,7 +3488,8 @@ for u in git@github.com:Acme/Widget.git ssh://git@github.com/acme/widget https:/
   git -C "$nlb" remote set-url origin "$u"
   eq "$(adb_origin_url_slug "$nlb")" "acme/widget" "origin slug: $u"
 done
-for u in /some/path https://gitlab.com/acme/widget.git git@gitlab.com:acme/widget.git https://github.com.evil.example/acme/widget; do
+for u in /some/path https://gitlab.com/acme/widget.git git@gitlab.com:acme/widget.git https://github.com.evil.example/acme/widget \
+         file://github.com/acme/widget dir/github.com:acme/widget; do
   git -C "$nlb" remote set-url origin "$u"
   adb_origin_url_slug "$nlb" >/dev/null && bad "origin slug: $u must name no GitHub repository" || ok
 done

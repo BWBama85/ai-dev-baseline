@@ -28,8 +28,9 @@ reviews, debugging, or other roles.
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
 cd ~/Code/ai-dev-baseline
-tag="$(bin/baseline latest-release)" && git checkout --detach "refs/tags/$tag"   # the newest stable release
-./install.sh --agent claude            # add --agent codex --agent gemini as needed
+# the newest stable release, then install it — one chain, so nothing installs if a step fails
+tag="$(bin/baseline latest-release)" && git checkout --detach "refs/tags/$tag" \
+  && ./install.sh --agent claude       # add --agent codex --agent gemini as needed
 export PATH="$HOME/Code/ai-dev-baseline/bin:$PATH"   # for `agent-init`
 ```
 

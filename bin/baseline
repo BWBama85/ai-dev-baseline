@@ -1036,12 +1036,21 @@ _bl_release_resolve() {
     REL_WORD=release-unresolvable; REL_REASON="origin has no URL"; return 1
   fi
   # A private ref a killed run left behind keeps its objects reachable: drop any whose process is
-  # gone. A live peer's is left alone.
-  git -C "$SRC" for-each-ref --format='%(refname)' "$_BL_PRIV_NS/" 2>/dev/null | while IFS= read -r ref; do
-    pid="${ref##*/}"; pid="${pid%%-*}"
-    case "$pid" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$pid" 2>/dev/null || git -C "$SRC" update-ref -d "$ref" 2>/dev/null || true
-  done
+  # PROVABLY gone (adb_pid_gone: ESRCH only — a live peer we may not signal is left alone). This is
+  # housekeeping and never stops the resolve, but a failure is said rather than swallowed.
+  if out="$(git -C "$SRC" for-each-ref --format='%(refname)' "$_BL_PRIV_NS/" 2>/dev/null)"; then
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      pid="${ref##*/}"; pid="${pid%%-*}"
+      adb_pid_gone "$pid" || continue
+      git -C "$SRC" update-ref -d "$ref" 2>/dev/null \
+        || echo "baseline: could not remove the stale ref $ref in $SRC." >&2
+    done <<EOF
+$out
+EOF
+  else
+    echo "baseline: could not list $SRC's temporary release refs; any left by a killed run stay." >&2
+  fi
   priv="$_BL_PRIV_NS/$$-${RANDOM:-0}"
   if ! git -C "$SRC" fetch --quiet --no-tags -- "$url" \
        "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT" "refs/tags/$REL_TAG:$priv" 2>/dev/null; then
