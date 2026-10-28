@@ -3368,6 +3368,146 @@ if [ -e "$pj/t4" ] || [ -e "$pj/d4.json" ]; then bad "adb_publish_json: ...publi
 if adb_publish_json "$pj/t5" "$pj/d5.json" --allow-empty --strict >/dev/null 2>&1 && [ -f "$pj/d5.json" ]; then ok
 else bad "adb_publish_json takes --allow-empty and --strict together"; fi
 
+# --- the release channel's shared half (#534, D143) ---------------------------------------------
+# adb_is_release_tag: exactly `v` + three decimal fields.
+for t in v0.0.0 v1.2.3 v10.20.30; do
+  adb_is_release_tag "$t" && ok || bad "release tag: $t is accepted"
+done
+for t in "" v 1.2.3 v1.2 v1.2.3.4 v1.2.3-rc.1 'v1.1.0;x' 'v1.2.3 ' 'v1..3' "v1.2.3
+v1.2.4" V1.2.3 vx.2.3; do
+  adb_is_release_tag "$t" && bad "release tag: [$t] must be refused" || ok
+done
+
+# adb_update_channel: env wins; the GLOBAL manifest otherwise; unset is release; anything
+# unreadable or misspelled is release plus a diagnostic, never main.
+chh="$work/chhome"; mkdir -p "$chh/.config/ai-dev-baseline"; chmf="$chh/.config/ai-dev-baseline/agents.toml"
+eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: no manifest → release"
+printf '[updates]\nchannel = "main"\n' > "$chmf"
+eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: the global manifest's main"
+eq "$(HOME="$chh" ADB_UPDATE_CHANNEL=release adb_update_channel 2>/dev/null)" "release" "channel: ADB_UPDATE_CHANNEL wins over the manifest"
+printf '[updates]\nchannel = "mian"\n' > "$chmf"
+out="$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1 >/dev/null)"
+eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: a misspelled value → release"
+has "$out" 'is not "release" or "main"' "channel: ...with a diagnostic"
+hasnt "$out" "mian" "channel: ...that never echoes the bad value"
+printf '[updates]\nchannel = "ma\000in"\n' > "$chmf"
+out="$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1)"
+has "$out" "release" "channel: a NUL-bearing manifest → release"
+has "$out" "NUL byte" "channel: ...naming why"
+# Malformed scalars the lenient reader would repair into "main" are NOT a choice of main.
+for v in 'main' '"main' '"main" junk' "'main" '"mai"' '"main"\v' '"main"\f'; do
+  printf '[updates]\nchannel = %b\n' "$v" > "$chmf"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: malformed [$v] → release"
+  has "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1 >/dev/null)" 'is not "release" or "main"' "channel: malformed [$v] is diagnosed"
+done
+for v in "'main'" '"main"   # follow main' "\"main\"\t" '"main"\r'; do
+  printf '[updates]\nchannel = %b\n' "$v" > "$chmf"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: well-formed [$v] → main"
+done
+# ...nor is a control byte BEFORE the value or around the key: TOML whitespace is space and tab.
+for l in 'channel = \v"main"' 'channel\v= "main"' '\fchannel = "main"' 'channel =\f"main"' 'channel = "main" #\v'; do
+  printf '[updates]\n%b\n' "$l" > "$chmf"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: control byte in [$l] → release"
+done
+printf '[updates]\n  channel\t=\t"main"\t# follow main\n' > "$chmf"
+eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "main" "channel: tabs and spaces around key and value → main"
+# An UNREADABLE manifest (a file that exists and cannot be read) — not one that is absent.
+printf '[updates]\nchannel = "main"\n' > "$chmf"; chmod 000 "$chmf"
+if [ -r "$chmf" ]; then
+  ok   # running as root: an unreadable file cannot be made here, so the case is not reachable
+else
+  out="$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>&1 >/dev/null)"
+  eq "$(HOME="$chh" ADB_UPDATE_CHANNEL='' adb_update_channel 2>/dev/null)" "release" "channel: an unreadable manifest → release"
+  has "$out" "could not be read" "channel: ...naming why"
+fi
+chmod 600 "$chmf"; rm -f "$chmf"
+
+# adb_latest_release_tag through a stub gh that answers from a file, applying --jq with the real jq.
+relgh="$work/relgh"; mkdir -p "$relgh"
+cat > "$relgh/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" > "$work/relgh.args"
+[ -f "$work/relgh.rc" ] && exit "\$(cat "$work/relgh.rc")"
+expr=""
+while [ "\$#" -gt 0 ]; do case "\$1" in --jq) expr="\$2"; shift 2 ;; *) shift ;; esac; done
+jq -r "\$expr" < "$work/relgh.json"
+EOF
+chmod +x "$relgh/gh"
+lrt() {   # lrt <json> -> "<rc>|<stdout>"
+  local out rc
+  printf '%s\n' "$1" > "$work/relgh.json"; rm -f "$work/relgh.rc"
+  out="$(PATH="$relgh:$PATH" adb_latest_release_tag acme/widget)"; rc=$?
+  printf '%s|%s' "$rc" "$out"
+}
+eq "${ lrt '[{"tagName":"v1.0.0","isLatest":false},{"tagName":"v1.1.0","isLatest":true}]'; }" "0|v1.1.0" "latest release: the latest marker, not list order"
+eq "${ lrt '[{"tagName":"v0.9.0","isLatest":false},{"tagName":"v1.1.0","isLatest":true}]'; }" "0|v1.1.0" "latest release: a backfill listed first is not chosen"
+has "$(cat "$work/relgh.args")" "--exclude-drafts" "latest release: drafts are excluded in the query"
+has "$(cat "$work/relgh.args")" "--exclude-pre-releases" "latest release: prereleases are excluded in the query"
+has "$(cat "$work/relgh.args")" "-R github.com/acme/widget" "latest release: asks the named repository, host pinned (GH_HOST cannot redirect it)"
+eq "${ lrt '[]'; }" "1|" "latest release: no stable release → 1"
+eq "${ lrt '[{"tagName":"v1.0.0","isLatest":false}]'; }" "2|no release is marked latest" "latest release: none marked latest → 2"
+eq "${ lrt '[{"tagName":"v1.0.0","isLatest":true},{"tagName":"v1.1.0","isLatest":true}]'; }" "2|more than one release is marked latest" "latest release: two marked latest → 2"
+eq "${ lrt '[{"tagName":"v1.1.0;x","isLatest":true}]'; }" "2|the latest tag name failed validation" "latest release: a bad tag name → 2"
+eq "${ lrt '[{"tagName":"v1.1.0\n","isLatest":true}]'; }" "2|the latest tag name failed validation" "latest release: a tag name ending in a newline → 2 (never trimmed into a valid one)"
+eq "${ lrt 'not json'; }" "2|gh failed (exit 5)" "latest release: an answer jq cannot read → 2"
+full="$(jq -cn '[range(1000) | {tagName: "v1.0.\(.)", isLatest: (. == 0)}]')"
+eq "${ lrt "$full"; }" "2|the release list may be incomplete" "latest release: a full page is refused as possibly incomplete"
+printf '[]\n' > "$work/relgh.json"; printf '1' > "$work/relgh.rc"
+eq "$(PATH="$relgh:$PATH" adb_latest_release_tag acme/widget; printf '|%s' "$?")" "gh failed (exit 1)|2" "latest release: gh failing → 2"
+rm -f "$work/relgh.rc"
+emptyp="$work/nogh"; mkdir -p "$emptyp"
+eq "$(PATH="$emptyp" adb_latest_release_tag acme/widget; printf '|%s' "$?")" "gh not found|2" "latest release: no gh on PATH → 2"
+eq "$(PATH="$relgh:$PATH" adb_latest_release_tag 'acme/../x'; printf '|%s' "$?")" "invalid repository|2" "latest release: an unsafe slug never reaches gh"
+cat > "$relgh/gh" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod +x "$relgh/gh"
+eq "$(PATH="$relgh:$PATH" ADB_RELEASE_TIMEOUT_SECS=1 adb_latest_release_tag acme/widget; printf '|%s' "$?")" "timed out|2" "latest release: the gh call is bounded"
+
+# adb_release_label: an exact release tag, the nearest one plus a count, or the short hash.
+lbr="$work/lbr"; git init -q "$lbr"
+check_git "$lbr" commit -q --allow-empty -m a
+check_git "$lbr" -c tag.gpgsign=false tag -a v1.0.0 -m v1.0.0
+eq "$(adb_release_label "$lbr")" "v1.0.0" "label: exactly at a release tag"
+check_git "$lbr" -c tag.gpgsign=false tag -a v1.0.1 -m v1.0.1
+eq "$(adb_release_label "$lbr")" "v1.0.1" "label: two tags on one commit → the highest"
+check_git "$lbr" commit -q --allow-empty -m b
+check_git "$lbr" commit -q --allow-empty -m c
+eq "$(adb_release_label "$lbr")" "v1.0.1+2 ($(git -C "$lbr" rev-parse --short HEAD))" "label: past the nearest release"
+check_git "$lbr" -c tag.gpgsign=false tag -a 'v9.9.9-rc.1' -m rc
+eq "$(adb_release_label "$lbr")" "v1.0.1+2 ($(git -C "$lbr" rev-parse --short HEAD))" "label: a non-release tag is never printed"
+nlb="$work/nlb"; git init -q "$nlb"; check_git "$nlb" commit -q --allow-empty -m a
+eq "$(adb_release_label "$nlb")" "$(git -C "$nlb" rev-parse --short HEAD)" "label: no release tag at all → the short hash"
+
+# adb_origin_url_slug reads the RAW configured URL, before insteadOf.
+git -C "$nlb" remote add origin https://github.com/Acme/Widget.git
+git -C "$nlb" config url./nowhere.insteadOf https://github.com/
+eq "$(adb_origin_url_slug "$nlb")" "acme/widget" "origin slug: the configured URL, case-folded"
+for u in git@github.com:Acme/Widget.git ssh://git@github.com/acme/widget https://user@github.com:443/acme/widget/; do
+  git -C "$nlb" remote set-url origin "$u"
+  eq "$(adb_origin_url_slug "$nlb")" "acme/widget" "origin slug: $u"
+done
+for u in /some/path https://gitlab.com/acme/widget.git git@gitlab.com:acme/widget.git https://github.com.evil.example/acme/widget \
+         file://github.com/acme/widget dir/github.com:acme/widget; do
+  git -C "$nlb" remote set-url origin "$u"
+  adb_origin_url_slug "$nlb" >/dev/null && bad "origin slug: $u must name no GitHub repository" || ok
+done
+
+# adb_git_is_ancestor keeps git's error apart from "no".
+check_git "$nlb" commit -q --allow-empty -m b2
+adb_git_is_ancestor "$nlb" HEAD~1 HEAD; eq "$?" "0" "is-ancestor: yes → 0"
+adb_git_is_ancestor "$nlb" HEAD HEAD~1; eq "$?" "1" "is-ancestor: no → 1"
+adb_git_is_ancestor "$nlb" HEAD 0000000000000000000000000000000000000001; eq "$?" "2" "is-ancestor: a missing object → 2, never 'no'"
+
+# A nearer tag that is not a release tag never hides an older one that is.
+check_git "$lbr" -c tag.gpgsign=false tag -a v2 -m v2
+check_git "$lbr" commit -q --allow-empty -m d
+eq "$(adb_release_label "$lbr")" "v1.0.1+3 ($(git -C "$lbr" rev-parse --short HEAD))" "label: a nearer invalid tag (v2) is skipped"
+check_git "$lbr" -c tag.gpgsign=false tag -a v2.0.0junk -m junk
+check_git "$lbr" commit -q --allow-empty -m e
+eq "$(adb_release_label "$lbr")" "v1.0.1+4 ($(git -C "$lbr" rev-parse --short HEAD))" "label: a nearer version-shaped invalid tag (v2.0.0junk) is skipped"
+
 # --- --mutation: the manifest guards must be OBSERVED failing (#324) ----------------------------
 #
 # A guard's failure mode is silence: one that scans nothing, matches nothing, or refuses nothing

@@ -44,6 +44,10 @@ ROOT="$(pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# Every row above the release-channel section runs on `channel = "main"` — the pre-#534 behaviour,
+# which that channel keeps exactly. The release-channel rows unset this and say so.
+export ADB_UPDATE_CHANNEL=main
+
 # --- fixture: a minimal but REAL install-source, served from a bare origin ----
 # The source carries the FULL claude install surface (root doc, a skill, the three runtime
 # scripts, scripts/lib) because bin/baseline now verifies the shared MANIFEST — every intended
@@ -52,7 +56,8 @@ trap 'rm -rf "$work"' EXIT
 seed="$work/seed"
 mkdir -p "$seed/bin" "$seed/scripts/lib" "$seed/agents/claude/skills/demo" "$seed/agents/claude/scripts"
 cp "$ROOT/bin/baseline" "$seed/bin/baseline"; chmod +x "$seed/bin/baseline"
-cp "$ROOT/scripts/lib/common.sh" "$seed/scripts/lib/common.sh"
+# currency-lib.sh too: the release-channel rows drive the currency trigger against this clone.
+cp "$ROOT/scripts/lib/common.sh" "$ROOT/scripts/lib/currency-lib.sh" "$seed/scripts/lib/"
 # bin/baseline only checks install.sh EXISTS (install-source detection); --check never
 # runs it. The `update` path DOES run it, so the stub logs its args to a fixed file (baked
 # in at creation time, absolute) — tests assert on WHICH agents self-heal invokes it with.
@@ -151,10 +156,16 @@ check_git "$src" commit -q --allow-empty -m local-div
 advance_origin "origin-div"
 eq "${ run_check "$src/bin/baseline" "$fh"; }" "diverged|20" "diverged"
 
-# detached HEAD.
+# detached HEAD. On the main channel a detached clone on origin's history is re-attached (#534 — a
+# release-channel install switched back to main), so it reads `behind`; detached OFF origin's
+# history is still refused.
 reset_src
 git -C "$src" checkout -q --detach HEAD
-eq "${ run_check "$src/bin/baseline" "$fh"; }" "detached|20" "detached"
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "behind|10" "detached on origin's history (channel main) → behind, to re-attach"
+reset_src
+git -C "$src" checkout -q --detach HEAD
+check_git "$src" commit -q --allow-empty -m detached-local
+eq "${ run_check "$src/bin/baseline" "$fh"; }" "detached|20" "detached off origin's history (channel main) → detached"
 
 # not-default: on a feature branch.
 reset_src
@@ -617,6 +628,336 @@ rm -f "$fh/.claude/settings.json"
 out="$(HOME="$nlfh" "$src/bin/baseline" update 2>&1)"
 has "$out" "cannot enumerate the intended install destinations" "an unenumerable manifest refuses the update by name"
 
+# =============== #534: the RELEASE channel (the default) ===============
+# A stub `gh` first on PATH serves the release list from $work/rel.json — honouring
+# --exclude-drafts, --exclude-pre-releases and --limit, and applying --jq with the real jq — logs
+# every call to $work/gh.log, and exits with $work/gh.rc's contents when that file exists. The
+# clone's origin is spelled as a GitHub URL and rewritten to a local bare repo with
+# `url.<path>.insteadOf`, so the slug resolves and every fetch stays offline.
+ghbin="$work/ghbin"; mkdir -p "$ghbin"
+cat > "$ghbin/gh" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$work/gh.log"
+[ -f "$work/gh.rc" ] && exit "\$(cat "$work/gh.rc")"
+expr="" xd=false xp=false lim=30
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    --jq) expr="\$2"; shift 2 ;;
+    --limit) lim="\$2"; shift 2 ;;
+    --exclude-drafts) xd=true; shift ;;
+    --exclude-pre-releases) xp=true; shift ;;
+    *) shift ;;
+  esac
+done
+jq -c --argjson xd "\$xd" --argjson xp "\$xp" --argjson lim "\$lim" \\
+  '[.[] | select((\$xd and (.isDraft // false)) | not) | select((\$xp and (.isPrerelease // false)) | not)] | .[:\$lim]' \\
+  "$work/rel.json" | if [ -n "\$expr" ]; then jq -r "\$expr"; else cat; fi
+EOF
+chmod +x "$ghbin/gh"
+rel_json() { printf '%s\n' "$1" > "$work/rel.json"; rm -f "$work/gh.rc"; : > "$work/gh.log"; }
+REL_LIST='[{"tagName":"v1.1.0","isLatest":true},{"tagName":"v1.0.0","isLatest":false}]'
+
+relorigin="$work/relorigin.git"; git clone -q --bare "$origin" "$relorigin"
+GHURL="https://github.com/acme/widget.git"
+relc2="$work/relc2"; git clone -q "$relorigin" "$relc2"
+rel_commit() { check_git "$relc2" commit -q --allow-empty -m "$1"; git -C "$relc2" push -q origin HEAD:main; }
+rel_tag() { check_git "$relc2" -c tag.gpgsign=false tag -a "$1" -m "$1" "${2:-HEAD}"; git -C "$relc2" push -q origin "refs/tags/$1"; }
+rel_commit r1; rel_tag v1.0.0
+rel_commit r2; rel_tag v1.1.0
+V100="$(git -C "$relc2" rev-parse 'v1.0.0^{commit}')"
+V110="$(git -C "$relc2" rev-parse 'v1.1.0^{commit}')"
+relsrc="$work/relsrc"; git clone -q "$relorigin" "$relsrc"
+git -C "$relsrc" config "url.$relorigin.insteadOf" "$GHURL"
+git -C "$relsrc" remote set-url origin "$GHURL"
+relfh="$work/relhome"; mkdir -p "$relfh/.claude/skills" "$relfh/.claude/scripts"
+ln -s "$relsrc/agents/claude/CLAUDE.md" "$relfh/.claude/CLAUDE.md"
+ln -s "$relsrc/agents/claude/skills/demo" "$relfh/.claude/skills/demo"
+for s in $ADB_SCRIPTS; do ln -s "$relsrc/agents/claude/scripts/$s.sh" "$relfh/.claude/scripts/$s.sh"; done
+ln -s "$relsrc/scripts/lib" "$relfh/.claude/scripts/lib"
+
+# relenv <command…> — as the release-channel home sees the world: ADB_UPDATE_CHANNEL unset.
+relenv() { env -u ADB_UPDATE_CHANNEL HOME="$relfh" PATH="$ghbin:$PATH" XDG_CACHE_HOME="$work/relcache" "$@"; }
+# rel_check [VAR=value…] — "<word>|<exit>", stderr kept in $work/rel.err.
+rel_check()  { local out rc; out="$(relenv env "$@" "$relsrc/bin/baseline" update --check 2>"$work/rel.err")"; rc=$?; printf '%s|%s' "$out" "$rc"; }
+rel_update() { relenv "$relsrc/bin/baseline" update >"$work/rel.out" 2>"$work/rel.err"; printf '%s' "$?"; }
+# rel_currency <mode> <trigger> — the currency trigger's one record.
+rel_currency() {
+  relenv env ADB_SESSION_UPDATE="$1" ADB_SESSION_UPDATE_INTERVAL_SECS=0 \
+    bash "$relsrc/scripts/lib/currency-lib.sh" check --trigger "$2" --cwd "$work" 2>/dev/null
+}
+rel_head()   { git -C "$relsrc" rev-parse HEAD; }
+rel_reflog() { git -C "$relsrc" reflog | grep -c .; }
+rel_detached() { if git -C "$relsrc" symbolic-ref -q HEAD >/dev/null; then echo attached; else echo detached; fi; }
+rel_err() { cat "$work/rel.err"; }
+
+rel_json "$REL_LIST"
+
+# behind: detached at an older release. --check names both versions; notify names the newer one;
+# auto moves it and says so in versions, never a commit count.
+git -C "$relsrc" checkout -q --detach v1.0.0
+eq "${ rel_check; }" "behind|10" "release: detached at v1.0.0, v1.1.0 latest → behind (10)"
+has "$(rel_err)" "baseline: installed v1.0.0 (channel release), newest v1.1.0" "release: --check prints the versions line"
+out="$(rel_currency notify startup)"
+eq "${out%%[[:space:]]*}" "behind" "release: notify reports behind"
+has "$out" "a newer release v1.1.0 is available (installed v1.0.0) — run 'baseline update'." "release: notify names both versions"
+eq "$(rel_head)" "$V100" "release: notify moves nothing"
+out="$(rel_currency auto cleanup)"
+has "$out" "updated v1.0.0 → v1.1.0." "release: auto reports the move in versions"
+hasnt "$out" "commit" "release: auto never counts commits on the release channel"
+# The destination named is the release baseline verified, never another local tag on that commit.
+git -C "$relsrc" checkout -q --detach v1.0.0
+check_git "$relsrc" -c tag.gpgsign=false tag -a v2.0.0 -m unpublished "$V110"
+out="$(rel_currency auto cleanup)"
+has "$out" "updated v1.0.0 → v1.1.0." "release: auto names the verified release, not an unpublished tag on the same commit"
+hasnt "$out" "v2.0.0" "release: ...and never the unpublished one"
+git -C "$relsrc" tag -d v2.0.0 >/dev/null
+git -C "$relsrc" checkout -q --detach v1.0.0
+: > "$work/install.log"
+eq "${ rel_update; }" "0" "release: behind → update exits 0"
+eq "$(rel_head)" "$V110" "release: behind → HEAD is v1.1.0's commit"
+eq "$(rel_detached)" "detached" "release: behind → HEAD is detached at the release"
+[ -s "$work/install.log" ] && ok || bad "release: behind → install.sh is re-run"
+has "$(cat "$work/rel.out")" "v1.0.0 → v1.1.0" "release: behind → stdout names the move"
+has "$(cat "$work/gh.log")" "--exclude-drafts" "release: the resolver excludes drafts"
+has "$(cat "$work/gh.log")" "--exclude-pre-releases" "release: the resolver excludes prereleases"
+eq "$(git -C "$relsrc" for-each-ref refs/adb-release-fetch | grep -c .)" "0" "release: the private tag-fetch ref is removed after use"
+# ...and one a killed run left behind (its process gone) is swept by the next run.
+git -C "$relsrc" update-ref refs/adb-release-fetch/999999-1 HEAD
+rel_check >/dev/null
+eq "$(git -C "$relsrc" for-each-ref refs/adb-release-fetch | grep -c .)" "0" "release: a dead run's private ref is swept"
+
+# current: detached at the newest release.
+eq "${ rel_check; }" "current|0" "release: detached at v1.1.0 → current (0)"
+eq "${ rel_update; }" "0" "release: current → update exits 0"
+has "$(cat "$work/rel.out")" "already at the newest release v1.1.0" "release: current → says so"
+eq "$(rel_head)" "$V110" "release: current → HEAD unchanged"
+
+# main at the release commit (a main install the release caught up with): current, and the update
+# detaches in place so a stray `git pull` cannot leave the channel.
+git -C "$relsrc" checkout -q -B main "$V110"
+eq "${ rel_check; }" "current|0" "release: main at v1.1.0's commit → current"
+eq "${ rel_update; }" "0" "release: main at the release → update exits 0"
+eq "$(rel_head) $(rel_detached)" "$V110 detached" "release: main at the release → detached in place, HEAD unchanged"
+
+# ahead-of-release: main two commits past the newest release (today's install). HELD — never
+# downgraded — with both versions and both ways out named; silent at session start, one line in
+# /cleanup.
+rel_commit r3; rel_commit r4
+git -C "$relsrc" checkout -q main; git -C "$relsrc" fetch -q origin; git -C "$relsrc" reset -q --hard origin/main
+head_ahead="$(rel_head)"
+eq "${ rel_check; }" "ahead-of-release|20" "release: main two commits past v1.1.0 → ahead-of-release (20)"
+eq "${ rel_update; }" "21" "release: ahead-of-release → update holds (21)"
+eq "$(rel_head) $(git -C "$relsrc" symbolic-ref -q --short HEAD)" "$head_ahead main" "release: held → HEAD and branch unchanged"
+has "$(rel_err)" "v1.1.0+2 (" "release: held → names the installed version"
+has "$(rel_err)" "newest v1.1.0) — held, never downgraded" "release: held → names the newest release"
+has "$(rel_err)" '[updates] channel = "main"' "release: held → names the way out to main"
+out="$(rel_currency auto startup)"
+eq "$out" $'silent\t' "release: held → the startup trigger says nothing"
+out="$(rel_currency auto cleanup)"
+eq "${out%%[[:space:]]*}" "refused" "release: held → /cleanup reports it"
+has "$out" "held at v1.1.0+2 (" "release: held → /cleanup names the installed version"
+has "$out" "ahead of the newest release v1.1.0" "release: held → /cleanup names the newest release"
+eq "$(rel_currency notify cleanup)" $'silent\t' "release: held → notify stays silent"
+
+# main at an OLDER release's commit (a main install behind the newest release) → moves forward onto
+# the tag, detached.
+git -C "$relsrc" checkout -q -B main "$V100"
+eq "${ rel_update; }" "0" "release: main at v1.0.0's commit → update exits 0"
+eq "$(rel_head) $(rel_detached)" "$V110 detached" "release: main behind the release → moved forward onto v1.1.0, detached"
+
+# A tag pushed with no Release is never chosen.
+rel_tag v1.2.0
+eq "${ rel_check; }" "current|0" "release: a tag with no published Release is never followed"
+
+# A prerelease listed first and a backfill created last (not marked latest) are never chosen.
+rel_json '[{"tagName":"v1.3.0-rc.1","isLatest":false,"isPrerelease":true},{"tagName":"v1.1.0","isLatest":true},{"tagName":"v1.0.0","isLatest":false},{"tagName":"v0.9.0","isLatest":false}]'
+eq "${ rel_check; }" "current|0" "release: a prerelease or a backfill never outranks the latest-marked release"
+
+# tag-moved: origin deletes and re-creates v1.1.0 at another commit; the local tag is unchanged.
+# An integrity refusal (40), HEAD unchanged, and reported by BOTH triggers in BOTH modes — never as
+# `offline`, never as silence.
+rel_json "$REL_LIST"
+orig110="$(git -C "$relc2" rev-parse refs/tags/v1.1.0)"
+check_git "$relc2" tag -d v1.1.0 >/dev/null
+git -C "$relc2" push -q origin :refs/tags/v1.1.0
+rel_tag v1.1.0 "$V100"
+# ...even when the remote's own configuration would fetch tags, forced: the release channel reads
+# origin by URL, so neither tagOpt nor a forced tag refspec can overwrite the local tag first.
+git -C "$relsrc" config remote.origin.tagOpt --tags
+git -C "$relsrc" config --add remote.origin.fetch '+refs/tags/*:refs/tags/*'
+local110="$(git -C "$relsrc" rev-parse refs/tags/v1.1.0)"
+eq "${ rel_check; }" "tag-moved|40" "release: origin moved v1.1.0 → tag-moved (40)"
+eq "$(git -C "$relsrc" rev-parse refs/tags/v1.1.0)" "$local110" "release: tag-moved → the local tag is not overwritten, whatever the remote config"
+eq "${ rel_update; }" "40" "release: tag-moved → update refuses (40)"
+eq "$(rel_head)" "$V110" "release: tag-moved → HEAD unchanged"
+has "$(rel_err)" "tag v1.1.0 in $relsrc does not match origin's — refusing to move; a release tag must never move." "release: tag-moved → the refusal names the tag"
+for m in notify auto; do
+  for t in startup cleanup; do
+    out="$(rel_currency "$m" "$t")"
+    eq "${out%%[[:space:]]*}" "refused" "release: tag-moved → $m/$t reports it (refused)"
+    has "$out" "failed an integrity check" "release: tag-moved → $m/$t says why"
+    hasnt "$out" "unreachable" "release: tag-moved → $m/$t is not the offline line"
+  done
+done
+eq "$(rel_head)" "$V110" "release: tag-moved → no trigger moved HEAD"
+git -C "$relsrc" config --unset remote.origin.tagOpt
+git -C "$relsrc" config --unset remote.origin.fetch '\+refs/tags/\*:refs/tags/\*'
+check_git "$relc2" tag -d v1.1.0 >/dev/null
+git -C "$relc2" push -q origin :refs/tags/v1.1.0
+git -C "$relc2" push -q origin "$orig110:refs/tags/v1.1.0"
+eq "${ rel_check; }" "current|0" "fixture: origin's v1.1.0 restored"
+
+# release-off-branch: the latest release's commit is not on origin/main.
+git -C "$relc2" checkout -q -b side
+check_git "$relc2" commit -q --allow-empty -m side
+rel_tag v1.4.0
+git -C "$relc2" checkout -q main
+rel_json '[{"tagName":"v1.4.0","isLatest":true},{"tagName":"v1.1.0","isLatest":false}]'
+eq "${ rel_check; }" "release-off-branch|40" "release: the latest release is off main → release-off-branch (40)"
+eq "${ rel_update; }" "40" "release: release-off-branch → update refuses (40)"
+eq "$(rel_head)" "$V110" "release: release-off-branch → HEAD unchanged"
+
+# Unresolvable or absent releases: 30, HEAD unchanged, and no fetch, pull or checkout recorded.
+git -C "$relsrc" checkout -q --detach v1.0.0
+for case_ in gh-fails bad-tag no-release; do
+  case "$case_" in
+    gh-fails)   rel_json "$REL_LIST"; printf '1' > "$work/gh.rc"; want="release-unresolvable|30"; msg="could not resolve the newest release of acme/widget (gh failed (exit 1))" ;;
+    bad-tag)    rel_json '[{"tagName":"v1.1.0;x","isLatest":true}]'; want="release-unresolvable|30"; msg="the latest tag name failed validation" ;;
+    no-release) rel_json '[]'; want="no-release|30"; msg="acme/widget has no published stable release" ;;
+  esac
+  eq "${ rel_check; }" "$want" "release: $case_ → $want"
+  n0="$(rel_reflog)"
+  eq "${ rel_update; }" "30" "release: $case_ → update exits 30"
+  has "$(rel_err)" "$msg" "release: $case_ → the message says why"
+  eq "$(rel_head) $(rel_reflog)" "$V100 $n0" "release: $case_ → HEAD unchanged and no new reflog entry"
+  out="$(rel_currency auto cleanup)"
+  eq "${out%%[[:space:]]*}" "offline" "release: $case_ → the currency trigger records offline"
+  has "$out" "currency not verified" "release: $case_ → ...saying currency is not verified"
+  hasnt "$out" "unreachable" "release: $case_ → ...not that a reachable remote is unreachable"
+done
+# gh missing altogether: the same 30, HEAD and reflog unchanged. PATH is every tool the run needs
+# except gh, linked into one directory, so no host gh further down the PATH can answer.
+ghless="$work/ghless"; mkdir -p "$ghless"
+printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r _pd; do
+  [ -d "$_pd" ] || continue
+  for _pf in "$_pd"/*; do
+    _pb="${_pf##*/}"
+    [ "$_pb" = gh ] && continue
+    [ -x "$_pf" ] && [ ! -d "$_pf" ] && [ ! -e "$ghless/$_pb" ] && ln -s "$_pf" "$ghless/$_pb" 2>/dev/null
+  done
+done
+if [ -e "$ghless/gh" ] || ! PATH="$ghless" command -v git >/dev/null 2>&1; then
+  bad "fixture: could not build a PATH without gh"
+else
+  rel_json "$REL_LIST"; n0="$(rel_reflog)"
+  out="$(env -u ADB_UPDATE_CHANNEL HOME="$relfh" PATH="$ghless" XDG_CACHE_HOME="$work/relcache" "$relsrc/bin/baseline" update --check 2>"$work/rel.err")"
+  eq "$out|$?" "release-unresolvable|30" "release: gh missing → release-unresolvable (30)"
+  has "$(rel_err)" "(gh not found)" "release: gh missing → ...naming why"
+  env -u ADB_UPDATE_CHANNEL HOME="$relfh" PATH="$ghless" XDG_CACHE_HOME="$work/relcache" "$relsrc/bin/baseline" update >/dev/null 2>&1
+  eq "$?" "30" "release: gh missing → update exits 30"
+  eq "$(rel_head) $(rel_reflog)" "$V100 $n0" "release: gh missing → HEAD unchanged and no new reflog entry"
+fi
+rel_json "$REL_LIST"
+# `baseline latest-release` answers through the same resolver, for a clone with nothing installed.
+eq "$(relenv "$relsrc/bin/baseline" latest-release 2>/dev/null; printf '|%s' "$?")" "v1.1.0
+|0" "latest-release: the newest stable release tag"
+rel_json '[]'
+eq "$(relenv "$relsrc/bin/baseline" latest-release 2>/dev/null; printf '|%s' "$?")" "|1" "latest-release: none published → 1"
+rel_json '[{"tagName":"production","isLatest":true}]'
+eq "$(relenv "$relsrc/bin/baseline" latest-release 2>/dev/null; printf '|%s' "$?")" "|2" "latest-release: a tag that is not vX.Y.Z → 2, nothing printed"
+rel_json "$REL_LIST"
+
+# Local refusals stay local on the release channel: decided before any network (no gh call), and a
+# held lock steps aside before any network too.
+printf 'edit\n' >> "$relsrc/agents/claude/CLAUDE.md"
+eq "${ rel_check; }|$(grep -c . "$work/gh.log")" "dirty|20|0" "release: dirty → refused with no gh call"
+git -C "$relsrc" checkout -q -- agents/claude/CLAUDE.md
+git -C "$relsrc" checkout -q -B feature-z
+eq "${ rel_check; }|$(grep -c . "$work/gh.log")" "not-default|20|0" "release: not-default → refused with no gh call"
+git -C "$relsrc" checkout -q --detach v1.0.0
+relgit="$(git -C "$relsrc" rev-parse --absolute-git-dir)"
+printf '%s\n' "$V100" > "$relgit/MERGE_HEAD"
+eq "${ rel_check; }|$(grep -c . "$work/gh.log")" "in-progress|20|0" "release: in-progress → refused with no gh call"
+rm -f "$relgit/MERGE_HEAD"
+mkdir -p "$relgit/adb-update.lock"
+eq "${ rel_update; }|$(grep -c . "$work/gh.log")|$(rel_head)" "5|0|$V100" "release: a held lock → exit 5, no gh call, HEAD unchanged"
+rmdir "$relgit/adb-update.lock"
+
+# Choosing the channel. A misspelled value is the release channel plus a diagnostic; the global
+# manifest's `main` is today's behaviour (no release lookup at all); a PROJECT's copy is ignored.
+eq "${ rel_check ADB_UPDATE_CHANNEL=mian; }" "behind|10" "release: channel 'mian' → the release channel"
+has "$(rel_err)" 'ADB_UPDATE_CHANNEL is not "release" or "main" — following the release channel' "release: a misspelled channel is diagnosed"
+mkdir -p "$relfh/.config/ai-dev-baseline"
+printf '[updates]\nchannel = "mian"\n' > "$relfh/.config/ai-dev-baseline/agents.toml"
+rel_check >/dev/null
+has "$(rel_err)" "[updates] channel in $relfh/.config/ai-dev-baseline/agents.toml is not" "release: a misspelled manifest channel is diagnosed"
+mkdir -p "$work/proj"; printf '[updates]\nchannel = "main"\n' > "$work/proj/agents.toml"
+eq "$(cd "$work/proj" && rel_check)" "behind|10" "release: a PROJECT agents.toml cannot choose the channel"
+
+# release → main: detached at the release, the global manifest switches to main. The default branch
+# is re-attached at origin/main (forward only), with the local branch advanced first.
+git -C "$relsrc" checkout -q -B main "$V100"
+git -C "$relsrc" checkout -q --detach "$V110"
+printf '[updates]\nchannel = "main"\n' > "$relfh/.config/ai-dev-baseline/agents.toml"
+: > "$work/gh.log"
+eq "${ rel_check; }" "behind|10" "main channel: detached at a release on origin's history → behind (re-attach)"
+eq "$(grep -c . "$work/gh.log")" "0" "main channel: no release lookup at all"
+eq "${ rel_update; }" "0" "main channel: re-attach exits 0"
+eq "$(rel_head) $(git -C "$relsrc" symbolic-ref -q --short HEAD)" "$(git -C "$relsrc" rev-parse origin/main) main" "main channel: on main at origin/main"
+eq "${ rel_check; }" "current|0" "main channel: then current"
+# ...and a local main with unpushed work is never moved under the operator.
+check_git "$relsrc" commit -q --allow-empty -m unpushed
+git -C "$relsrc" checkout -q --detach "$V110"
+eq "${ rel_check; }" "ahead|20" "main channel: detached, local main has unpushed commits → ahead (20)"
+eq "$(rel_head)" "$V110" "main channel: ...and HEAD unchanged"
+# ...and a switch that fails after the branch was advanced puts the branch back: HEAD and the
+# branch both end where they were.
+git -C "$relsrc" checkout -q -B main "$V100"
+git -C "$relsrc" checkout -q --detach "$V110"
+: > "$relgit/index.lock"
+eq "${ rel_update; }" "20" "main channel: a failed switch onto main → exit 20"
+eq "$(rel_head) $(rel_detached) $(git -C "$relsrc" rev-parse refs/heads/main)" "$V110 detached $V100" \
+  "main channel: a failed switch → HEAD still detached where it was, and main put back"
+rm -f "$relgit/index.lock"
+# ...but when git switched and THEN failed (a post-checkout hook), the switch stands: HEAD is on
+# main, and rolling the branch back would rewind the branch HEAD now names.
+relhk="$work/relhooks"; mkdir -p "$relhk"; printf '#!/bin/sh\nexit 1\n' > "$relhk/post-checkout"; chmod +x "$relhk/post-checkout"
+git -C "$relsrc" config core.hooksPath "$relhk"
+eq "${ rel_update; }" "0" "main channel: a post-checkout hook failing after the switch → the re-attach stands (0)"
+eq "$(git -C "$relsrc" symbolic-ref -q --short HEAD) $(rel_head)" "main $(git -C "$relsrc" rev-parse origin/main)" \
+  "main channel: ...HEAD on main at origin/main, not rolled back"
+git -C "$relsrc" config --unset core.hooksPath
+# Re-attaching at the commit HEAD is already on is the same-HEAD path: links verified, no installer
+# re-run unless one is broken (a repair there exits 6, which a HEAD-watching caller can see).
+git -C "$relsrc" checkout -q --detach origin/main
+: > "$work/install.log"
+eq "${ rel_update; }" "0" "main channel: re-attach at the same commit, links fine → 0"
+has "$(cat "$work/rel.out")" "re-attached $relsrc to main at the commit it was on" "main channel: ...says so"
+[ -s "$work/install.log" ] && bad "main channel: a same-commit re-attach must take the same-HEAD path, not re-run the installer as a move" || ok
+# A host other than github.com is never resolved against a same-named GitHub repository.
+rm -f "$relfh/.config/ai-dev-baseline/agents.toml"
+git -C "$relsrc" remote set-url origin "https://gitlab.com/acme/widget.git"
+eq "${ rel_check; }" "release-unresolvable|30" "release: an origin on another host → release-unresolvable"
+has "$(rel_err)" "origin does not name a github.com owner/repo" "release: ...naming why"
+eq "$(grep -c . "$work/gh.log")" "0" "release: ...without asking gh about another repository"
+git -C "$relsrc" remote set-url origin "$GHURL"
+# Release channel: a checkout that git completed before a hook failed is still healed; one that never
+# happened takes back the local tag this run recorded for it.
+git -C "$relsrc" checkout -q --detach v1.0.0
+git -C "$relsrc" config core.hooksPath "$relhk"
+: > "$work/install.log"
+eq "${ rel_update; }|$(rel_head)" "0|$V110" "release: checkout done, then a hook failed → the move stands (0)"
+[ -s "$work/install.log" ] && ok || bad "release: ...and the installer still re-runs"
+git -C "$relsrc" config --unset core.hooksPath
+git -C "$relsrc" checkout -q --detach v1.0.0
+git -C "$relsrc" tag -d v1.1.0 >/dev/null
+: > "$relgit/index.lock"
+eq "${ rel_update; }|$(rel_head)" "20|$V100" "release: a checkout that never happened → 20, HEAD unchanged"
+git -C "$relsrc" rev-parse --verify --quiet refs/tags/v1.1.0 >/dev/null && bad "release: ...and the tag this run recorded is taken back" || ok
+rm -f "$relgit/index.lock"
+eq "${ rel_update; }|$(rel_head)" "0|$V110" "release: ...and the next run moves it"
+rm -f "$relfh/.config/ai-dev-baseline/agents.toml"
+
 # =============== #539: a missing or occupied root doc, against the REAL installer ===============
 # The stub above cannot re-link anything, and re-linking is the claim. These rows install a clone of
 # THIS tree with the real install.sh into scratch homes. A stub `claude` first on PATH pins the CLI
@@ -824,6 +1165,28 @@ out="$(cd "$rsrc" && renv "$h" ./uninstall.sh --agent claude 2>&1)"
 hasnt "$out" "installed from another clone" "legacy receipt, root doc missing → uninstall does not call it another clone's"
 [ ! -e "$(adb_claude_settings_receipt "$h")" ] && ok || bad "legacy receipt, root doc missing → the receipt is removed"
 jq -e '.sandbox == null' "$h/.claude/settings.json" >/dev/null && ok || bad "legacy receipt, root doc missing → the sandbox keys are removed"
+
+# The release channel's first-install warning (#534): on a clone not at a version tag the real
+# installer warns and still installs; at a version tag it is silent.
+for _wt in untagged tagged; do
+  wh="$work/rh-warn-$_wt"; mkdir -p "$wh"
+  [ "$_wt" = tagged ] && check_git "$rsrc" -c tag.gpgsign=false tag -a v9.9.9 -m v9.9.9
+  ( cd "$rsrc" && env -u ADB_UPDATE_CHANNEL HOME="$wh" CODEX_HOME="$wh/.codex" PATH="$rbin:$PATH" \
+      ./install.sh --agent claude --agent codex --no-hooks ) >/dev/null 2>"$work/warn.err"
+  eq "$?" "0" "install.sh, release channel, $_wt clone → installs"
+  if [ "$_wt" = untagged ]; then
+    has "$(cat "$work/warn.err")" "not at a version tag" "install.sh, untagged clone → warns"
+    has "$(cat "$work/warn.err")" "./uninstall.sh --agent claude --agent codex" "install.sh, untagged clone → ...uninstalling the same agent set"
+    has "$(cat "$work/warn.err")" "./install.sh --agent claude --agent codex --no-hooks" "install.sh, untagged clone → ...and reinstalling with the same agents and preferences"
+  else
+    hasnt "$(cat "$work/warn.err")" "not at a version tag" "install.sh, clone at a version tag → no warning"
+    has "$(cat "$work/warn.err")" "a version tag; whether it is a PUBLISHED" "install.sh, clone at a version tag → notes publication is unverified offline"
+    ( cd "$rsrc" && env -u ADB_UPDATE_CHANNEL ADB_RELEASE_VERIFIED=v9.9.9 HOME="$wh" CODEX_HOME="$wh/.codex" PATH="$rbin:$PATH" \
+        ./install.sh --agent claude --agent codex --no-hooks ) >/dev/null 2>"$work/warn.err"
+    hasnt "$(cat "$work/warn.err")" "PUBLISHED" "install.sh, a tag baseline update just verified → no note"
+    git -C "$rsrc" tag -d v9.9.9 >/dev/null
+  fi
+done
 
 # LAST, because it moves origin: a pulled commit that adds a skill links it AND re-links the root
 # doc on the behind path.

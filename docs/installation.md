@@ -10,8 +10,8 @@ own section, [Release-pinned, per project](#release-pinned-per-project).
 |---|---|---|
 | What it is | a permanent clone symlinked into `~/.<agent>` | one released version vendored into one project tree |
 | Scope | every project on the machine | exactly the project it is installed in |
-| Version | whatever the clone's `main` says right now — `/adopt` records it in `.ai-dev-baseline/upstream.toml` as `git describe --tags` of the clone's commit (`v3.0.0-13-g<sha>` when it sat 13 commits past `v3.0.0`) beside that full commit | the release named in `.ai-dev-baseline/upstream.toml` (`mode = "pinned"`) |
-| Updating | `git pull` reaches every project at once | `baseline pinned upgrade --to X.Y.Z`, never on its own |
+| Version | the newest stable release the clone has checked out (the default `release` channel, #534) — `/adopt` records it in `.ai-dev-baseline/upstream.toml` as `git describe --tags` of the clone's commit, a bare `vX.Y.Z` on that channel, beside that full commit | the release named in `.ai-dev-baseline/upstream.toml` (`mode = "pinned"`) |
+| Updating | each published release reaches every project at once, at the next currency check (`baseline update`) | `baseline pinned upgrade --to X.Y.Z`, never on its own |
 | Needs a clone | yes, forever | no |
 | Committed to the project | no | yes — the payload ships with the repo |
 | Agents | claude · codex · gemini | claude · codex |
@@ -24,19 +24,31 @@ pinned version governs, and everywhere else the global install does. Nothing arb
 install time; it is the harness's own precedence, and `baseline pinned status` reports the overlap
 rather than pretending to resolve it.
 
-**Pick the global model** when the machine is yours and you want one `git pull` to update
-everything. **Pick the pinned model** when a project must state which baseline it runs — a repo
+**Pick the global model** when the machine is yours and you want every project on it to move to
+each new release together. **Pick the pinned model** when a project must state which baseline it runs — a repo
 other people clone, a build that has to be reproducible, or any machine where keeping a permanent
 clone is not an option.
 
 ## 1. Clone the repo
 
 Clone it somewhere stable — you're going to symlink into it, so don't clone
-it into a temp directory or delete it later.
+it into a temp directory or delete it later. Check out the **newest stable release**: on the
+default `release` channel that is what every project should run, and `baseline update` then moves
+the clone forward from one release to the next on its own.
 
 ```bash
 git clone git@github.com:BWBama85/ai-dev-baseline.git ~/Code/ai-dev-baseline
+cd ~/Code/ai-dev-baseline
+tag="$(bin/baseline latest-release)" && git checkout --detach "refs/tags/$tag" \
+  || echo "STOP: the clone is not on a release — do not run install.sh until this succeeds."
 ```
+
+Go on to step 2 only when that printed no `STOP`. `baseline latest-release` asks GitHub (through `gh`) for the newest stable release of the
+repository `origin` names and prints its tag only when it is a plain `vX.Y.Z`; the `&&` stops
+there if it cannot. Without `gh`, take the tag from the repository's Releases page. On the release
+channel, `install.sh` warns (and never refuses) when the clone is not at a version tag, and prints
+the way to the newest release; at a version tag it notes that publication is not checked offline. To run unreleased `main` on purpose, stay on `main` and set the channel (see
+[*Keeping the install current*](#keeping-the-install-current)).
 
 ## 2. Run the installer
 
@@ -151,9 +163,10 @@ sourced by `install.sh`) that is **idempotent**:
 - If it's a real file or directory, it's **backed up** first (see below),
   then replaced with the symlink.
 
-Because these are real symlinks (not copies), `git pull` inside
-`~/Code/ai-dev-baseline` immediately updates the practices, skills, and gates
-in **every** project on the machine — there is no per-repo sync step.
+Because these are real symlinks (not copies), whatever `~/Code/ai-dev-baseline` has checked
+out is what **every** project on the machine runs — so moving it to a new release (which
+`baseline update` does) updates the practices, skills, and gates everywhere at once, with no
+per-repo sync step.
 
 ### Global lifecycle hooks
 
@@ -686,24 +699,80 @@ enforcement silently off.
 ## Keeping the install current
 
 Because the payloads are symlinks, the live global env is only as current as the
-clone they point into. Keeping that clone current used to be a remembered ritual —
-`git pull` in the clone, plus a re-run of `install.sh` if a PR moved an installed
-path. `bin/baseline` replaces the ritual:
+clone they point into. `bin/baseline` keeps that clone current:
 
 ```bash
-baseline update            # fast-forward the install-source clone + self-heal moved links
+baseline update            # move the install-source clone to the newest stable release + self-heal links
 baseline update --check    # report currency only; make NO changes (for a lifecycle hook)
 ```
 
-`baseline update` is deliberately conservative — currency is a convenience, never a
-cause of lost work:
+### The release channel (the default)
 
-- It fast-forwards **only** when the install-source clone is **clean, free of an
-  in-progress git operation, on its default branch, and merely behind** `origin`. A dirty /
-  mid-rebase / detached / non-default / ahead / diverged clone is **surfaced and left
-  untouched** — you reconcile it by hand. Those refusals are decided from **local state
-  before any fetch**, so a run that will refuse costs no network round trip.
-- After a fast-forward it **always** re-runs the **idempotent** installer (a pulled commit
+**Every project on the machine runs the newest stable release** (owner decision, #534, D143). A
+stable release is a **published** GitHub Release of the repository the clone's `origin` names —
+not a draft, not a prerelease, and carrying GitHub's *latest* marker (which `/release` sets). A
+tag with no published Release is never followed, and neither is a backfill of an old version. A
+fork's install follows the fork's releases.
+
+- **Forward only.** `baseline update` moves the clone to the release's commit as a **detached
+  checkout** (`git checkout --detach`), only when `HEAD` is an ancestor of it, and then re-runs the
+  installer. It never moves backward. An install **ahead** of the newest release — for example one
+  that followed `main` before this channel existed — is **held** where it is (`update` exits `21`,
+  `--check` says `ahead-of-release`) until a release that contains it is published, and then moves
+  onto that tag.
+- **Integrity before any move.** The release's tag in the clone must equal origin's: a release tag
+  that origin has deleted and re-created elsewhere is refused (`tag-moved`), never followed. The
+  release's commit must also be on `origin/<default>` (`release-off-branch` otherwise). Both exit
+  `40`, and both automatic triggers report them in `auto` and `notify` (`off` checks nothing).
+- **Nothing falls back to `main`.** When `gh` is missing or unauthenticated, the API fails or takes
+  longer than `ADB_RELEASE_TIMEOUT_SECS` (default 30), or a tag name is not `vX.Y.Z`, the answer is
+  `release-unresolvable` (`30`) and nothing changes; a repository with no stable release at all is
+  `no-release` (`30`).
+- **Release cadence is delivery cadence.** A fix merged to `main` reaches release-channel installs
+  only when the next release is published. That is the point: the contract is no longer that
+  `main` must always be fit to run, but that *a published release reaches every release-channel
+  install at its next currency check*.
+- **The `HEAD` reflog is the audit trail** (every move is a checkout entry), and `--check` prints one
+  stderr line: `baseline: installed v3.1.0 (channel release), newest v3.1.1`.
+
+**Following `main` instead** is a deliberate, machine-wide choice, made in the **global** manifest
+only (a repo you open must not choose your machine's update channel):
+
+```toml
+# ~/.config/ai-dev-baseline/agents.toml
+[updates]
+channel = "main"      # release (default) | main
+```
+
+`ADB_UPDATE_CHANNEL=main` does the same for one run. A misspelled, malformed or unreadable value
+means `release`, with a diagnostic, never `main` — checked on the key's own line, which must be a
+plain one-line `channel = "release"` or `channel = "main"` (an optional `# comment` after it). The
+baseline's TOML reader is a minimal subset: a multi-line string, an inline table, or the key defined
+twice (the first wins) are not supported and not validated, so keep the key that simple. On `main` the behaviour below is exactly the pre-#534
+one — fast-forward the default branch — plus one addition: a clone left **detached** by the release
+channel is re-attached to the default branch when that only moves forward (the local branch is
+advanced to `origin/<default>` first, then checked out). Switching back from `main` to `release`
+while ahead of the newest release holds the clone until the next release.
+
+**Going back to an older release by hand** is possible and deliberately not automated: an older
+installer run over hook entries and a sandbox receipt it may not know can orphan them. If you
+must, first set `[updates] session_start = "notify"` (or `"off"`) so the automatic path does not
+move the clone forward again, then **uninstall, check out, install** — `./uninstall.sh` with your
+`--agent` flags, `git checkout --detach vX.Y.Z` in the clone, and `./install.sh` with the same
+flags as before — so the older installer starts from a clean slate. The supported answer to a bad
+release is the next (patch) release.
+
+`baseline update` is deliberately conservative on both channels — currency is a convenience, never
+a cause of lost work:
+
+- It moves the clone **only** when it is **clean and free of an in-progress git operation**, and
+  either on its default branch or (release channel, or a release install on `main`) detached. A
+  dirty / mid-rebase / non-default clone, or one with unpushed or diverged commits, is **surfaced and
+  left untouched** — you reconcile it by hand. The dirty, mid-rebase and non-default refusals are
+  decided from **local state before any network**, so such a run costs no round trip; unpushed or
+  diverged work is seen after the fetch. On the release channel the release lookup and the fetch
+  for the clone happen only **after** the update lock is taken.
+- After a move it **always** re-runs the **idempotent** installer (a pulled commit
   may add a new skill or script that existing links don't cover, so "links resolve" does
   not imply "everything is linked"), preserving the exact agent set and hook preference
   already installed, then **loudly verifies** every canonical link still resolves and fails
@@ -747,7 +816,9 @@ cause of lost work:
 `baseline update --check` prints one status word and changes nothing in the working tree;
 its exit code is the stable contract the SessionStart hook consumes:
 `0` current · `10` behind · `20` needs attention (dirty/in-progress/ahead/diverged/
-detached/non-default) · `30` error (fetch failed / no `origin/<default>`).
+detached/non-default/ahead-of-release) · `30` currency unknown (fetch failed / no
+`origin/<default>` / `no-release` / `release-unresolvable`) · `40` integrity refusal
+(`tag-moved` / `release-off-branch`).
 
 ### Automatic currency — two triggers
 
@@ -760,16 +831,16 @@ worth reporting.
 | Trigger | Fires | Agents | Issue |
 |---|---|---|---|
 | `SessionStart` hook (`session-currency.sh`) | a genuinely new session (`source: startup`) | Claude | #36 |
-| the last step of `/cleanup` | after every sweep — i.e. right after a merge | Claude · Codex · Gemini | #139 |
+| the last step of `/cleanup` | after every sweep | Claude · Codex · Gemini | #139 |
 
-**Why two.** The hook alone left a hole big enough to drive the whole loop through: it fires only
-on `startup`, and the documented loop is `/implement-issue → merge → /cleanup → /clear → /roadmap`.
-`/clear` is excluded by design, so the loop never re-checked — while staleness *begins* at the
-merge. That is not theoretical: a `/roadmap` run once computed a release verdict with pre-fix logic
-one commit after the fix shipped, and a later one derived dependency edges from a predicate two
-commits stale. `/cleanup` is the natural second trigger because it runs immediately after the merge
-and immediately before the `/clear` that the hook skips — and because it is agent-neutral, it is
-also the only currency Codex and Gemini get.
+**Why two.** The hook fires only on `startup`, and the documented loop is
+`/implement-issue → merge → /cleanup → /clear → /roadmap`, with `/clear` excluded by design, so the
+loop itself never re-checked. On the release channel the install goes stale when a **release is
+published**, which happens at the end of `/release` (after its changelog PR merges and the tag is
+pushed), so a `/cleanup` run after that merge may still precede the publication — the next sweep or
+session start then catches it. On `main` it goes stale at every merge, which `/cleanup` follows
+directly. It runs immediately before the `/clear` that the hook skips, and because it is
+agent-neutral it is also the only currency Codex and Gemini get.
 
 The `SessionStart` hook is deliberately narrow about when it acts:
 
@@ -786,8 +857,10 @@ The `SessionStart` hook is deliberately narrow about when it acts:
   block on a credential prompt or a stalled transfer.
 
 Output is **one line or silence**: nothing at all when you are current, and otherwise a
-single line naming what updated (`baseline: updated 0c3bbaf → 4eb472f (1 commit).`) or which
-state needs attention. It always exits `0` — a SessionStart hook cannot block a session, and
+single line naming what updated (`baseline: updated v3.1.0 → v3.1.1.` on the release channel,
+`baseline: updated 0c3bbaf → 4eb472f (1 commit).` on `main`) or which state needs attention. An
+install **held** ahead of the newest release is silent at session start and named once by
+`/cleanup`, with both ways out. It always exits `0` — a SessionStart hook cannot block a session, and
 currency must never be the reason one looks broken.
 
 **Mode — configured globally, and only globally:**
@@ -798,8 +871,8 @@ currency must never be the reason one looks broken.
 session_start = "auto"    # auto (default) | notify | off
 ```
 
-`auto` pulls and self-heals; `notify` reports **only** that you are behind and stays silent for
-every other state (it is the mode chosen to be quiet — a clone deliberately parked on a branch
+`auto` moves the clone and self-heals; `notify` reports **only** that you are behind (naming the
+newer release on the release channel) or an integrity refusal, and stays silent for every other state (it is the mode chosen to be quiet — a clone deliberately parked on a branch
 would otherwise produce an attention line at every startup, forever); `off` disables **both
 triggers**. `ADB_SESSION_UPDATE` overrides it for one run. A copy of this key in a **project's**
 `agents.toml` is ignored on purpose — whether your global tooling updates itself must not depend on
@@ -827,9 +900,11 @@ In `auto` mode a refusal *is* reported, because that mode promised to act and co
 there would be the staleness this whole feature exists to catch.
 
 **Two things worth knowing.** First, `auto` means each new session may fetch and then execute
-the newly pulled `install.sh`; that is the same trust you already place in the clone your
-whole toolchain is symlinked from, but it is now exercised automatically — use `notify` if you
-would rather review each pull. Second, the hook runs *after* the session has loaded its global
+the `install.sh` of a newly published release (or, on `main`, of newly merged commits); that is the
+same trust you already place in the clone your whole toolchain is symlinked from, but it is now
+exercised automatically — use `notify` if you would rather review each release. The tag is checked
+against origin's and against the default branch before any move, but not authenticated: release
+tags are not signed. Second, the hook runs *after* the session has loaded its global
 root doc, so an update that changes `CLAUDE.md` fully applies from the **next** session; skills
 are re-read via `reloadSkills`.
 
@@ -856,7 +931,7 @@ A framework developer typically keeps **two** clones:
 | Clone | Role | Kept current by |
 |---|---|---|
 | **install-source** (e.g. `~/Code/ai-dev-baseline`) | The clone the global symlinks point into and whose `bin/` is on `PATH`. Its git state feeds every project. | `baseline update` |
-| **dev clone** (e.g. `~/Code/ai-dev-baseline-dev`) | Where you edit the framework and open PRs. | `/implement-issue`'s preflight auto-sync (issue #17) |
+| **dev clone** (e.g. `~/Code/ai-dev-baseline-dev`) | Where you edit the framework and open PRs. It keeps tracking `main`. | `/implement-issue`'s preflight auto-sync (issue #17) |
 
 `baseline update` operates on the **install-source** — the clone it detects the global
 install pointing into. Run it from any *other* clone and it **refuses** (exit `4`),
@@ -945,8 +1020,8 @@ Four of those choices are decisions rather than layout, and each is load-bearing
   copies is rewritten to `$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.<agent>/adb/lib/`
   instead, so two projects pinned to different versions cannot reach into each other, and no
   absolute path is committed.
-- **`session-currency.sh` is not vendored.** It fast-forwards the install-source clone, and a
-  pinned project has none. `session-context.sh` **is**: it reads the project's own `.claude/state`.
+- **`session-currency.sh` is not vendored.** It moves the install-source clone (to the newest
+  release, or along `main`), and a pinned project has none. `session-context.sh` **is**: it reads the project's own `.claude/state`.
 
 Everything else the repository ships — `base/`, `bin/`, `docs/`, `templates/`, the `scripts/check-*`
 suites, the build — stays out. It is the framework's own development surface, not a runtime.

@@ -23,9 +23,10 @@ branch or the state of a live run. Two kinds of debris and one currency check, o
   caches for PRs that have since closed, run markers whose branch is gone, gap-analysis
   artifacts from a finished run. These accumulate unboundedly and are exactly the kind of dead
   state a sweep exists to remove.
-- **The installed baseline's currency** (step 7) — `/cleanup` runs right after a merge, which is
-  when the install goes stale, and right before `/clear`, which is the step that cannot re-check.
-  So this is where `baseline update` belongs (#139). It is housekeeping, never a gate: it can
+- **The installed baseline's currency** (step 7) — the install goes stale when a release is
+  published (#534), or at every merge on `[updates] channel = "main"`, and `/cleanup` runs right
+  before `/clear`, which is the step that cannot re-check. So this is where `baseline update`
+  belongs (#139). It is housekeeping, never a gate: it can
   never fail the sweep, and it says nothing when the install is already current.
 
 Argument selects branch scope: `local` (default), `remote`, or `all`. Run-state is swept in
@@ -1230,14 +1231,15 @@ REPORT_OUT="$({
 
 ### 7. Keep the installed baseline current (issue #139)
 
-The sweep is done, so this is the last action of the run — and the right place for it. `/cleanup`
-runs **immediately after a merge**, which is the moment the installed baseline goes stale, and it
-sits **immediately before `/clear`**, which is the step that cannot re-check: currency's other
-trigger is a `SessionStart` hook matched on `startup` only, so the loop
-`merge → /cleanup → /clear → /roadmap` never re-checked before this existed. Staleness began at
-the merge and nothing in the loop noticed. That is not hypothetical — a `/roadmap` run computed a
-release verdict with pre-fix logic one commit after the fix shipped, and a later one derived
-dependency edges from a two-commit-stale predicate.
+The sweep is done, so this is the last action of the run — and the right place for it. The
+installed baseline follows the newest stable **release** (#534), so it goes stale when a release is
+published — at the end of `/release`, after its changelog PR has merged, so a sweep straight after
+that merge can still precede the publication and the next check catches it. An install that follows
+`main` instead (`[updates] channel = "main"`) goes stale at every merge, which `/cleanup` follows
+directly; that is the case this step was first written for (#139). Either way it sits **immediately
+before `/clear`**, the step that cannot re-check: currency's other trigger is a `SessionStart` hook
+matched on `startup` only, so the loop `merge → /cleanup → /clear → /roadmap` never re-checked before
+this existed.
 
 Every decision is `bash "$HOME/.codex/scripts/lib/currency-lib.sh"`'s: the mode (`[updates] session_start` in the global
 `agents.toml`, or `ADB_SESSION_UPDATE`; `off` disables this too), the install-source, the

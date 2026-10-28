@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ai-dev-baseline — the release-pinned per-project install (#285).
 #
-# The global model symlinks a clone into ~/.<agent>, so every project on the machine runs
-# whatever `main` says right now. This one vendors ONE released version into ONE project tree:
+# The global model symlinks a clone into ~/.<agent>, so every project on the machine runs whatever
+# that clone has checked out — the newest stable release by default, moved automatically (#534).
+# This one vendors ONE released version into ONE project tree:
 # the project records the version it is on, a machine with no clone can install it, and a
 # breaking change upstream reaches nothing until someone upgrades on purpose.
 #
@@ -30,7 +31,8 @@
 #                              tool is missing · 13 fetch failed · 14 publish/removal failed · 2 usage
 #   status                     0 pinned and current · 10 pinned, a newer release exists
 #                              · 11 not pinned · 20 pinned but the payload is missing, altered or
-#                              unverifiable · 30 the release list could not be read
+#                              unverifiable · 30 the newest stable release could not be resolved
+#                              (or none is published)
 #   verify                     0 verified · 10 no usable record for that filename · 11 digest
 #                              mismatch · 12 no usable sha256 tool / unreadable input
 #   payload/reanchor           0 ok · 1 a root or member this manifest cannot represent · 2 usage
@@ -81,8 +83,8 @@ PI_NS="adb"
 # The ONE statement of which shipped Claude hooks a pinned project does NOT get.
 # `adb_claude_hook_scripts` in common.sh remains the enumeration of the hook set; this is the
 # single exclusion on top of it, so a hook added there is vendored and wired here automatically
-# instead of being silently omitted. `session-currency.sh` fast-forwards the install-source clone,
-# and a pinned project has none.
+# instead of being silently omitted. `session-currency.sh` moves the install-source clone (to the
+# newest release, or along main), and a pinned project has none.
 PI_HOOKS_EXCLUDED="session-currency.sh"
 
 # Codex reads project AGENTS.md files only up to `project_doc_max_bytes`, a budget whose default is
@@ -977,19 +979,9 @@ _pi_fetch() {
   printf '%s' "$dir/$base"
 }
 
-# _pi_latest_version <source-repo> — the newest published release's bare version, or fail.
-_pi_latest_version() {
-  command -v gh >/dev/null 2>&1 || return 1
-  local t
-  # `--exclude-drafts` IN THE QUERY. `--limit 1` fetches the newest item and the filter then drops
-  # it, so an account that can SEE a draft newer than the latest release got an empty answer and
-  # `status` reported 30 instead of comparing versions. (Probed: gh 2.95.0 documents
-  # `--exclude-drafts  Exclude draft releases` and `--limit  Maximum number of items to fetch`.)
-  t="$(gh release list -R "$1" --exclude-drafts --limit 1 --json tagName \
-        --jq '.[0].tagName' 2>/dev/null)" || return 1
-  { [ -n "$t" ] && [ "$t" != null ]; } || return 1
-  printf '%s' "${t#v}"
-}
+# The newest stable release is asked of adb_latest_release_tag (common.sh), the ONE resolver the
+# global install's release channel also uses (#534): GitHub's latest marker, never list order, and
+# a validated tag name. Callers strip the `v`.
 
 # --- receipt ------------------------------------------------------------------------------------
 
@@ -1787,7 +1779,8 @@ EOF
   [ "$offline" -eq 1 ] && return 0
 
   local latest
-  if latest="$(_pi_latest_version "$src")"; then
+  if latest="$(adb_latest_release_tag "$src")"; then
+    latest="${latest#v}"
     _pi_say "latest:  $latest"
     if [ -n "$ver" ] && ! adb_version_ge "$ver" "$latest"; then
       _pi_say ""
@@ -1841,7 +1834,7 @@ cmd_notice() {
   else
     printf 'baseline:   payload: no receipt — run: bash %s status\n' "$(_pi_cmd_path "$p")" >&2
   fi
-  if [ "$latest" -eq 1 ] && newest="$(_pi_latest_version "$src")"; then
+  if [ "$latest" -eq 1 ] && newest="$(adb_latest_release_tag "$src")" && newest="${newest#v}"; then
     if [ -n "$ver" ] && ! adb_version_ge "$ver" "$newest"; then
       printf 'baseline:   a newer release is available: %s (pinned: %s). Review it, then upgrade deliberately:\n' "$newest" "$ver" >&2
       printf 'baseline:     gh release view v%s -R %s\n' "$newest" "$src" >&2

@@ -4390,6 +4390,204 @@ adb_clone_status() {
   adb_branch_sync_state "$1" "$2"
 }
 
+# --- the release channel (#534, D143) ------------------------------------------------------------
+# The global install follows the newest STABLE release by default, and `main` only on request. The
+# functions below are its shared half: bin/baseline decides and moves, currency-lib.sh reports,
+# pinned-install.sh asks the same resolver. All of them stay parseable and runnable on bash 3.2
+# (D30), because this file is.
+
+# adb_is_release_tag <name> — exit 0 iff <name> is `v` followed by exactly three dot-separated
+# decimal fields. Every release-channel reader applies it before a tag name reaches a ref, a command
+# or a message: a tag name is text from the release's publisher, and only this shape is trusted.
+adb_is_release_tag() {
+  local t="${1:-}" core a b c p
+  case "$t" in v[0-9]*) ;; *) return 1 ;; esac
+  core="${t#v}"
+  a="${core%%.*}"; core="${core#*.}"
+  b="${core%%.*}"; c="${core#*.}"
+  [ "$a.$b.$c" = "${t#v}" ] || return 1
+  for p in "$a" "$b" "$c"; do
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  done
+  return 0
+}
+
+# adb_update_channel — print `release` or `main`, exit 0 always.
+# ADB_UPDATE_CHANNEL wins for one run; otherwise `[updates] channel` in the GLOBAL manifest only (a
+# project's agents.toml must not choose the machine's update channel, D10). Unset means `release`.
+# A misspelled, unreadable or NUL-bearing value also means `release`, with a stderr line: falling
+# back to `main` would run unreleased code the operator never asked for. The bad value itself is
+# never echoed. What is enforced is the KEY'S OWN LINE: the shared reader decides which line that
+# is, and the TOML it does not support — multi-line strings, inline tables, a key defined twice
+# (the first wins) — is unsupported here too (D143), not validated.
+adb_update_channel() {
+  local c="${ADB_UPDATE_CHANNEL:-}" where="ADB_UPDATE_CHANNEL" raw rc mf
+  # TOML whitespace is space or tab only; any other byte after the value is malformed.
+  local re='^[ '$'\t'']*channel[ '$'\t'']*=[ '$'\t'']*("(release|main)"|'"'"'(release|main)'"'"')[ '$'\t'']*(#([^[:cntrl:]]|'$'\t'')*)?$'
+  if [ -z "$c" ]; then
+    mf="$(adb_global_manifest)"
+    raw="$(adb_toml_get "$mf" updates channel --raw 2>/dev/null)"; rc=$?
+    if [ "$rc" -ge 2 ]; then
+      adb_toml_read_error "$mf" "$rc"
+      printf 'baseline: following the release channel until that manifest is readable\n' >&2
+      printf 'release\n'; return 0
+    fi
+    [ "$rc" -eq 0 ] || { printf 'release\n'; return 0; }
+    # The RAW line, checked against the whole grammar: a bare word, an unterminated quote, trailing
+    # junk or a control byte around the key or the value is not a choice of `main`, however the
+    # lenient reader would repair it.
+    where="[updates] channel in $mf"; c="invalid"
+    if [[ $raw =~ $re ]]; then c="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"; fi
+  fi
+  case "$c" in
+    release|main) printf '%s\n' "$c" ;;
+    *) printf 'baseline: %s is not "release" or "main" — following the release channel\n' "$where" >&2
+       printf 'release\n' ;;
+  esac
+}
+
+# adb_origin_url_slug <root> — the `owner/repo` that <root>'s `origin` remote names on github.com,
+# from the RAW configured URL (before any `url.<base>.insteadOf` rewrite), case-folded. Non-zero for
+# any other host — the releases of a same-named GitHub repository are not this clone's — and for a
+# URL naming no pair. A fork's install therefore follows the fork's releases.
+adb_origin_url_slug() {
+  local url host slug
+  url="$(git -C "$1" config --get remote.origin.url 2>/dev/null)" || return 1
+  # Network transports only: `file://github.com/…` is a local path to git, whatever it names.
+  case "$url" in
+    https://*|http://*|ssh://*|git://*|git+ssh://*|ssh+git://*)
+           host="${url#*://}"; host="${host%%/*}"; host="${host##*@}"; host="${host%%:*}" ;;
+    *://*) return 1 ;;
+    *:*)   host="${url%%:*}"; host="${host##*@}"
+           case "$host" in */*) return 1 ;; esac ;;   # `dir/x:y` is a local path, not scp syntax
+    *)     return 1 ;;
+  esac
+  host="$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')"
+  case "$host" in github.com|ssh.github.com|www.github.com) ;; *) return 1 ;; esac
+  slug="$(_adb_remote_url_slug "$url")" || return 1
+  adb_is_path_safe_repo_slug "$slug" || return 1
+  printf '%s' "$slug"
+}
+
+# adb_git_is_ancestor <root> <a> <b> — 0 when <a> is an ancestor of (or equal to) <b>, 1 when it is
+# not, 2 when git could not answer (a missing object, a corrupt repository). `merge-base
+# --is-ancestor` documents 1 for "no" and other codes for errors, and folding those into "no" would
+# turn a broken repository into an ordinary classification.
+adb_git_is_ancestor() {
+  git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null
+  case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+# adb_latest_release_tag <owner/repo> — the tag of the newest STABLE release: published, not a
+# draft, not a prerelease, and carrying GitHub's latest marker (`isLatest`, which `/release`'s
+# `--latest|--no-latest` sets). Never list order: a backfill created after the newest release must
+# not read as the newest.
+#   0  prints the tag (it passed adb_is_release_tag)
+#   1  the repository has no published stable release; prints nothing
+#   2  unresolvable; prints a short fixed reason (no gh, gh failed, timed out, a malformed or
+#      possibly truncated answer, no or several releases marked latest, a tag failing the grammar)
+# The gh call is bounded by ADB_RELEASE_TIMEOUT_SECS (default 30, inside the SessionStart hook's
+# own 60 s harness timeout). The list is read to a limit and
+# a full page is refused as possibly incomplete rather than read as the whole answer.
+# Usage: adb_latest_release_tag <owner/repo>
+adb_latest_release_tag() {
+  local repo="${1:-}" secs="${ADB_RELEASE_TIMEOUT_SECS:-30}" lim=1000 out rc count latest n
+  adb_is_path_safe_repo_slug "$repo" || { printf 'invalid repository'; return 2; }
+  command -v gh >/dev/null 2>&1 || { printf 'gh not found'; return 2; }
+  case "$secs" in ''|*[!0-9]*) secs=30 ;; *) [ "$secs" -gt 0 ] 2>/dev/null || secs=30 ;; esac
+  # `github.com/` IN THE REPOSITORY, so GH_HOST cannot point the lookup at another host. The tag
+  # names come back as JSON strings, one per line: a name carrying a newline cannot be cut short by
+  # the command substitution and then pass the grammar below.
+  out="$(adb_run_bounded "$secs" 5 gh release list -R "github.com/$repo" --exclude-drafts --exclude-pre-releases \
+          --limit "$lim" --json tagName,isLatest \
+          --jq '(length | tostring), (.[] | select(.isLatest == true) | .tagName | tojson)' 2>/dev/null)"; rc=$?
+  case "$rc" in
+    0)   : ;;
+    124) printf 'timed out'; return 2 ;;
+    *)   printf 'gh failed (exit %s)' "$rc"; return 2 ;;
+  esac
+  count="${out%%
+*}"
+  case "$count" in ''|*[!0-9]*) printf 'malformed answer'; return 2 ;; esac
+  [ "$count" -eq 0 ] && return 1
+  [ "$count" -lt "$lim" ] || { printf 'the release list may be incomplete'; return 2; }
+  latest=""
+  case "$out" in *'
+'*) latest="${out#*
+}" ;; esac
+  n="$(printf '%s\n' "$latest" | grep -c .)"
+  [ "$n" -eq 1 ] || {
+    [ "$n" -eq 0 ] && printf 'no release is marked latest' || printf 'more than one release is marked latest'
+    return 2; }
+  case "$latest" in '"'*'"') latest="${latest#\"}"; latest="${latest%\"}" ;; *) latest="" ;; esac
+  adb_is_release_tag "$latest" || { printf 'the latest tag name failed validation'; return 2; }
+  printf '%s' "$latest"
+}
+
+# _adb_release_tag_at <root> <commit> — the highest validated release tag naming <commit>, or nothing.
+_adb_release_tag_at() {
+  git -C "$1" tag --points-at "$2" --list 'v[0-9]*' --sort=-v:refname 2>/dev/null \
+    | while IFS= read -r _adb_rt; do adb_is_release_tag "$_adb_rt" && { printf '%s' "$_adb_rt"; break; }; done
+}
+
+# adb_release_label <root> [<rev>] — a printable name for a commit, built only from validated tag
+# names and hex: `vX.Y.Z` when a release tag names it exactly (the highest, when several do),
+# `vX.Y.Z+N (abc1234)` when it contains release tags — the highest-versioned one, and N commits
+# past it — else the short hash.
+adb_release_label() {
+  local root="$1" rev="${2:-HEAD}" sha short t base n
+  sha="$(git -C "$root" rev-parse --verify --quiet "$rev^{commit}" 2>/dev/null)" || return 1
+  short="$(git -C "$root" rev-parse --short "$sha" 2>/dev/null)" || return 1
+  t="$(_adb_release_tag_at "$root" "$sha")"
+  [ -n "$t" ] && { printf '%s' "$t"; return 0; }
+  # The highest-versioned RELEASE tag the commit contains. On a line released in order that is also
+  # the nearest; on a maintenance history it need not be, and the label says which version, not
+  # which tag is closest. Every candidate passes the grammar before it counts.
+  t="$(git -C "$root" tag --merged "$sha" --list 'v[0-9]*' --sort=-v:refname 2>/dev/null \
+        | while IFS= read -r _adb_rt; do adb_is_release_tag "$_adb_rt" && { printf '%s' "$_adb_rt"; break; }; done)"
+  if [ -n "$t" ] && base="$(git -C "$root" rev-parse --verify --quiet "$t^{commit}" 2>/dev/null)"; then
+    n="$(git -C "$root" rev-list --count "$base..$sha" 2>/dev/null)"
+    case "$n" in ''|*[!0-9]*) : ;; *) printf '%s+%s (%s)' "$t" "$n" "$short"; return 0 ;; esac
+  fi
+  printf '%s' "$short"
+}
+
+# adb_release_sync_state <root> <default-branch> <release-commit> — where HEAD sits relative to the
+# newest release, from already-fetched refs (no network). The caller has already refused dirty /
+# in-progress / not-default, so HEAD is on <default> or detached. One word, in this precedence:
+#   no-remote         origin/<default> does not exist
+#   current           HEAD is the release commit
+#   behind            HEAD is a strict ancestor of it, attached or detached (forward only; nothing
+#                     reachable from HEAD can be lost, because the release contains all of it)
+#   ahead | diverged  attached, and the branch has commits origin/<default> lacks (unpushed work)
+#   ahead-of-release  the release is a strict ancestor of HEAD, and HEAD is on origin's history
+#   detached          detached anywhere else
+#   diverged          attached, and neither side contains the other
+# Returns 1 (printing nothing) on a git error.
+adb_release_sync_state() {
+  local root="$1" default="$2" rel="$3" head attached=1 origin="refs/remotes/origin/$2" r
+  head="$(git -C "$root" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || return 1
+  git -C "$root" symbolic-ref --quiet HEAD >/dev/null 2>&1 || attached=0
+  git -C "$root" rev-parse --verify --quiet "$origin" >/dev/null 2>&1 || { printf 'no-remote\n'; return 0; }
+  [ "$head" = "$rel" ] && { printf 'current\n'; return 0; }
+  adb_git_is_ancestor "$root" "$head" "$rel"; r=$?
+  [ "$r" -eq 2 ] && return 1
+  [ "$r" -eq 0 ] && { printf 'behind\n'; return 0; }
+  if [ "$attached" -eq 1 ]; then
+    adb_git_is_ancestor "$root" "$head" "$origin"; r=$?
+    [ "$r" -eq 2 ] && return 1
+    [ "$r" -eq 1 ] && { adb_branch_sync_state "$root" "$default"; return $?; }
+  fi
+  adb_git_is_ancestor "$root" "$rel" "$head"; r=$?
+  [ "$r" -eq 2 ] && return 1
+  if [ "$r" -eq 0 ]; then
+    adb_git_is_ancestor "$root" "$head" "$origin"; r=$?
+    [ "$r" -eq 2 ] && return 1
+    [ "$r" -eq 0 ] && { printf 'ahead-of-release\n'; return 0; }
+  fi
+  [ "$attached" -eq 1 ] && printf 'diverged\n' || printf 'detached\n'
+}
+
 # Print the path of the GLOBAL agent manifest — the one install.sh writes once and every
 # runtime reader consults. The ONE home for this path: it was previously spelled independently
 # by the writer (install.sh) and each reader, and a third spelling that honored XDG_CONFIG_HOME
@@ -5136,13 +5334,18 @@ adb_occupant_class() {
 # `read` DISCARD it: `required = ["contex<NUL>t7"]` would otherwise parse to a clean `context7`,
 # a value the operator never wrote. Reported by the declared reviewer on PR #429.
 # An EMPTY <table> names the top level — the keys before the first `[table]` header.
-# Usage: adb_toml_get <file> <table> <key>
+# `--raw` prints the key's WHOLE LINE exactly as written (only a CRLF's CR removed), for a caller
+# that must validate the grammar itself: the default form re-closes an unterminated quote, drops
+# anything after the closing one, and accepts any `[[:space:]]` around the key and the `=`, where
+# TOML allows only space and tab.
+# Usage: adb_toml_get <file> <table> <key> [--raw]
 adb_toml_get() {
-  local file="$1" table="$2" key="$3"
+  local file="$1" table="$2" key="$3" raw=0
+  [ "${4:-}" = --raw ] && raw=1
   [ -f "$file" ] || return 1
   [ -r "$file" ] || return 2
   adb_nul_free "$file" || { [ "$?" -eq 1 ] && return 3; return 2; }
-  awk -v tbl="$table" -v key="$key" '
+  awk -v tbl="$table" -v key="$key" -v raw="$raw" '
     BEGIN { intbl = (tbl == "") }
     # A table header toggles whether we are inside the target table. The header name is
     # compared LITERALLY, not as a regex — so a dotted sub-table like [gates.scope] can
@@ -5178,6 +5381,7 @@ adb_toml_get() {
     }
     intbl && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
       line = $0
+      if (raw == 1) { sub(/\r$/, "", line); printf "%s", line; found = 1; exit }
       sub(/^[^=]*=[[:space:]]*/, "", line)   # strip "key =" and the space after it
       if (substr(line, 1, 1) == "\"") {
         # Quoted scalar: walk to the closing quote, skipping backslash-escaped chars

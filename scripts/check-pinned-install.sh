@@ -493,6 +493,28 @@ out="$(bash "$PI" status --project "$P" 2>&1)"; rc=$?
 has "$out" "mode:    pinned" "status: reports the mode"
 has "$out" "payload: intact" "status: reports an untouched payload as intact"
 
+# THE NEWEST RELEASE IS THE LATEST-MARKED STABLE ONE (#534): the shared resolver, never list order.
+# A stub gh answers the release list from a file (applying --jq with the real jq); the payload is 9.9.9.
+pigh="$work/pigh"; mkdir -p "$pigh"
+cat > "$pigh/gh" <<EOF
+#!/usr/bin/env bash
+expr=""
+while [ "\$#" -gt 0 ]; do case "\$1" in --jq) expr="\$2"; shift 2 ;; *) shift ;; esac; done
+jq -r "\$expr" < "$work/pigh.json"
+EOF
+chmod +x "$pigh/gh"
+printf '%s\n' '[{"tagName":"v10.0.0","isLatest":true},{"tagName":"v9.9.9","isLatest":false}]' > "$work/pigh.json"
+out="$(PATH="$pigh:$PATH" bash "$PI" status --project "$P" 2>&1)"; rc=$?
+eq "$rc" 10 "status: a newer latest-marked release exits 10"
+has "$out" "upgrade --to 10.0.0" "status: ...naming it"
+printf '%s\n' '[{"tagName":"v12.0.0","isLatest":false},{"tagName":"v9.9.9","isLatest":true},{"tagName":"v1.0.0","isLatest":false}]' > "$work/pigh.json"
+out="$(PATH="$pigh:$PATH" bash "$PI" status --project "$P" 2>&1)"; rc=$?
+eq "$rc" 0 "status: a backfill listed first is not read as newer"
+has "$out" "latest:  9.9.9" "status: ...the latest marker decides"
+printf '%s\n' '[]' > "$work/pigh.json"
+PATH="$pigh:$PATH" bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?
+eq "$rc" 30 "status: no published stable release exits 30"
+
 # THE COEXISTENCE NOTE ASKS adb_install_source (#539): a Claude-only global install that lost its
 # root doc is still active through its scripts/lib link, and a symlink naming no clone is not one.
 gh539="$work/gh539"; gs539="$work/gs539"

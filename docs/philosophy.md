@@ -120,7 +120,8 @@ The baseline is installed once, at the user level (`~/.claude`, and the
 equivalent for other agents), via symlinks back into a cloned copy of this
 repo (see [installation.md](installation.md)). That's a deliberate choice:
 
-- `git pull` in the cloned repo updates every project's practices, skills,
+- One clone, moved from one published release to the next (`baseline update`, run for
+  you at session start and after `/cleanup`), updates every project's practices, skills,
   and gates at once — no per-repo sync step.
 - A project layers its *own* needs on top without forking or editing the
   baseline: its own root doc, a same-named skill that shadows the global one,

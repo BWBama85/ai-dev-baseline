@@ -39,6 +39,10 @@ the tag convention.
 - **It never publishes a package or a deploy.** It *does* publish a GitHub Release — step 11, since
   **#284 / D62**, which reversed the tag-only decision this bullet used to state. What it still does
   not do is push an artifact anywhere but that Release: no registry, no image, no deployment.
+  **But publishing that Release IS a delivery** (#534, D143): a global install on the release
+  channel moves onto it at its next currency check (automatically in `auto` mode; `notify`
+  reports it, `off` waits for a manual `baseline update`). `--no-latest` keeps a backfill from being
+  followed; the latest-marked release is the one every machine moves to.
 - **It never creates or moves a tag while publishing.** `publish` refuses unless the tag is already
   on origin, and passes `--verify-tag` so that `gh` cannot mint one from the default branch's head.
 - **It never edits the roadmap artifact.** `/roadmap` owns that. This skill's last act is

@@ -322,9 +322,12 @@ See [`docs/adding-an-agent.md`](docs/adding-an-agent.md). Summary: add
 ## Releases
 
 Versioning is by git tag; user-visible changes go in [`CHANGELOG.md`](CHANGELOG.md)
-under **Unreleased** as you land them, then get stamped into a version on tag. Because
-installs are symlinks, `git pull` in a user's clone picks up `main` immediately — so
-keep `main` releasable.
+under **Unreleased** as you land them, then get stamped into a version on tag. Global
+installs follow the newest stable release by default (#534): a merge to `main` reaches only
+installs that opted into `[updates] channel = "main"`, and publishing a Release reaches every
+release-channel install at its next currency check (automatically in `auto` mode; `notify`
+reports it, `off` waits for `baseline update`). A release cut is a delivery, and a fix is
+delivered by the next release.
 
 **Run `/release` to cut one.** The procedure below used to be hand-executed every time;
 it now has a code home at [`.claude/skills/release/SKILL.md`](.claude/skills/release/SKILL.md)

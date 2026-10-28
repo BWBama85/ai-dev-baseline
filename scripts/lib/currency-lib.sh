@@ -2,13 +2,15 @@
 # ai-dev-baseline — install-currency TRIGGER POLICY (issues #36 + #139).
 #
 # `bin/baseline update` already does the work, safely, and owns the unsafe-state ladder (dirty /
-# in-progress / ahead / diverged / detached / not-default are all refused) plus its own flock. What
+# in-progress / non-default / unpushed work are refused; an install ahead of the newest release is
+# held; a moved release tag is refused) plus its own flock. What
 # this library owns is the layer above it: WHEN running it is safe and free of surprises, and what
 # a given outcome should be reported as. That policy used to live inside the Claude `SessionStart`
 # hook, which made it unreachable from anywhere else — and #139 is what that cost: currency had
 # exactly ONE trigger, bound to `source: startup`, so the baseline's own loop
 # (`/implement-issue -> merge -> /cleanup -> /clear -> /roadmap`) never re-checked. Staleness
-# begins at the merge and the next step in the loop could not notice.
+# begins when a release is published (or, on channel = "main", at the merge), and nothing in the
+# loop noticed.
 #
 # TWO CALLERS, ONE POLICY:
 #   - agents/claude/scripts/session-currency.sh   (trigger `startup`, unattended)
@@ -37,8 +39,10 @@
 #             (a same-HEAD run whose only pending item was the sandbox settings, and whose
 #              settings the installer REFUSED, reports `refused` instead — nothing was applied)
 #   behind    notify mode: the clone IS behind and was left alone
-#   refused   `baseline` refused for safety; message names the clone state
-#   offline   the remote was unreachable / unresolvable
+#   refused   `baseline` refused for safety; message names the clone state. Also: a release that
+#             failed an integrity check (exit 40, both triggers, both modes), and — `/cleanup` only —
+#             an install HELD ahead of the newest release (exit 21; silent at session start)
+#   offline   the remote, or the newest release, was unreachable / unresolvable
 #   busy      a peer `baseline update` holds the lock
 #   failed    `baseline update` failed; message says how
 #   skipped   policy declined to run at all (mode=off, self-clone, rate-limited, no install)
@@ -55,6 +59,10 @@
 # for Codex, Gemini, or a workflow step. git's own network bounds are set too (no credential
 # prompt, no stalled transfer), but those cannot bound a local wedge, and an unbounded currency
 # check inside a sweep would hang the sweep.
+#
+# THE CHANNEL (#534, D143) changes the wording, never the decision: `bin/baseline` decides what the
+# release or main channel does. On `release` an update reads `updated v3.1.0 → v3.1.1.` and notify
+# names the newer release; on `main` the commit-count lines are unchanged.
 #
 # Usage:
 #   currency-lib.sh mode                                  # auto|notify|off
@@ -312,14 +320,21 @@ cmd_check() {
   #    resolves to `offline`, and the two callers then differ exactly as they do everywhere else:
   #    the unattended hook suppresses `offline` (never nag about a missing network at every session
   #    start), `/cleanup` prints it (the operator just asked).
-  local status rc
+  local status rc channel newest digest
+  # The channel decides the WORDING only — `baseline` decides what to do. On the release channel a
+  # message names versions (validated tag names, never commit counts); on `main` it is unchanged.
+  channel="$(adb_update_channel 2>/dev/null)"
   if [ "$mode" = notify ]; then
     # CAPTURE, then slice. Piping straight into `head` would report only HEAD's status, so a
     # backstop firing (124) or a crashed `baseline` would arrive as an empty answer and be
     # classified `silent` — a failure reported as "you are current".
-    status="$(adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
-                "$src/bin/baseline" update --check 2>/dev/null)"; rc=$?
-    status="${status%%$'\n'*}"   # first line, no fork
+    digest="$( { adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
+                   "$src/bin/baseline" update --check 2>&1; printf '\n%s%s\n' "$_ADB_CU_RC" "$?"; } | _adb_cu_digest)"
+    { read -r rc; read -r status; read -r newest; } <<CU_DIGEST
+$digest
+CU_DIGEST
+    case "$rc" in ''|*[!0-9]*) rc=1 ;; esac
+    adb_is_release_tag "$newest" || newest=""
     # Branch on the EXIT CODE, which is `--check`'s documented contract — 0 current · 10 behind ·
     # 20 needs attention (a deliberate clone state) · 30 error (fetch-failed / no-remote /
     # not-a-repo) — rather than on the prose word. The auto path below already reads rc for the
@@ -327,9 +342,20 @@ cmd_check() {
     # `fetch-failed` fall through a catch-all into `silent`.
     case "$rc" in
       124) _adb_cu_emit failed "'baseline update --check' exceeded ${_ADB_CU_TIMEOUT_SECS}s and was stopped." ;;
-      10)  _adb_cu_emit behind "install-source is behind origin — run 'baseline update'." ;;
-      30)  _adb_cu_emit offline "install-source remote unreachable (${status:-unknown}) — currency not verified." ;;
-      0|20) _adb_cu_emit silent "" ;;   # current, or a deliberate clone state notify stays quiet about
+      10)  if [ "$channel" = release ] && [ -n "$newest" ]; then
+             _adb_cu_emit behind "a newer release $newest is available (installed $(adb_release_label "$src" HEAD 2>/dev/null)) — run 'baseline update'."
+           else
+             _adb_cu_emit behind "install-source is behind origin — run 'baseline update'."
+           fi ;;
+      30)  if [ "$channel" = release ]; then
+             # 30 on the release channel also covers a reachable repository with no release, or one
+             # whose release could not be resolved — so the word, not "unreachable".
+             _adb_cu_emit offline "install-source currency not verified (${status:-unknown}) — run 'baseline update' to see why."
+           else
+             _adb_cu_emit offline "install-source remote unreachable (${status:-unknown}) — currency not verified."
+           fi ;;
+      40)  _adb_cu_emit refused "$(_adb_cu_integrity_msg)" ;;
+      0|20) _adb_cu_emit silent "" ;;   # current, or a clone state notify stays quiet about (held included)
       *)   _adb_cu_emit failed "'baseline update --check' failed (exit $rc) — run it manually to see why." ;;
     esac
     return 0
@@ -338,16 +364,26 @@ cmd_check() {
   # 8. auto: update. The outcome is read from the EXIT CODE and the before/after HEAD, never by
   #    parsing `baseline`'s human-facing prose — prose is free to change, the contract is not.
   local before after n
+  local before_label=""
   before="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || true)"
-  adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
-    "$src/bin/baseline" update >/dev/null 2>&1
-  rc=$?
+  [ "$channel" = release ] && before_label="$(adb_release_label "$src" HEAD 2>/dev/null)"
+  digest="$( { adb_run_bounded "$_ADB_CU_TIMEOUT_SECS" "$_ADB_CU_KILL_GRACE_SECS" \
+                 "$src/bin/baseline" update 2>&1 >/dev/null; printf '\n%s%s\n' "$_ADB_CU_RC" "$?"; } | _adb_cu_digest)"
+  { read -r rc; read -r status; read -r newest; } <<CU_DIGEST
+$digest
+CU_DIGEST
+  case "$rc" in ''|*[!0-9]*) rc=1 ;; esac
+  adb_is_release_tag "$newest" || newest=""
   after="$(git -C "$src" rev-parse --short HEAD 2>/dev/null || true)"
 
   case "$rc" in
     0)
       # Unchanged HEAD means it was already current — nothing worth reporting.
-      if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+      if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ] && [ "$channel" = release ]; then
+        # The destination is the release baseline VERIFIED (its versions line), not a local tag that
+        # happens to name the same commit — an unpublished one can.
+        _adb_cu_emit updated "updated ${before_label:-$before} → ${newest:-$(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")}."
+      elif [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
         n="$(git -C "$src" rev-list --count "$before..$after" 2>/dev/null)"
         case "$n" in ''|*[!0-9]*) n="" ;; esac
         if [ "$n" = "1" ]; then
@@ -410,7 +446,21 @@ cmd_check() {
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \
           "install-source not updated ($(adb_clone_status "$src" "$(adb_default_branch "$src")" 2>/dev/null)) — reconcile $src, then 'baseline update'." ;;
-    30) _adb_cu_emit offline "install-source remote unreachable — currency not verified." ;;
+    21)
+      # HELD: ahead of the newest release, and never downgraded. Not a clone that needs attention,
+      # so the unattended trigger says nothing; `/cleanup` was asked, so it says where the install
+      # is and the two ways out.
+      if [ "$trigger" = cleanup ]; then
+        _adb_cu_emit refused "install-source held at $(adb_release_label "$src" HEAD 2>/dev/null), ahead of the newest release${newest:+ $newest} — it moves at the next release, or set [updates] channel = \"main\" to follow main."
+      else
+        _adb_cu_emit silent ""
+      fi ;;
+    30) if [ "$channel" = release ]; then
+          _adb_cu_emit offline "install-source currency not verified (the remote, or its newest release, could not be resolved) — run 'baseline update' to see why."
+        else
+          _adb_cu_emit offline "install-source remote unreachable — currency not verified."
+        fi ;;
+    40) _adb_cu_emit refused "$(_adb_cu_integrity_msg)" ;;
     124)
       # Our own bound fired. Distinct from `offline`: the remote may be fine and something is
       # wedged, so it must not be reported as a missing network.
@@ -420,6 +470,9 @@ cmd_check() {
       # Includes exit 1: git advanced but the install did not fully heal. That one MUST be loud —
       # a half-repaired global install is the silent-staleness failure this exists to prevent.
       if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+        if [ "$channel" = release ]; then
+          before="${before_label:-$before}"; after="${newest:-$(adb_release_label "$src" HEAD 2>/dev/null || printf '%s' "$after")}"
+        fi
         _adb_cu_emit failed "clone updated $before → $after but the global install needs repair — run 'baseline update'."
       else
         _adb_cu_emit failed "'baseline update' failed (exit $rc) — run it manually to see why."
@@ -427,6 +480,28 @@ cmd_check() {
       ;;
   esac
   return 0
+}
+
+# _adb_cu_digest — reduce bin/baseline's merged output stream to three lines, holding one line at a
+# time (so memory is bounded by the longest line, not by the stream):
+# its exit code (the `$_ADB_CU_RC` line this library appends), its `--check` status word (the one
+# line that is a single lowercase word), and the tag from its LAST versions line
+# (`baseline: installed … (channel release), newest vX.Y.Z`), which the caller validates. Nothing
+# is staged on disk, so a cancelled run leaves nothing behind, and the installer's output, however
+# long, is read and dropped line by line.
+_ADB_CU_RC="adb-currency-rc:"
+_adb_cu_digest() {
+  awk -v mark="$_ADB_CU_RC" '
+    index($0, mark) == 1 { rc = substr($0, length(mark) + 1); next }
+    word == "" && $0 ~ /^[a-z][a-z-]*$/ { word = $0; next }
+    /^baseline: installed .* \(channel release\), newest / { n = $0; sub(/^.*, newest /, "", n); newest = n }
+    END { print rc; print word; print newest }'
+}
+
+# An integrity refusal (bin/baseline exit 40) is reported by BOTH triggers in BOTH modes: a release
+# tag that moved, or a release off the default branch, is never `offline` and never silence.
+_adb_cu_integrity_msg() {
+  printf '%s' "install-source NOT moved: the newest release failed an integrity check (its tag does not match origin's, or its commit is not on the default branch) — run 'baseline update' to see which."
 }
 
 # Emit the one outcome record. A literal TAB separates the fields, and the message is single-line

@@ -47,6 +47,10 @@ command -v jq >/dev/null 2>&1 || { echo "check-session-currency: jq required" >&
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# This suite's fixture fast-forwards `main`, so it runs on `channel = "main"` — the pre-#534
+# behaviour that channel keeps exactly. The release channel is exercised in check-baseline.sh.
+export ADB_UPDATE_CHANNEL=main
+
 # --- fixture: a real install-source clone, pre-linked into a fake HOME --------
 # Mirrors check-baseline.sh's shape (the manifest must fully resolve or `baseline update`
 # reports a broken install), plus the hook itself and the shared lib beside it.
