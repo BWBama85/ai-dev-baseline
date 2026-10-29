@@ -4,7 +4,7 @@
 # Usage: bash scripts/check-shmutant-pin.sh [--self-test]   (exit 0 = pass, 1 = fail, 2 = usage)
 #
 # scripts/shmutant.sh is a THIRD-PARTY file: BWBama85/shmutant's single-file harness, vendored byte
-# for byte from tag v0.3.0 (commit 20a2683) and never edited here. A defect found in it is filed at
+# for byte from tag v0.4.0 (commit bc80ff0) and never edited here. A defect found in it is filed at
 # BWBama85/shmutant, and a fix arrives by copying a newer release over it. Beside it,
 # scripts/shmutant.sh.sha256 records its SHA-256 in the line format of the release's own CHECKSUMS,
 # so the pin is also checkable by hand: `cd scripts && shasum -a 256 -c shmutant.sh.sha256`.

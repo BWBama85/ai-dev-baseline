@@ -9578,6 +9578,18 @@ survive is the part a later reader needs.
              the ported rows take no edit. Upstream `main` already carries two further freeze-guard
              fixes past the tag (#66, #67); they are not vendored, because this repo pins releases
              only, and arrive with the next one.
+- amended:   2026-10-29. The vendored copy moves to shmutant `v0.4.0` (tag commit `bc80ff0`,
+             SHA-256 `8b56ed35…46bfe14`, matching that release's `CHECKSUMS`), which carries the two
+             fixes the previous amendment named (upstream PRs #66, #67) and six more (#68, #69, #71,
+             #73, #74, #76). Read live on 2026-10-29: BWBama85/shmutant#49, #51, #52, #53, #57, #59, #60,
+             #61, #62, #65 and #70 are CLOSED, completed; #75 (the suite's own process group still
+             hung up in self-mutation) stays OPEN and concerns shmutant's test runner, not the
+             harness vendored here. The changed code is the freeze guard's reads and clock handling,
+             a failed pipeline stage never standing in for an identity, length, checksum or count, a
+             link count that cannot be read now refusing the row, and the sampler's process group.
+             The one new surface is `SHMUTANT_DIAG_DIR`, off unless set, which nothing here sets.
+             Every function this repo calls is still defined and the rest of the diff only adds
+             internals, so `check_shmutant_pool` and the ported rows take no edit.
 
 ## D126 — #456: no mutation harness runs per pull request; they run nightly, by dispatch and by label
 - date:      2026-10-10
