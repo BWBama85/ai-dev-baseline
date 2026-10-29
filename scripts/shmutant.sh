@@ -42,6 +42,11 @@
 #                        (default 0; needs SHMUTANT_BASELINE=1)
 #   SHMUTANT_KEEP        1 keeps every clone after its run (default: clones are removed)
 #   SHMUTANT_STREAM      file the verdict stream is appended to (default: stdout)
+#   SHMUTANT_DIAG_DIR    absolute path of an existing directory outside the workdir: a run whose
+#                        process group could not be verified as its own leaves a process-table
+#                        snapshot there, in holder-gone-<run pid>.XXXXXX/snapshot (unset or empty:
+#                        no snapshot). It never changes a verdict: a directory gone, replaced or
+#                        unwritable by then gets nothing
 #   SHMUTANT_RED_PREFIX  see run; SHMUTANT_RED_STATUS  see run
 #
 # Verdict stream (stdout, tab-separated, one record per line; \t \n \\ escaped in fields):
@@ -138,7 +143,7 @@ for _shmutant_v in SHMUTANT_VERSION SHMUTANT_PROC SHMUTANT_SELECTED_N SHMUTANT_D
 done
 \builtin unset -v _shmutant_v
 
-SHMUTANT_VERSION=0.3.0
+SHMUTANT_VERSION=0.4.0
 # Process identity comes from the kernel's start time in /proc where there is one (Linux):
 # tick resolution, so a reused pid cannot pass for the process it replaced. Elsewhere it is the
 # start time ps recorded (`lstart`, fixed at the fork, which a clock step does not move), and
@@ -637,11 +642,12 @@ _shmutant_scan_output() {
 }
 
 # _shmutant_descendants <pid> — print every descendant pid of <pid>, via POSIX `ps -A -o pid= -o ppid=`.
-# Prints nothing when ps is unavailable; the process-group kill still applies then.
+# Prints nothing when ps is unavailable; the process-group kill still applies then. Fails when the
+# table could not be filtered whole.
 _shmutant_descendants() {
   local table
   table="$(command -p ps -A -o pid= -o ppid= 2>/dev/null)" || return 0
-  printf '%s\n' "$table" | command -p awk -v root="$1" '
+  (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" '
     { child[NR] = $1; parent[NR] = $2 }
     END {
       want[root] = 1
@@ -650,7 +656,7 @@ _shmutant_descendants() {
         for (i = 1; i <= NR; i++) if ((parent[i] in want) && !(child[i] in want)) { want[child[i]] = 1; added = 1 }
       } while (added)
       for (p in want) if (p != root) print p
-    }'
+    }' )
 }
 
 # _shmutant_proc_table — one line per process from /proc, `pid ppid starttime`. Each stat file is
@@ -676,6 +682,116 @@ _shmutant_proc_table() {
     END { flush() }'
 }
 
+# _shmutant_diag_dir_check <label> — SHMUTANT_DIAG_DIR, when set and not empty, names an existing
+# directory by an absolute path with no newline. Replaces it by its physical form and sets
+# SHMUTANT_DIAG_ID to its identity (_shmutant_dir_id), which every snapshot checks again. Returns 2
+# on a violation, saying why; unset or empty is off.
+_shmutant_diag_dir_check() {
+  local v
+  [ -n "${SHMUTANT_DIAG_DIR:-}" ] || return 0
+  case "$SHMUTANT_DIAG_DIR" in
+    *$'\n'*) _shmutant_err "$1: SHMUTANT_DIAG_DIR contains a newline"; return 2 ;;
+    /*) ;;
+    *) _shmutant_err "$1: SHMUTANT_DIAG_DIR must be an absolute path, got [$SHMUTANT_DIAG_DIR]"; return 2 ;;
+  esac
+  v="$(_shmutant_abs "$SHMUTANT_DIAG_DIR")" || { _shmutant_err "$1: SHMUTANT_DIAG_DIR is not a directory: $SHMUTANT_DIAG_DIR"; return 2; }
+  _shmutant_canon "$1" SHMUTANT_DIAG_DIR "$v" || return 2
+  v="$(_shmutant_dir_id "$v")" || { _shmutant_err "$1: SHMUTANT_DIAG_DIR cannot be identified: $SHMUTANT_DIAG_DIR"; return 2; }
+  _shmutant_canon "$1" SHMUTANT_DIAG_ID "$v"
+}
+
+# _shmutant_diag_snapshot <kind> <id> <line>… — with SHMUTANT_DIAG_DIR set and still the directory
+# SHMUTANT_DIAG_ID records, a new directory <kind>-<id>.XXXXXX in it, made by mktemp and so private
+# and nobody else's, holding one file, `snapshot`: a UTC timestamp, `kind: <kind>`, each line, then
+# the whole process table (each read given up on as _shmutant_ps gives up on one bounded at ten
+# seconds). The file is renamed into place once written whole; a snapshot that cannot be read or
+# written is removed, as far as removing it succeeds. Nothing reaches stderr, and the status is 0
+# always: a snapshot never changes a verdict.
+_shmutant_diag_snapshot() {
+  local d="${SHMUTANT_DIAG_DIR:-}" k="$1" n="$2" tbl tmp; shift 2
+  [ -n "$d" ] || return 0
+  # The table first: a capture that cannot read one writes nothing.
+  tbl="$(SHMUTANT_PS_BOUND=10 _shmutant_ps -A -o pid,ppid,pgid,sess,stat,lstart,command 2>/dev/null)" \
+    || tbl="$(SHMUTANT_PS_BOUND=10 _shmutant_ps -A -o pid,ppid,pgid,stat,command 2>/dev/null)" || return 0
+  [ -n "$tbl" ] || return 0
+  # A directory replaced since it was checked (by a link into the workdir, say) gets nothing.
+  _shmutant_is_id "$d" "${SHMUTANT_DIAG_ID:-}" || return 0
+  tmp="$(command -p mktemp -d "$d/$k-$n.XXXXXX" 2>/dev/null)" || return 0
+  # Anchored in the directory mktemp made, and that checked to sit in the one validated: every write
+  # is relative from here, so a path replaced before this point is caught and one replaced after it
+  # changes nothing. Caught, nothing is written, and nothing is removed from where it then points.
+  ( builtin cd -P -- "$tmp" || builtin exit 0
+    _shmutant_is_id .. "${SHMUTANT_DIAG_ID:-}" || builtin exit 0
+    if { command -p date -u '+%Y-%m-%dT%H:%M:%SZ' && printf '%s\n' "kind: $k" "$@" "$tbl"; } > snapshot.part \
+      && command -p mv -- snapshot.part snapshot; then builtin exit 0; fi
+    command -p rm -f -- snapshot.part snapshot
+    builtin cd .. && command -p rmdir -- "${tmp##*/}" ) 2>/dev/null
+  return 0
+}
+
+# _shmutant_ps <argument>… — `command -p ps <argument>…`, its output and its status. With
+# SHMUTANT_PS_BOUND set to a whole number of seconds from 1 to 999 (a freeze's guard sets it; any other
+# value is no bound), a ps that has not ended within that bound is given up on: status 124, nothing
+# printed, so a process table that stalls reads as one that could not be read. The bound is kept by a
+# process substitution of its own, which ends whichever of the ps and its timer is left (only while
+# bash has not reaped it: _shmutant_ps_end). One that does not answer within five
+# seconds more is given up on as well, signalled by nobody. A failed write of the output is a failed
+# call. The substitution ends through the builtin exit: inside a run, a function of that name (the
+# run's own, which snapshots what the run left) would be read for it, and would read the table again.
+_shmutant_ps() {
+  # Before any local: an unbounded call must not hide a name of its caller's from the ps it runs.
+  case "${SHMUTANT_PS_BOUND:-}" in [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;; *) command -p ps "$@"; return ;; esac
+  local b="$SHMUTANT_PS_BOUND" out="" fd p st=0
+  exec {fd}< <(
+    # No handler of the caller's runs in here: a DEBUG trap its functrace hands down, or a CHLD trap,
+    # run between a job's listing and its signal could reap the job and start another under its number.
+    builtin trap - CHLD DEBUG RETURN ERR
+    # Job control on and off again before any job: bash then reads this shell's own process group,
+    # which a substitution otherwise inherits stale, and starts each job in it, the one form of job
+    # its `kill %<job>` signals only while it has not reaped it (_shmutant_ps_end).
+    set +e; builtin set -m; builtin set +m; c=""; t=""; w=""; s=0
+    command -p ps "$@" & c=$!
+    # The timer by its path, run directly: the job is then the sleep itself, which ending ends. The path
+    # is the executable's on the standard utility path, never a function or alias of the caller's.
+    t="$(_shmutant_std_bin sleep)" && \
+      case "$t" in /*) "$t" "$b" < /dev/null > /dev/null 2>&1 & t=$! ;; *) t="" ;; esac
+    # No timer to be had: the bound is the one the caller keeps, below.
+    case "$t" in ''|*[!0-9]*) wait "$c"; builtin exit "$?" ;; esac
+    wait -n -p w "$c" "$t" || s=$?
+    if [ -n "$w" ] && [ "$w" = "$c" ]; then _shmutant_ps_end "$t"; wait "$t"; builtin exit "$s"; fi
+    _shmutant_ps_end "$c"; wait "$c"; builtin exit 124
+  ) || { return 1; }
+  p=$!
+  IFS= read -r -d '' -t "$(( b + 5 ))" -u "$fd" out || st=$?
+  exec {fd}<&-
+  [ "$st" -le 128 ] || return 124
+  st=0; wait "$p" || st=$?
+  [ "$st" != 124 ] || return 124
+  printf '%s' "$out" || return 1
+  return "$st"
+}
+
+# _shmutant_ps_end <pid> — KILL <pid> while it is a job of this shell's that bash has not reaped:
+# through its job (`kill %<job>`), which bash signals with SIGCHLD blocked and only while its record
+# shows the process alive, so the check and the signal are one step, and a job reaped before it is
+# sent nothing. That holds for a job started in this shell's own process group with job control off,
+# and while no code of a caller's can run between the listing and the signal to start another job
+# under that number: _shmutant_ps's substitution makes sure of both, clearing every trap first. Bash
+# signals the job's process group for any other job (#53). The builtins' own jobs and kill: a caller's functions of those names must not keep the bound
+# from being kept.
+_shmutant_ps_end() {
+  local js jp
+  while IFS=$' \t' read -r js jp _; do
+    case "$js" in '['*']'*) ;; *) continue ;; esac
+    [ "$jp" = "$1" ] || continue
+    js="${js#\[}"; js="${js%%]*}"
+    case "$js" in ''|*[!0-9]*) return 0 ;; esac
+    builtin kill -KILL "%$js" 2>/dev/null
+    return 0
+  done <<< "$(builtin jobs -l)"
+  return 0
+}
+
 # _shmutant_descendants_started <pid> — print `pid start` for every descendant of <pid>, from one
 # `ps -A -o pid= -o ppid= -o etime=` pass, so each is carried with the identity it had when found.
 # Returns 1 when that process table cannot be read: it always lists the caller, so an empty read is
@@ -684,7 +800,7 @@ _shmutant_descendants_started() {
   local table now
   if [ "${SHMUTANT_PROC:-}" = 1 ]; then
     table="$(_shmutant_proc_table)"; [ -n "$table" ] || return 1
-    printf '%s\n' "$table" | command -p awk -v root="$1" '
+    (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" '
       { i++; child[i] = $1; parent[i] = $2; start[i] = $3 }
       END {
         want[root] = 1
@@ -693,12 +809,12 @@ _shmutant_descendants_started() {
           for (j = 1; j <= i; j++) if ((parent[j] in want) && !(child[j] in want)) { want[child[j]] = 1; added = 1 }
         } while (added)
         for (j = 1; j <= i; j++) if ((child[j] in want) && child[j] != root) print child[j], start[j]
-      }'
+      }' ) || return 1
     return 0
   fi
   if [ "${SHMUTANT_PS_LSTART:-}" != 0 ] && _shmutant_identity "$BASHPID" > /dev/null && [ "${SHMUTANT_PS_LSTART:-}" = 1 ]; then
     table="$(command -p ps -A -o pid= -o ppid= -o lstart= 2>/dev/null)" && [ -n "$table" ] || return 1
-    printf '%s\n' "$table" | command -p awk -v root="$1" '
+    (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" '
       NF > 2 && $1 ~ /^[0-9]+$/ { i++; child[i] = $1; parent[i] = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); start[i] = $0 }
       END {
         want[root] = 1
@@ -707,12 +823,12 @@ _shmutant_descendants_started() {
           for (j = 1; j <= i; j++) if ((parent[j] in want) && !(child[j] in want)) { want[child[j]] = 1; added = 1 }
         } while (added)
         for (j = 1; j <= i; j++) if ((child[j] in want) && child[j] != root) print child[j], start[j]
-      }'
+      }' ) || return 1
     return 0
   fi
   table="$(command -p ps -A -o pid= -o ppid= -o etime= 2>/dev/null)" && [ -n "$table" ] || return 1
   now="$(_shmutant_now)"; now=$(( now / 1000000 ))
-  printf '%s\n' "$table" | command -p awk -v root="$1" -v now="$now" '
+  (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" -v now="$now" '
     NF == 3 && $1 ~ /^[0-9]+$/ {
       child[NR] = $1; parent[NR] = $2
       e = $3; d = 0
@@ -730,7 +846,7 @@ _shmutant_descendants_started() {
         for (i = 1; i <= NR; i++) if ((parent[i] in want) && !(child[i] in want)) { want[child[i]] = 1; added = 1 }
       } while (added)
       for (i = 1; i <= NR; i++) if ((child[i] in want) && child[i] != root) print child[i], start[i]
-    }'
+    }' )
 }
 
 # _shmutant_etime_secs <etime> — seconds from a POSIX `ps -o etime` value ([[dd-]hh:]mm:ss).
@@ -767,13 +883,13 @@ _shmutant_identity() {
   # asking about this process ($BASHPID: the top-level shell, $$, may be gone by then, as it is when
   # a freeze's guard acts), the elapsed-time form remains.
   if [ "${SHMUTANT_PS_LSTART:-}" != 0 ]; then
-    lstart="$(command -p ps -o lstart= -p "$1" 2>/dev/null | command -p awk 'NF { $1 = $1; print; exit }')"
+    lstart="$(set -o pipefail; _shmutant_ps -o lstart= -p "$1" 2>/dev/null | command -p awk 'NF { $1 = $1; print; exit }')" || lstart=""
     if [ -n "$lstart" ]; then SHMUTANT_PS_LSTART=1; printf '%s' "$lstart"; return 0; fi
     if [ "${SHMUTANT_PS_LSTART:-}" = 1 ]; then return 1; fi
-    if [ -n "$(command -p ps -o lstart= -p "$BASHPID" 2>/dev/null)" ]; then SHMUTANT_PS_LSTART=1; return 1; fi
+    if [ -n "$(_shmutant_ps -o lstart= -p "$BASHPID" 2>/dev/null)" ]; then SHMUTANT_PS_LSTART=1; return 1; fi
     SHMUTANT_PS_LSTART=0
   fi
-  etime="$(command -p ps -o etime= -p "$1" 2>/dev/null | command -p tr -d ' ')" || return 1
+  etime="$(set -o pipefail; _shmutant_ps -o etime= -p "$1" 2>/dev/null | command -p tr -d ' ')" || return 1
   [ -n "$etime" ] || return 1
   now="$(_shmutant_now)"
   printf 'e%s' "$(( now / 1000000 - $(_shmutant_etime_secs "$etime") ))"
@@ -792,20 +908,21 @@ _shmutant_identity_table() {
     done < <(_shmutant_proc_table | command -p awk '{ print $1, $3 }')
     return 0
   fi
+  # The ps tables are read whole, and taken only from a read that succeeded at every stage: a ps that
+  # failed, whatever it printed first, gives no table at all, never part of one.
+  local tbl
   if [ "${SHMUTANT_PS_LSTART:-}" != 0 ] && _shmutant_identity "$BASHPID" > /dev/null && [ "${SHMUTANT_PS_LSTART:-}" = 1 ]; then
+    tbl="$(set -o pipefail; _shmutant_ps -A -o pid= -o lstart= 2>/dev/null | command -p awk 'NF > 1 && $1 ~ /^[0-9]+$/ { pid = $1; $1 = ""; sub(/^ +/, ""); print pid, $0 }')" || return 0
     while IFS= read -r line; do
       # shellcheck disable=SC2034
       [ -n "$line" ] && SHMUTANT_START["${line%% *}"]="${line#* }"
-    done < <(command -p ps -A -o pid= -o lstart= 2>/dev/null | command -p awk 'NF > 1 && $1 ~ /^[0-9]+$/ { pid = $1; $1 = ""; sub(/^ +/, ""); print pid, $0 }')
+    done <<< "$tbl"
     return 0
   fi
   now="$(_shmutant_now)"; now=$(( now / 1000000 ))
   # awk does the etime arithmetic for every row at once; a bash loop over the whole process
   # table took longer than the tree being frozen had left to live.
-  while IFS= read -r line; do
-    # shellcheck disable=SC2034
-    [ -n "$line" ] && SHMUTANT_START["${line%% *}"]="${line#* }"
-  done < <(command -p ps -A -o pid= -o etime= 2>/dev/null | command -p awk -v now="$now" '
+  tbl="$(set -o pipefail; _shmutant_ps -A -o pid= -o etime= 2>/dev/null | command -p awk -v now="$now" '
     NF == 2 && $1 ~ /^[0-9]+$/ {
       e = $2; d = 0
       if (e ~ /-/) { split(e, a, "-"); d = a[1]; e = a[2] }
@@ -814,7 +931,11 @@ _shmutant_identity_table() {
       else if (n == 2) s = t[1] * 60 + t[2]
       else s = t[1]
       print $1, "e" (now - (d * 86400 + s))
-    }')
+    }')" || return 0
+  while IFS= read -r line; do
+    # shellcheck disable=SC2034
+    [ -z "$line" ] || SHMUTANT_START["${line%% *}"]="${line#* }"
+  done <<< "$tbl"
 }
 
 # _shmutant_alive_since <pid> <start-seen> — true when <pid> still started when <start-seen>
@@ -963,7 +1084,8 @@ _shmutant_kill_tree_guarded() {
   guard_of_id="$(_shmutant_identity "$guard_of")" || guard_of_id=""
   local -a frozen=() roots=()
   local -A have=()
-  local SHMUTANT_KILL_GROUP="" SHMUTANT_FREEZE_UNSETTLED=0
+  # group_untold: the held group was stopped with members its guard was not told of (_shmutant_kill_tree).
+  local SHMUTANT_KILL_GROUP="" SHMUTANT_FREEZE_UNSETTLED=0 group_untold=""
   shift
   pid="${spec%%:*}"
   # A write to a guard that has gone fails here; it does not end this shell partway through a freeze.
@@ -974,8 +1096,18 @@ _shmutant_kill_tree_guarded() {
   # A bare root's start, where one can be read, before the guard's start: compared after it.
   local rootid_pre=""
   [ "$spec" != "$pid" ] || rootid_pre="$(_shmutant_identity "$pid")" || rootid_pre=""
-  local guard_up=1
+  local guard_up=1 fid_now="" fgap=""
   _shmutant_guard_open && guard_up=0
+  # This shell's own start, read now the guard is up, is its first record. In the elapsed-time form it
+  # carries how much older this shell is than the guard, read here, by this shell, of itself, in one ps:
+  # what the guard tells a later step of the clock from another process at this number by
+  # (_shmutant_guard_clock_moved). Before anything is stopped; a guard that cannot be told it is gone,
+  # and nothing is stopped after.
+  if [ "$guard_up" = 0 ]; then
+    fid_now="$(_shmutant_identity "$guard_of")" || fid_now=""
+    case "$fid_now" in e*) fgap="$(_shmutant_elapsed_gap "$guard_of" "${guard_pid:-}")" || fgap="" ;; esac
+    [ -z "$fid_now" ] || _shmutant_guard_tell "f $fid_now${fgap:+ $fgap}"
+  fi
   # The root is stopped, searched from and later signalled by number only when it is known to
   # be the process it was: a bare pid means live at the caller's hands (stopped even when ps
   # cannot identify it); `pid:identity` carries what was captured while it lived and must still
@@ -1037,7 +1169,7 @@ _shmutant_kill_tree_guarded() {
     # stopped. The caller verified it just before (_shmutant_held_group), the check the group stop
     # itself relies on; a KILL landing before this leaves it stopped only until the guard ends the
     # group, holder and all. When the members cannot all be told, the holder stays stopped: it
-    # cannot end then, and goes on showing the group is the run's, to the guard and to the KILL.
+    # cannot end then, and goes on showing the group is the run's to this shell's KILL.
     # But first the holder is shown to be the holder again, now that it is stopped, as the root is:
     # one that went between its check and the stop may have given the number away, and the stop
     # reached another group. That stop is undone, and nothing found in that group is taken as the run's.
@@ -1047,10 +1179,9 @@ _shmutant_kill_tree_guarded() {
     elif _shmutant_guard_members "$held"; then
       [ -z "${holder:-}" ] || kill -CONT "$holder" 2>/dev/null
     else
-      # Kept stopped, and the guard is told so: a holder this freeze keeps stopped cannot end, so its
-      # number is still the holder's, and the guard ends the group by it, start or no start, while it
-      # finds it still stopped and in the group.
-      _shmutant_guard_tell k
+      # Kept stopped, and the KILL told the group holds members it may reach alone. The guard, never
+      # told the group whole, continues it unless it can show the holder is the holder.
+      group_untold=1
     fi
     SHMUTANT_KILL_GROUP="$held"
   fi
@@ -1109,30 +1240,38 @@ _shmutant_kill_tree_guarded() {
 # root of the walk, whose descendants may sit in other groups, once _shmutant_frozen_only shows it
 # stopped and still itself: read from one table of groups and one of starts. The caller's holder is
 # told but never taken as frozen: it is let go next, and may end.
+# Once every member is told, the guard is told so (`m`): a group whose members it has every one of is
+# ended by their numbers, and needs no signal by its own that nothing proves is the run's. Every one
+# is every one the two reads show: a stopped child its parent, outside the group, moves out of it
+# across both reads and back after them is never told (D12).
 # Fails when not every member could be told (a table, a start or the guard could not be had), and the
 # caller then keeps the holder stopped. Shares its caller's `frozen`, `have` and `roots`.
 _shmutant_guard_members() {
-  local table out p
+  local table out p first
   local -a members=() recs=()
   local -A SHMUTANT_START=()
   table="$(command -p ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] || return 1
-  out="$(printf '%s\n' "$table" | command -p awk -v g="$1" '$2 == g { print $1 }')" || return 1
-  [ -n "$out" ] || return 0
+  out="$(set -o pipefail; printf '%s\n' "$table" | command -p awk -v g="$1" '$2 == g { print $1 }')" || return 1
+  if [ -z "$out" ]; then _shmutant_guard_tell m; return; fi
   mapfile -t members <<< "$out"
   _shmutant_identity_table
   # The group read again after the starts: a member still in it is the process both reads saw, since
-  # nothing new can join a group whose members are all stopped. One gone from it between the reads
+  # no member forks into a group whose members are all stopped. One gone from it between the reads
   # (killed, its number perhaps someone else's by the start read) is not told.
   table="$(command -p ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] || return 1
   out="$(set -o pipefail; printf '%s\n' "$table" | command -p awk -v g="$1" '$2 == g { print " " $1 " " }' | command -p tr -d '\n')" || return 1
+  # Nor is the group told whole while the second read holds a member the first did not: a process of
+  # the run's session can join it between them, and that one is never told.
+  first=" "; for p in "${members[@]}"; do first="$first$p "; done
+  (set -o pipefail; printf '%s\n' "$table" | command -p awk -v g="$1" -v first="$first" '$2 == g && !index(first, " " $1 " ") { f = 1 } END { exit f }' ) || return 1
   for p in "${members[@]}"; do
     [ -n "$p" ] && [ -z "${have[$p]:-}" ] || continue
     case "$out" in *" $p "*) ;; *) continue ;; esac
     [ -n "${SHMUTANT_START[$p]:-}" ] || return 1
     recs+=("p $p ${SHMUTANT_START[$p]}")
   done
-  [ "${#recs[@]}" -gt 0 ] || return 0
-  _shmutant_guard_tell "${recs[@]}" || return 1
+  if [ "${#recs[@]}" -eq 0 ]; then _shmutant_guard_tell m; return; fi
+  _shmutant_guard_tell "${recs[@]}" m || return 1
   # Taken as frozen only once shown to be: a group stop succeeds when it reaches any member, so one
   # that refused it (a set-uid process) is still running, and one reaped since the table was read may
   # have given its number away. Stopped again and checked against a fresh table, as a walk's finds
@@ -1221,8 +1360,10 @@ _shmutant_guard_close() {
     if _shmutant_alive_since "$guard_pid" "${guard_id:-}"; then
       # With whatever it is waiting on (a process listing that stalled), through the process group it
       # leads, which its being there keeps its own: a child it forks meanwhile is in it too, where a
-      # snapshot of its descendants taken first would miss one. Then seen to go, within a bound.
-      kill -KILL -- -"$guard_pid" "$guard_pid" 2>/dev/null
+      # snapshot of its descendants taken first would miss one. The group alone, which takes the guard
+      # with it: its number named again after that KILL could reach a process given it since. Then
+      # seen to go, within a bound.
+      kill -KILL -- -"$guard_pid" 2>/dev/null
       for (( i = 0; i < 20; i++ )); do kill -0 "$guard_pid" 2>/dev/null || break; command -p sleep 0.1; done
       if kill -0 "$guard_pid" 2>/dev/null && ! _shmutant_guard_reaped "$guard_pid"; then
         _shmutant_freeze_err "the guard of a freeze (pid $guard_pid) was killed but could not be confirmed ended"
@@ -1243,7 +1384,7 @@ _shmutant_guard_close() {
 # false when it is not, or no state can be read (a ps that failed, whatever it printed).
 _shmutant_guard_reaped() {
   local st
-  st="$(command -p ps -o stat= -p "$1" 2>/dev/null)" && case "$st" in *Z*) return 0 ;; esac
+  st="$(_shmutant_ps -o stat= -p "$1" 2>/dev/null)" && case "$st" in *Z*) return 0 ;; esac
   return 1
 }
 
@@ -1251,7 +1392,7 @@ _shmutant_guard_reaped() {
 # can be read (a ps that failed, whatever it printed).
 _shmutant_proc_stopped() {
   local st
-  st="$(command -p ps -o stat= -p "$1" 2>/dev/null)" && case "$st" in *T*) return 0 ;; esac
+  st="$(_shmutant_ps -o stat= -p "$1" 2>/dev/null)" && case "$st" in *T*) return 0 ;; esac
   return 1
 }
 
@@ -1263,35 +1404,79 @@ _shmutant_freeze_err() {
 
 # _shmutant_guard_freezer_there — the freezing shell (`guard_of`, with `guard_of_id`) is still there:
 # its pid in use, not by a zombie, and not by a process carrying another start. With no pid named
-# there is nothing to look for, and a start that cannot be read now is taken as it was.
+# there is nothing to look for, and a start that cannot be read now is taken as it was. So is an
+# elapsed-time start that no longer matches but has moved exactly as far as the guard's own since the
+# two were read together (_shmutant_guard_clock_moved): a clock step, made of a shell still freezing,
+# which the guard acting on would let go what that shell goes on to KILL by number.
 _shmutant_guard_freezer_there() {
   [ -n "${guard_of:-}" ] || return 0
   ! _shmutant_guard_reaped "$guard_of" || return 1
-  _shmutant_holder_state "$guard_of" "${guard_of_id:-}" || [ "$?" = 2 ]
+  _shmutant_holder_state "$guard_of" "${guard_of_id:-}" || [ "$?" = 2 ] || _shmutant_guard_clock_moved || [ "$?" = 2 ]
+}
+
+# _shmutant_guard_clock_moved — true when the freezing shell is still the process that told the guard its
+# start (`f`), though its elapsed-time start no longer matches: the gap between its elapsed time and the
+# guard's own, read in one ps (_shmutant_elapsed_gap), is the one that shell read of itself and told
+# (`guard_gap_ref`), within the second etime resolves. Both age alike while both live, whatever the
+# clock does, and one read leaves no instant for a step between them. A process that took the
+# freezer's number since is younger, and the gap moves (1). 1 too for a start not in the elapsed-time
+# form, or a number no longer in use. 2 when it cannot tell: the number is in use, but no gap was told
+# or none can be read now, which the freezer's start is then taken to be, as one unreadable is.
+_shmutant_guard_clock_moved() {
+  local gap
+  case "${guard_of_id:-}" in e*) ;; *) return 1 ;; esac
+  kill -0 "$guard_of" 2>/dev/null || return 1
+  [ -n "${guard_gap_ref:-}" ] && [ -n "${guard_self:-}" ] || return 2
+  gap="$(_shmutant_elapsed_gap "$guard_of" "$guard_self")" || return 2
+  [ $(( gap - guard_gap_ref )) -ge -1 ] && [ $(( gap - guard_gap_ref )) -le 1 ]
+}
+
+# _shmutant_elapsed_gap <pid-a> <pid-b> — print the elapsed seconds of <pid-a> less those of <pid-b>,
+# both from one `ps -o etime=`; fails unless that ps succeeded and listed both.
+_shmutant_elapsed_gap() {
+  local out ea="" eb="" lp le
+  case "$1$2" in ''|*[!0-9]*) return 1 ;; esac
+  out="$(_shmutant_ps -o pid= -o etime= -p "$1,$2" 2>/dev/null)" || return 1
+  while IFS=$' \t' read -r lp le _; do
+    case "$lp" in "$1") ea="$(_shmutant_etime_secs "$le")" ;; "$2") eb="$(_shmutant_etime_secs "$le")" ;; esac
+  done <<< "$out"
+  [ -n "$ea" ] && [ -n "$eb" ] || return 1
+  printf '%s' "$(( ea - eb ))"
 }
 
 # _shmutant_guard — the guard of one freeze. Says `ready <its pid>`, then reads on stdin what the
 # freezing shell is about to stop, each record written before the stop it announces: `p <pid>
-# [<start>]` per process, and `g <pgid> <holder or -> [<holder identity>]` for a held group. `done`
+# [<start>]` per process, and `g <pgid> <holder or -> [<holder identity>]` for a held group, then `m`
+# once every member of that group, stopped, has been told as a process (_shmutant_guard_members). `done`
 # (the KILL has been sent) ends it with nothing done. End-of-file without `done` means the freezing
 # shell has gone partway, killed: the guard then stops every recorded pid and the holder, and KILLs,
-# in one kill, every recorded pid that still carries the start it was recorded with, and the group
-# while its holder is shown to be the process
-# it was (_shmutant_holder_state 0), or, with no start to check it by, while the freeze kept it
-# stopped (`k`) and it is still stopped and in the group. Every other recorded pid is continued, never
-# killed and never left stopped. The group is continued when its holder is not shown, but only while
-# its number is shown to be the run's: a holder still there, stopped and in the group that cannot be
-# checked, or a pid it verified still in it (_shmutant_group_has), and only after that pid is killed;
-# otherwise nothing is sent to it. It
-# uses no freeze step and no _shmutant_kill_tree, which a freezing shell killed in them may have left
-# half-done.
+# in one kill, every recorded pid that still carries the start it was recorded with, each once, and,
+# named after them with its holder only through it, the group while its holder is shown to be the
+# process it was (_shmutant_holder_state 0). Every other recorded pid is continued, never killed and
+# never left stopped. The group is continued when its holder is not shown: while its number is shown
+# to be the run's (a holder still there, stopped and in the group that cannot be checked, or a pid it
+# verified still in it, _shmutant_group_has), and, shown or not, while it may hold a member stopped
+# there that was never told (no `m`), which nothing else would let go: once it acts, no group a freeze
+# stopped is left stopped (but for a member the freezing shell's reads did not show, see
+# _shmutant_guard_members), and the most it sends one not shown to be the run's is a CONT, after every
+# KILL. It is sent nothing only when every member was told, each then killed or continued by its
+# number. It uses no freeze step and no _shmutant_kill_tree, which a freezing shell killed in
+# them may have left half-done.
 _shmutant_guard() {
-  local line chunk part="" pg="" ph="" phid="" p pid st gcont="" hs="" kept="" want members
+  local line chunk part="" pg="" ph="" phid="" p pid st gcont="" hs="" told="" want members cfirst=""
   local -a recs=() kills=() conts=() stops=() left=()
-  local -A SHMUTANT_START=()
+  local -A SHMUTANT_START=() killing=()
+  # Every process-table read it makes gives up after ten seconds (_shmutant_ps), and reads as one that
+  # could not be read: once its freezing shell is gone nothing else is left to bound a ps that stalls,
+  # and a read that never returns would keep it from sending anything at all.
+  local SHMUTANT_PS_BOUND=10
   # Its own process: the caller's errexit would end it at the first refused signal or failed write.
   set +e
   printf 'ready %s\n' "$BASHPID"
+  # With elapsed-time starts, which a clock step moves, the freezing shell tells its start (`f`) as its
+  # first record, with how much older it is than this guard, which it read of itself: what tells a later
+  # step of the clock from another process at the freezer's number (_shmutant_guard_clock_moved).
+  local guard_self="$BASHPID" guard_gap_ref=""
   # The freezing shell (`guard_of`, inherited) is gone when its records end, or, should a helper
   # subshell of its own still hold them open, when it is no longer there (_shmutant_guard_freezer_there):
   # looked at between reads, once a second. A read cut short by that second keeps what it got.
@@ -1300,7 +1485,8 @@ _shmutant_guard() {
       line="$part$chunk"; part=""
       case "$line" in
         done) return 0 ;;
-        k) kept=1 ;;
+        m) told=1 ;;
+        'f '*) case "${line#f }" in e*' '*) guard_gap_ref="${line##* }"; case "${guard_gap_ref#-}" in ''|*[!0-9]*) guard_gap_ref="" ;; esac ;; esac ;;
         'p '*) recs+=("${line#p }") ;;
         'g '*) line="${line#g }"; pg="${line%% *}"; line="${line#"$pg"}"; line="${line# }"
                ph="${line%% *}"; phid="${line#"$ph"}"; phid="${phid# }" ;;
@@ -1328,7 +1514,10 @@ _shmutant_guard() {
     pid="${p%% *}"; st=""
     case "$p" in *' '?*) st="${p#* }" ;; esac
     case "$pid" in ''|*[!0-9]*) continue ;; esac
-    if [ -n "$st" ] && [ -n "${SHMUTANT_START[$pid]:-}" ] && _shmutant_same_start "${SHMUTANT_START[$pid]}" "$st"; then kills+=("$pid")
+    # Named once however many records verify it: a second KILL by its number, after the first had
+    # ended it, could reach a process given that number in between.
+    if [ -n "$st" ] && [ -n "${SHMUTANT_START[$pid]:-}" ] && _shmutant_same_start "${SHMUTANT_START[$pid]}" "$st"; then
+      [ -n "${killing[$pid]:-}" ] || { killing["$pid"]=1; kills+=("$pid"); }
     # Not shown to be the process recorded (another start, none, or no table): this freeze may have
     # stopped it by number (a number reused between its listing and its stop, a start a clock step
     # moved), so it is continued, as _shmutant_frozen_only continues one, and never killed. A CONT
@@ -1339,22 +1528,56 @@ _shmutant_guard() {
   # The group is killed only while its holder is shown to be the holder. Otherwise it is continued,
   # which lets go a member stopped there, while its number is shown to be still the run's: by a holder
   # that cannot be identified but is stopped and in the group, or by a process verified above still in
-  # it. With neither it may be anyone's by now, and nothing is sent to it.
+  # it. With neither it may be anyone's by now, but where a member of it may never have been told (no
+  # `m`: the freezing shell went before, or could not read them all) it is continued all the same: such
+  # a member is reached by nothing else, and a CONT is the most sent to a group nothing proves is the
+  # run's. Only a group whose every member was told, each killed or continued by its number, is sent
+  # nothing.
   if [ -n "$pg" ]; then
     hs=1; [ -z "$ph" ] || { _shmutant_holder_state "$ph" "$phid"; hs=$?; }
+    # An elapsed-time start moves with the wall clock, so one that no longer matches tells a clock step
+    # no better than a reused pid: a holder still there carrying one is a holder that cannot be checked.
+    [ "$hs" != 1 ] || case "$phid" in e*) ! kill -0 "$ph" 2>/dev/null || hs=2 ;; esac
     # A holder that cannot be identified shows the number is still the run's only while it is stopped
     # and in the group: stopped, it cannot end and give its number away, and a process at its number in
     # another group is not it. One the stop above did not reach (not a process this guard may signal)
-    # proves nothing.
+    # proves nothing. It never shows the holder is the holder, even one the freeze kept stopped: this
+    # guard's own stop would show a stranger given its number after a kill from outside stopped too.
     [ "$hs" != 2 ] || { _shmutant_proc_stopped "$ph" && _shmutant_group_has "$pg" "$ph"; } || hs=1
-    # One the freeze kept stopped (`k`) and still shown so is the holder: no start is needed to tell
-    # it, as for a frozen pid.
-    [ -z "$kept" ] || [ "$hs" != 2 ] || hs=0
-    if [ "$hs" = 0 ]; then kills=(-"$pg" "${kills[@]}")
-    elif [ "$hs" = 2 ] || _shmutant_group_has "$pg" "${kills[@]}"; then gcont="$pg"
+    # A holder shown to be the holder is the group's only while it is in the group, where the group's
+    # members can be read: it is ended through the group's KILL alone, and one outside it would be left
+    # stopped. One that is not in it is let go, as a holder not shown is. Where they cannot be read it is
+    # taken to be in it, as it is by construction (a run's holder is started in its group and never
+    # leaves it): killed by its number as well, it could be reaped before the group is reached.
+    if [ "$hs" = 0 ] && [ -n "$ph" ] && members=" $(set -o pipefail; _shmutant_ps -A -o pid= -o pgid= 2>/dev/null | command -p awk -v g="$pg" '$2 == g { printf "%s ", $1 }')"; then
+      case "$members" in *" $ph "*) ;; *) hs=1 ;; esac
     fi
-    # A holder not taken for the holder was stopped above all the same, and is let go.
-    [ "$hs" = 0 ] || [ -z "$ph" ] || conts+=("$ph")
+    # A holder not taken for the holder was stopped above all the same, and is let go: never killed, nor
+    # taken for a verified member of its group, even when a record of it as a member verified (the
+    # members told include the holder), since the two reads then disagree about one process.
+    if [ "$hs" != 0 ] && [ -n "$ph" ]; then
+      conts+=("$ph")
+      left=()
+      for p in "${kills[@]}"; do [ "$p" = "$ph" ] || left+=("$p"); done
+      kills=("${left[@]}")
+    fi
+    # The group is named last, after every pid, and its holder only through it: a member killed by
+    # number before the group could be reaped and leave the group's number free by the time the group
+    # is reached. The holder's stop keeps it in the group, and the group's number its own, until then.
+    if [ "$hs" = 0 ]; then
+      left=()
+      for pid in "${kills[@]}"; do [ "$pid" = "$ph" ] || left+=("$pid"); done
+      kills=("${left[@]}" -"$pg")
+    elif [ "$hs" = 2 ] || [ -z "$told" ] || _shmutant_group_has "$pg" "${kills[@]}"; then gcont="$pg"
+    fi
+    # A holder shown to be the holder is never let go, whatever a record of it as a member said: it is
+    # in the group the KILL takes, and continued before that KILL it could end and give the group's
+    # number away first.
+    case "$hs" in 0)
+      left=()
+      for p in "${conts[@]}"; do [ "$p" = "$ph" ] || left+=("$p"); done
+      conts=("${left[@]}") ;;
+    esac
   fi
   # ...unless it is a pid this guard kills: one is never continued after its KILL, whatever other
   # record named it (told twice, once with a start a clock step has moved; the holder, recorded).
@@ -1367,72 +1590,185 @@ _shmutant_guard() {
     conts=("${left[@]}")
   fi
   # Nor one the group KILL takes: a member of that group, which the stop above keeps in it. Read in
-  # one table, whole; with none read, every one is continued, as before.
-  if [ "$hs" = 0 ] && [ "${#conts[@]}" -gt 0 ] && \
-     members=" $(set -o pipefail; command -p ps -A -o pid= -o pgid= 2>/dev/null | command -p awk -v g="$pg" '$2 == g { printf "%s ", $1 }')"; then
-    left=()
-    for p in "${conts[@]}"; do case "$members" in *" $p "*) ;; *) left+=("$p") ;; esac; done
-    conts=("${left[@]}")
+  # one table, whole; with none read, any may be one, and every one is continued before that KILL,
+  # while its stop keeps its number its own, rather than after it, by a number the KILL may have freed.
+  if [ "$hs" = 0 ] && [ "${#conts[@]}" -gt 0 ]; then
+    if members=" $(set -o pipefail; _shmutant_ps -A -o pid= -o pgid= 2>/dev/null | command -p awk -v g="$pg" '$2 == g { printf "%s ", $1 }')"; then
+      left=()
+      for p in "${conts[@]}"; do case "$members" in *" $p "*) ;; *) left+=("$p") ;; esac; done
+      conts=("${left[@]}")
+    else cfirst=1; fi
   fi
   # The KILL first, while what it names is still stopped: continued first, a process could end and its
   # number go to another before its KILL. The group's CONT comes after, which at worst reaches a group
   # its number has passed to since, where a KILL reaching another's process ends it.
+  [ -z "$cfirst" ] || kill -CONT -- "${conts[@]}" 2>/dev/null
   [ "${#kills[@]}" -eq 0 ] || kill -KILL -- "${kills[@]}" 2>/dev/null
   [ -z "$gcont" ] || kill -CONT -- -"$gcont" 2>/dev/null
-  [ "${#conts[@]}" -eq 0 ] || kill -CONT -- "${conts[@]}" 2>/dev/null
+  [ -n "$cfirst" ] || [ "${#conts[@]}" -eq 0 ] || kill -CONT -- "${conts[@]}" 2>/dev/null
   return 0
 }
 
 # _shmutant_kill_tree <signal> <pid> <pids…> — send <signal> to every descendant of <pid> found
 # now, to each of <pids…> (the descendants found before an earlier signal, which a leader's
 # death may have reparented out of reach of a fresh walk), and to the process group named by
-# SHMUTANT_KILL_GROUP when set, while its holder is still the holder; a group whose holder has gone
-# is continued instead while a target is shown to be in it, and otherwise left alone. An empty <pid>
+# SHMUTANT_KILL_GROUP when set, while its holder is still the holder (or, where no start of it was
+# ever had, still there); a group whose holder has gone, or is not shown by the table read now,
+# is continued instead while a target is shown to be in it, or while it holds members a freeze stopped
+# there and could not record (the caller's `group_untold`), and otherwise left alone. An empty <pid>
 # means no walk.
 # <pids…> are `pid:identity` pairs recorded when each was seen (see _shmutant_identity); one that
 # no longer matches is a reused pid and is left alone. `pid:` with no identity is a frozen pid.
 # Every target is decided first and signalled in ONE kill: a parent signalled after its child
-# has already run on past the child's death.
+# has already run on past the child's death. In it each pid is named once, and the group last, the
+# holder only through it.
+# With a freeze's guard up (`guard_w`, and not lost), whatever is to be signalled on a check is told to
+# the guard and stopped first, then checked against ONE identity table read after the stop, and what
+# fails the check is let go: a stopped process cannot end and give its number away before its signal.
+# The held group's holder is stopped with it, and is in the group its KILL takes. With no guard (a
+# direct call, or one whose guard went), nothing may be stopped: a shell killed between a stop and the
+# kill would leave the stop for good. Every check is then read from that one table after every other
+# read, the walk's and the group's, and only the kill comes after it: a target can still end and its
+# number be given away in that instant, which only a stop would close. That instant is the accepted
+# cost of a freeze with no guard (D9), which is reported unsettled.
 _shmutant_kill_tree() {
-  local sig="$1" pid="$2" p
-  local -a targets=() now=()
+  local sig="$1" pid="$2" p out members="" gone_group="" hs=0 guarded="" want cont_first=""
+  local -a targets=() found=() cands=() conts=() left=()
+  local -A SHMUTANT_START=() stopped=() named=()
   shift 2
-  # A victim with an empty identity is frozen, and a frozen pid cannot have been reused.
+  [ -z "${guard_w:-}" ] || [ "${guard_lost:-0}" != 0 ] || guarded=1
+  # The walk first, each descendant with the start it was listed with, which the table below must
+  # still show: one that ended and gave its number away since is not signalled.
+  # No root (a rejected `pid:identity`, or one already reaped) means no walk: the number and
+  # whatever now sits beneath it belong to someone else.
+  if [ -n "$pid" ] && out="$(_shmutant_descendants_started "$pid")" && [ -n "$out" ]; then mapfile -t found <<< "$out"; fi
+  # Under a guard: every victim that carries a start and every find of the walk is told to it, then all
+  # of them and the holder are stopped. A guard that cannot be told is gone: nothing more is stopped.
+  if [ -n "$guarded" ]; then
+    for p in "$@"; do
+      case "${p%%:*}" in ''|*[!0-9]*) continue ;; esac
+      [ -z "${p#*:}" ] || cands+=("${p%%:*} ${p#*:}")
+    done
+    for p in "${found[@]}"; do [ -n "$p" ] && cands+=("$p"); done
+    if [ "${#cands[@]}" -gt 0 ] && ! _shmutant_guard_tell "${cands[@]/#/p }"; then guarded=""; fi
+  fi
+  # Only a stop that took counts: one refused, or sent to a number that had gone, stopped nothing, and
+  # what runs on may end and give its number away before the kill.
+  if [ -n "$guarded" ]; then
+    for p in "${cands[@]}"; do ! kill -STOP "${p%% *}" 2>/dev/null || stopped["${p%% *}"]=1; done
+    [ -z "${SHMUTANT_KILL_GROUP:-}" ] || [ -z "${holder:-}" ] || ! kill -STOP "$holder" 2>/dev/null || stopped["$holder"]=1
+  fi
+  # The held group's members, for the case where its holder is not shown below: the number is then
+  # the run's only while a target verified below is one of them.
+  if [ -n "${SHMUTANT_KILL_GROUP:-}" ] && [ -n "${holder:-}" ]; then
+    members=" $(set -o pipefail; _shmutant_ps -A -o pid= -o pgid= 2>/dev/null | command -p awk -v g="$SHMUTANT_KILL_GROUP" '$2 == g { printf "%s ", $1 }')" || members=""
+  fi
+  _shmutant_identity_table
+  # A victim with an empty identity is frozen, and a frozen pid cannot have been reused; any other is
+  # signalled only while the table shows the start it was recorded with.
   for p in "$@"; do
     [ -n "$p" ] || continue
+    case "${p%%:*}" in ''|*[!0-9]*) continue ;; esac
     if [ -z "${p#*:}" ]; then targets+=("${p%%:*}")
-    else _shmutant_alive_since "${p%%:*}" "${p#*:}" && targets+=("${p%%:*}")
+    elif [ -n "${SHMUTANT_START[${p%%:*}]:-}" ] && _shmutant_same_start "${SHMUTANT_START[${p%%:*}]}" "${p#*:}" && \
+         { [ -z "$guarded" ] || [ -n "${stopped[${p%%:*}]:-}" ]; }; then targets+=("${p%%:*}")
+    elif [ -n "${stopped[${p%%:*}]:-}" ]; then conts+=("${p%%:*}")
     fi
   done
+  for p in "${found[@]}"; do
+    [ -n "$p" ] || continue
+    if [ -n "${SHMUTANT_START[${p%% *}]:-}" ] && _shmutant_same_start "${SHMUTANT_START[${p%% *}]}" "${p#* }" && \
+       { [ -z "$guarded" ] || [ -n "${stopped[${p%% *}]:-}" ]; }; then targets+=("${p%% *}")
+    elif [ -n "${stopped[${p%% *}]:-}" ]; then conts+=("${p%% *}")
+    fi
+  done
+  # Each pid named once, whatever number of records chose it (a victim also found by the walk): a
+  # second signal by a number the first had freed could reach a process given it in between.
+  if [ "${#targets[@]}" -gt 1 ]; then
+    left=()
+    for p in "${targets[@]}"; do [ -n "${named[$p]:-}" ] || { named["$p"]=1; left+=("$p"); }; done
+    targets=("${left[@]}")
+  fi
   # The group is the run's only while its holder lives. Checked again here: a holder continued after
   # the group stop may have read its end-of-file and gone, and a group number nothing reserves may
   # belong to someone else by now. A zombie holder still reserves it. A live pid at that number is
-  # the holder only while it carries the holder's identity, where one can be read now: the same test
-  # _shmutant_held_group applied before the stop (_shmutant_holder_state).
-  local gone_group=""
+  # the holder only while it carries the holder's identity, where the table has one: the same test
+  # _shmutant_held_group applied before the stop (_shmutant_holder_state), read from the table.
   if [ -n "${SHMUTANT_KILL_GROUP:-}" ]; then
-    if [ -z "${holder:-}" ] || _shmutant_holder_state "$holder" "${holderid:-}" || [ "$?" = 2 ]; then
-      targets=(-"$SHMUTANT_KILL_GROUP" "${targets[@]}")
+    [ -z "${holder:-}" ] || _shmutant_table_state "$holder" "${holderid:-}" || hs=$?
+    # Under a guard the group is killed by a holder its stop reached, which cannot have ended since.
+    [ -z "$guarded" ] || [ -z "${holder:-}" ] || [ -n "${stopped[$holder]:-}" ] || hs=1
+    # And only while the holder is in it, where its members could be read: the holder is ended through
+    # the group's KILL alone, so one outside it would be left as this call found it, stopped. Where they
+    # could not be read it is taken to be in it, as it is by construction: killed by its number as well,
+    # it could be reaped, and the group's number freed, before the group is reached.
+    [ -z "${holder:-}" ] || [ -z "$members" ] || case "$members" in *" $holder "*) ;; *) hs=1 ;; esac
+    if [ "$hs" != 1 ]; then
+      # The group is named last, after every pid, and the holder only through it: a member killed by
+      # number before the group could be reaped and leave the group's number free by the time the
+      # group is reached, and the holder is what keeps it the run's until then.
+      left=()
+      for out in "${targets[@]}"; do [ "$out" = "${holder:-}" ] || left+=("$out"); done
+      targets=("${left[@]}" -"$SHMUTANT_KILL_GROUP")
+      # Nor is a member that KILL takes continued after it, by a number the KILL may have freed: a
+      # stop of this call keeps it in the group. With no members read, any of them may be one, and what
+      # is let go is let go before the KILL, while the stop still keeps each number its own.
+      if [ -z "$members" ]; then cont_first=1; fi
+      # The holder above all: shown to be the holder, it is never let go, whatever a record of it as a
+      # victim or a find said, since continued before the KILL it could end and free the group's number.
+      left=()
+      for p in "${conts[@]}"; do case "$members" in *" $p "*) continue ;; esac; [ "$p" = "${holder:-}" ] || left+=("$p"); done
+      conts=("${left[@]}")
     else
+      # A holder not shown to be the holder is not killed, not even through another record of it, and
+      # one stopped above is let go. Only what a stop of this call reached is continued: a refused
+      # stop, or one sent to a number that had gone, stopped nothing to let go.
+      left=()
+      for p in "${targets[@]}"; do [ "$p" = "${holder:-}" ] || left+=("$p"); done
+      targets=("${left[@]}")
+      [ -z "${holder:-}" ] || [ -z "${stopped[$holder]:-}" ] || conts+=("$holder")
       # The holder has gone. The number is the run's only while a process this kill targets is still
       # in the group; the group is then continued, which lets go a member the freeze stopped there.
-      # With none, it may be anyone's by now, and nothing is sent to it.
-      _shmutant_group_has "$SHMUTANT_KILL_GROUP" "${targets[@]}" && gone_group="$SHMUTANT_KILL_GROUP"
+      # With none, it may be anyone's by now, and nothing is sent to it, unless the freeze stopped it
+      # with members it could not record: reached by nothing else, they are continued through it, a
+      # CONT being the most sent to a group nothing proves is the run's.
+      for p in "${targets[@]}"; do case "$members" in *" $p "*) gone_group="$SHMUTANT_KILL_GROUP"; break ;; esac; done
+      [ -z "${group_untold:-}" ] || gone_group="$SHMUTANT_KILL_GROUP"
     fi
-  fi
-  # The walk last, after every process-table read the group needed: the descendants it lists are
-  # signalled the moment after, while each is still the process listed.
-  # No root (a rejected `pid:identity`, or one already reaped) means no walk: the number and
-  # whatever now sits beneath it belong to someone else.
-  if [ -n "$pid" ]; then
-    mapfile -t now < <(_shmutant_descendants "$pid")
-    for p in "${now[@]}"; do [ -n "$p" ] && targets+=("$p"); done
   fi
   # The targets first, while a frozen one is still stopped: continued first, it could end and its
   # number go to another before the signal. The group's CONT comes after, which at worst reaches a
   # group its number has passed to since, where a signal reaching another's process ends it.
+  # What is let go is never a target, whatever other record named it (told twice, once with a start
+  # that no longer shows), and is let go after the signal.
+  if [ "${#conts[@]}" -gt 0 ] && [ "${#targets[@]}" -gt 0 ]; then
+    left=()
+    for p in "${conts[@]}"; do
+      want=1; for out in "${targets[@]}"; do [ "$out" != "$p" ] || want=""; done
+      [ -z "$want" ] || left+=("$p")
+    done
+    conts=("${left[@]}")
+  fi
+  [ -z "$cont_first" ] || [ "${#conts[@]}" = 0 ] || kill -CONT -- "${conts[@]}" 2>/dev/null
   [ "${#targets[@]}" -eq 0 ] || kill "-$sig" -- "${targets[@]}" 2>/dev/null
+  [ -n "$cont_first" ] || [ "${#conts[@]}" = 0 ] || kill -CONT -- "${conts[@]}" 2>/dev/null
   [ -z "$gone_group" ] || kill -CONT -- -"$gone_group" 2>/dev/null
+  return 0
+}
+
+# _shmutant_table_state <pid> <identity> — _shmutant_holder_state's reading of <pid>, its start taken
+# from the identity table already read (SHMUTANT_START) rather than read again: 0 when it is alive and
+# carries <identity>; 2 when it is alive and no identity was given (ps gave none when its run started,
+# and its group is ended by number all the same: the owner's call, D12); 1 when it is gone, carries another identity, or is not in the
+# table: missing from one that was read (what is at that number now started after it), or with no
+# table at all, when a stranger given its number after a kill from outside would look the same (D12).
+_shmutant_table_state() {
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  # Gone since the table was read: its entry there is the start of a process no longer at that number.
+  if ! kill -0 "$1" 2>/dev/null; then return 1; fi
+  [ -n "$2" ] || return 2
+  [ -n "${SHMUTANT_START[$1]:-}" ] || return 1
+  _shmutant_same_start "${SHMUTANT_START[$1]}" "$2" || return 1
   return 0
 }
 
@@ -1642,7 +1978,12 @@ _shmutant_run_bounded() {
       for l in "${leftovers[@]}"; do case "$l" in tampered|unsettled) printf '%s\n' "$l" >&"$seen_w" ;; *) kept+=("$l") ;; esac; done
       leftovers=("${kept[@]}")
       _shmutant_held_group "$pid"
-      [ "${#SHMUTANT_HELD[@]}" -gt 0 ] || _shmutant_err "the run's process group could not be verified as its own; what it left behind is not signalled by number" 2>&"$err_fd"
+      if [ "${#SHMUTANT_HELD[@]}" -eq 0 ]; then
+        _shmutant_err "the run's process group could not be verified as its own; what it left behind is not signalled by number" 2>&"$err_fd"
+        _shmutant_diag_snapshot holder-gone "$pid" "run $pid (its process group), in $dir" \
+          "holder ${holder:-none}, recorded as ${holderid:-unidentified}" "run recorded as ${rootid:-unidentified}" \
+          "run status $rc" "kill group ${SHMUTANT_KILL_GROUP:-unset}"
+      fi
       _shmutant_kill_tree_twice "${SHMUTANT_HELD[@]}" "$pid:$rootid" "${leftovers[@]}"
     fi
     # Release a holder the group kill did not reach.
@@ -1772,8 +2113,8 @@ _shmutant_group_has() {
   [ "$#" -gt 0 ] || return 1
   # Joined here, one space each: "$*" would join with the caller's IFS.
   for p in "$@"; do want="$want$p "; done
-  table="$(command -p ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] || return 1
-  printf '%s\n' "$table" | command -p awk -v g="$g" -v want="$want" '$2 == g && index(want, " " $1 " ") { f = 1 } END { exit !f }'
+  table="$(_shmutant_ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] || return 1
+  (set -o pipefail; printf '%s\n' "$table" | command -p awk -v g="$g" -v want="$want" '$2 == g && index(want, " " $1 " ") { f = 1 } END { exit !f }' )
 }
 
 # _shmutant_holder_state <pid> <identity> — whether a run's holder, started as <pid> with
@@ -1811,7 +2152,7 @@ _shmutant_worker_finish() {
   # Only in a directory that is still the one this run created, by inode: a callback may have
   # renamed it away and put a symlink or a fresh directory in its place, and nothing is written
   # or removed beneath a replacement.
-  if [ -L "$1" ] || [ "$(_shmutant_dir_id "$1")" != "${SHMUTANT_DIR_ID:-}" ]; then
+  if [ -L "$1" ] || ! _shmutant_is_id "$1" "${SHMUTANT_DIR_ID:-}"; then
     _shmutant_err "refusing to clean $1: it is no longer the worker directory this run created"
     return 0
   fi
@@ -1821,7 +2162,7 @@ _shmutant_worker_finish() {
   # The clone's identity, kept or not: what a callback put at the path stays, and the verdict
   # of a run that renamed its clone away and put another directory there is not accepted —
   # nothing says which tree it ran against. Only the removal waits on SHMUTANT_KEEP.
-  if [ -L "$1/tree" ] || { [ -e "$1/tree" ] && [ "$(_shmutant_dir_id "$1/tree")" != "${SHMUTANT_CLONE_ID:-}" ]; }; then
+  if [ -L "$1/tree" ] || { [ -e "$1/tree" ] && ! _shmutant_is_id "$1/tree" "${SHMUTANT_CLONE_ID:-}"; }; then
     _shmutant_err "$1/tree is no longer the clone this run made; the verdict of a run that swapped its tree is not accepted"
     { printf 'swapped\n' >&"$SHMUTANT_VERDICT_FD"; } 2>/dev/null
     set -- "$1" unprepared "$3" swapped
@@ -1861,7 +2202,7 @@ _shmutant_worker() {
     _shmutant_worker_finish "$dir" unprepared 0 modified; return 0
   fi
   SHMUTANT_CLONE_ID=""
-  if [ "$(_shmutant_dir_id "$wd/pristine")" != "${SHMUTANT_PRISTINE_ID:-}" ] || [ -L "$wd/pristine" ] \
+  if ! _shmutant_is_id "$wd/pristine" "${SHMUTANT_PRISTINE_ID:-}" || [ -L "$wd/pristine" ] \
     || ! command -p mkdir -- "$dir/tree" 2>/dev/null; then
     _shmutant_worker_finish "$dir" unprepared 0 clone; return 0
   fi
@@ -1891,7 +2232,7 @@ _shmutant_worker() {
     # clone physically, naming the target by its base name alone: nothing named by path after
     # the identity check can be redirected by a sibling.
     ( builtin cd -P -- "$dir" 2>/dev/null || exit 4
-      [ "$(_shmutant_dir_id .)" = "${SHMUTANT_DIR_IDS[$kind-$i]:-}" ] || exit 4
+      _shmutant_is_id . "${SHMUTANT_DIR_IDS[$kind-$i]:-}" || exit 4
       wroot="$(builtin pwd -P)"
       builtin cd -P -- "./tree$suffix/$(command -p dirname -- "${SHMUTANT_ROWS_FILE[$i]}")" 2>/dev/null || exit 4
       _shmutant_inside "$wroot/tree" "$(builtin pwd -P)" || exit 4
@@ -1968,15 +2309,34 @@ _shmutant_worker() {
   return 0
 }
 
-# _shmutant_dir_id <dir> — the inode number of <dir>, from POSIX `ls -di`; empty when absent.
+# _shmutant_dir_id <dir> — the inode number of <dir>, from POSIX `ls -di`, and its physical path;
+# fails, printing nothing, when <dir> is absent or any stage of the read fails.
 _shmutant_dir_id() {
   local id phys
-  id="$(command -p ls -di -- "$1" 2>/dev/null | command -p awk '{ print $1 }')"
-  [ -n "$id" ] || return 0
+  id="$(set -o pipefail; command -p ls -di -- "$1" 2>/dev/null | command -p awk '{ print $1 }')" || return 1
+  case "$id" in ''|*[!0-9]*) return 1 ;; esac
   # The inode is unique only within a filesystem; the resolved physical path distinguishes a
   # same-inode directory reached across a swapped mount (portable, where a device number is not).
-  phys="$(_shmutant_abs "$1")" || phys=""
+  # A regular file (the verdict stream) has none.
+  if [ -d "$1" ]; then phys="$(_shmutant_abs "$1")" || return 1; else phys=""; fi
   printf '%s:%s' "$id" "$phys"
+}
+
+# _shmutant_is_id <path> <id> — true when <path> reads, by _shmutant_dir_id, as <id>. Never for
+# a failed read, nor for an empty <id> (a read that succeeds is never empty): an identity that
+# could not be recorded and one that could not be read again are not the same directory.
+_shmutant_is_id() {
+  local id
+  id="$(_shmutant_dir_id "$1")" && [ "$id" = "$2" ]
+}
+
+# _shmutant_link_count <path> — the hard-link count of <path>, `ls -l` column 2; fails, printing
+# nothing, when any stage of the read fails or what it read is not a count.
+_shmutant_link_count() {
+  local l
+  l="$(set -o pipefail; command -p ls -ld -- "$1" 2>/dev/null | command -p awk '{ print $2 }')" || return 1
+  case "$l" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$l"
 }
 
 # _shmutant_collect <dir> <key> <wait-status> — read a reaped worker's channel into
@@ -2013,7 +2373,7 @@ _shmutant_collect() {
     SHMUTANT_V_VERDICT=lost; SHMUTANT_V_US=0; SHMUTANT_V_STATUS=""
     # The identity may have been read off the channel already, by the helper that ended the worker.
     [ -n "$clone_id" ] || clone_id="${SHMUTANT_RES_CLONE[$key]:-}"
-    if [ "${SHMUTANT_KEEP:-0}" != 1 ] && [ ! -L "$dir" ] && [ "$(_shmutant_dir_id "$dir")" = "${SHMUTANT_DIR_IDS[$key]:-}" ]; then
+    if [ "${SHMUTANT_KEEP:-0}" != 1 ] && [ ! -L "$dir" ] && _shmutant_is_id "$dir" "${SHMUTANT_DIR_IDS[$key]:-}"; then
       # Only the clone the worker made, by the identity it published; what a callback put at
       # the path stays, and the pool then finds a tree left behind (a harness error).
       if [ ! -e "$dir/tree" ] && [ ! -L "$dir/tree" ]; then :
@@ -2046,7 +2406,7 @@ _shmutant_collect() {
   fi
   # A clone the worker did not remove is a harness error, whatever it reported: the next run
   # in this workdir would find it. Only the directory the pool created is looked at, by inode.
-  if [ -L "$dir" ] || [ "$(_shmutant_dir_id "$dir")" != "${SHMUTANT_DIR_IDS[$key]:-}" ]; then
+  if [ -L "$dir" ] || ! _shmutant_is_id "$dir" "${SHMUTANT_DIR_IDS[$key]:-}"; then
     _shmutant_err "$dir is no longer the directory this run created"; SHMUTANT_CLEANUP_FAILED=1
   elif [ "${SHMUTANT_KEEP:-0}" != 1 ] && { [ -e "$dir/tree" ] || [ -L "$dir/tree" ]; }; then
     _shmutant_err "$dir/tree was not removed"; SHMUTANT_CLEANUP_FAILED=1
@@ -2353,6 +2713,11 @@ _shmutant_validate_settings() {
     _shmutant_err "$label: SHMUTANT_RED_PREFIX is empty — every line would count as a red line"; return 2
   fi
   case "${SHMUTANT_RED_PREFIX:-}" in *$'\n'*) _shmutant_err "$label: SHMUTANT_RED_PREFIX contains a newline — no single line could ever start with it"; return 2 ;; esac
+  # Outside the workdir, which the pool clears, by its physical name.
+  _shmutant_diag_dir_check "$label" || return 2
+  if [ -n "${SHMUTANT_DIAG_DIR:-}" ] && _shmutant_inside "$wd" "$SHMUTANT_DIAG_DIR"; then
+    _shmutant_err "$label: SHMUTANT_DIAG_DIR lies inside the workdir ($SHMUTANT_DIAG_DIR) — the pool recreates and removes what is in there"; return 2
+  fi
   if [ -n "${SHMUTANT_STREAM:-}" ]; then
     local sdir
     # A newline anywhere: the substitutions that split the path would strip a trailing one and
@@ -2379,7 +2744,8 @@ _shmutant_validate_settings() {
 
 # _shmutant_open_stream <label> — hold the validated SHMUTANT_STREAM open as a descriptor. Called
 # again after prepare: a path prepare assigned replaces the one opened before it, and one it
-# unset closes it. Returns 2 when the file cannot be opened.
+# unset closes it. Returns 2, the open rolled back, when the file cannot be opened or its identity,
+# length or first bytes cannot be read.
 _shmutant_open_stream() {
   local label="$1"
   if [ -n "${SHMUTANT_STREAM_OPENED+x}" ] && [ "$SHMUTANT_STREAM_OPENED" = "${SHMUTANT_STREAM:-}" ]; then return 0; fi
@@ -2397,12 +2763,17 @@ _shmutant_open_stream() {
   # that what follows the bytes already there is exactly what the pool wrote: every record also
   # goes to a private unlinked copy, so a callback that truncates, overwrites or appends to the
   # stream in place is seen.
-  SHMUTANT_STREAM_INO="$(_shmutant_dir_id "$SHMUTANT_STREAM")"
-  SHMUTANT_STREAM_BASE="$(command -p wc -c < "$SHMUTANT_STREAM" 2>/dev/null | command -p tr -d ' ')" || SHMUTANT_STREAM_BASE=0
   # The bytes already there, by checksum: an overwrite in place within them keeps the length.
-  if [ "${SHMUTANT_STREAM_BASE:-0}" -gt 0 ]; then
-    SHMUTANT_STREAM_PREFIX_CK="$(command -p dd if="$SHMUTANT_STREAM" bs="$SHMUTANT_STREAM_BASE" count=1 2>/dev/null | command -p cksum)"
-  else SHMUTANT_STREAM_PREFIX_CK=""; fi
+  # Each read fails as a whole, any stage of it: a length that was never read is not zero, and a
+  # checksum of no input matches another taken of no input.
+  SHMUTANT_STREAM_PREFIX_CK=""
+  if ! SHMUTANT_STREAM_INO="$(_shmutant_dir_id "$SHMUTANT_STREAM")" \
+    || ! SHMUTANT_STREAM_BASE="$(set -o pipefail; command -p wc -c < "$SHMUTANT_STREAM" 2>/dev/null | command -p tr -d ' ')" \
+    || [ -z "$SHMUTANT_STREAM_BASE" ] || [[ "$SHMUTANT_STREAM_BASE" == *[!0-9]* ]] \
+    || { [ "$SHMUTANT_STREAM_BASE" -gt 0 ] \
+      && ! SHMUTANT_STREAM_PREFIX_CK="$(set -o pipefail; command -p dd if="$SHMUTANT_STREAM" bs="$SHMUTANT_STREAM_BASE" count=1 2>/dev/null | command -p cksum)"; }; then
+    _shmutant_stream_rollback; _shmutant_err "$label: cannot read the identity, length or first bytes of SHMUTANT_STREAM ($SHMUTANT_STREAM) — a change to it could not be seen"; return 2
+  fi
   _shmutant_close_stream_copy
   local copy
   # A failure here rolls the open back: left open and cached, the next pool for the same stream
@@ -2429,16 +2800,22 @@ _shmutant_close_stream_copy() {
 # _shmutant_stream_intact — true when SHMUTANT_STREAM is unset or still names the file that was
 # opened: a callback that unlinked or replaced it left the records on an inode nobody can read.
 _shmutant_stream_intact() {
+  local got have
   [ -n "${SHMUTANT_STREAM:-}" ] || return 0
-  [ ! -L "$SHMUTANT_STREAM" ] && [ "$(_shmutant_dir_id "$SHMUTANT_STREAM")" = "${SHMUTANT_STREAM_INO:-}" ] || return 1
+  [ ! -L "$SHMUTANT_STREAM" ] && _shmutant_is_id "$SHMUTANT_STREAM" "${SHMUTANT_STREAM_INO:-}" || return 1
   # Contents, past what was there when opened: a truncation, an overwrite or an appended record
   # from a callback changes them; the pool's own records, through the descriptor, do not.
   [ -n "${SHMUTANT_STREAM_COPY_R:-}" ] || return 1
   # And what was there when opened, unchanged: an overwrite in place within it keeps the length.
+  # Every read fails as a whole, any stage of it: a checksum of no input matches another taken of
+  # no input, and an empty private copy is what a pool that wrote nothing has.
   if [ "${SHMUTANT_STREAM_BASE:-0}" -gt 0 ]; then
-    [ "$(command -p dd if="$SHMUTANT_STREAM" bs="$SHMUTANT_STREAM_BASE" count=1 2>/dev/null | command -p cksum)" = "${SHMUTANT_STREAM_PREFIX_CK:-}" ] || return 1
+    got="$(set -o pipefail; command -p dd if="$SHMUTANT_STREAM" bs="$SHMUTANT_STREAM_BASE" count=1 2>/dev/null | command -p cksum)" \
+      && [ "$got" = "${SHMUTANT_STREAM_PREFIX_CK:-}" ] || return 1
   fi
-  [ "$(command -p tail -c "+$(( ${SHMUTANT_STREAM_BASE:-0} + 1 ))" -- "$SHMUTANT_STREAM" 2>/dev/null | command -p cksum)" = "$(command -p cksum <&"$SHMUTANT_STREAM_COPY_R")" ]
+  got="$(set -o pipefail; command -p tail -c "+$(( ${SHMUTANT_STREAM_BASE:-0} + 1 ))" -- "$SHMUTANT_STREAM" 2>/dev/null | command -p cksum)" || return 1
+  have="$(command -p cksum <&"$SHMUTANT_STREAM_COPY_R")" || return 1
+  [ "$got" = "$have" ]
 }
 
 # _shmutant_readonly <name> — true when <name> is readonly in this shell; an assignment to it
@@ -2490,9 +2867,9 @@ _shmutant_pool_locals_writable() {
     _shmutant_pool_t0 _shmutant_pool_wd after_ck ambiguous base base_sel base_verdict base_why cap cksum_bin clone_id comp copy counts counts_bad counts_end counts_got counts_r counts_w cwhy d \
     dbg depth detail dir dirmode done_pid err_fd errexit_before etime f fd fifo \
     fired fmt found frozen go got grp h have held helpers here \
-    hms hold hold_r holder holderid hp i id intact jobs k kept key \
-    killed kind kinds l label left left_r left_w line ls_bin m mark \
-    mode ms mutate_aliases n new nl now out out_r out_r2 out_w outf \
+    hms hold hold_r holder holderid hp i id intact jobs jp js k kept key \
+    killed killing kind kinds l label left left_r left_w line links ls_bin m mark \
+    mode ms mutate_aliases n named new nl now out out_r out_r2 out_w outf \
     p parent path pending phys pid pids pool_aliases pout pout_r pout_w prc \
     prep r rc red rel rest ret rjrc root root_ok rootid rootls \
     roots rounds row_why run s sdir sec seen seen_r seen_w sel sent setup_failed sig size starts nul counts_r2 \
@@ -2516,7 +2893,7 @@ _shmutant_pool_locals_writable() {
     _shmutant_bo _shmutant_so _shmutant_o _shmutant_n _shmutant_pc _shmutant_wrap_left \
     a budget dog e elapsed last leftovers linked lstart old rrc s tampered tmpd tnow victims wroot \
     b chunk conts g gcont gone_group guard_id guard_lost guard_of guard_of_id guard_pid guard_r guard_up guard_w hs kept kills members out pairs part pg ph phid recs rid rootid_pre seen_ck unfrozen w want \
-    SHMUTANT_GUARD SHMUTANT_GUARD_PID SHMUTANT_PS_LSTART
+    SHMUTANT_GUARD SHMUTANT_GUARD_PID SHMUTANT_PS_LSTART SHMUTANT_PS_BOUND c guard_self guard_gap_ref gap ea eb lp le tbl cands guarded jl w fid_now stopped fgap cont_first cfirst told group_untold first
 }
 
 # _shmutant_decl_writable <label> — the table's own names, checked by each declaration entry
@@ -2641,7 +3018,7 @@ _shmutant_target_ck() {
   # reads would pass unseen.
   ( set -o pipefail
     builtin cd -P -- "$1" 2>/dev/null || exit 1
-    [ "$(_shmutant_dir_id .)" = "${SHMUTANT_DIR_IDS[$3]:-}" ] || exit 1
+    _shmutant_is_id . "${SHMUTANT_DIR_IDS[$3]:-}" || exit 1
     [ ! -L "$2" ] && [ -f "$2" ] || exit 1
     # Mode, owner, size and the mtime (exact where stat gives one) as well as the content: a
     # test sensitive to any of them must see the file as the pool wrote it.
@@ -2653,7 +3030,7 @@ _shmutant_target_ck() {
 # _shmutant_wd_is_marked <workdir> — true while <workdir> is, by identity, the directory this
 # pool marked as its own; says so otherwise.
 _shmutant_wd_is_marked() {
-  [ ! -L "$1" ] && [ "$(_shmutant_dir_id "$1")" = "${SHMUTANT_WD_ID:-}" ] && return 0
+  [ ! -L "$1" ] && _shmutant_is_id "$1" "${SHMUTANT_WD_ID:-}" && return 0
   _shmutant_err "$1 is no longer the directory this pool marked as its own — a callback moved or replaced it"
   return 1
 }
@@ -2671,11 +3048,11 @@ _shmutant_pool_cleanup() {
   # The prepared tree is removed only from the workdir this pool marked as its own: prepare
   # could have moved the workdir away and put a caller's directory, with a `pristine` entry of
   # its own, at its path.
-  if [ "${SHMUTANT_KEEP:-0}" != 1 ] && [ ! -L "$2" ] && [ "$(_shmutant_dir_id "$2")" = "${SHMUTANT_WD_ID:-}" ]; then
+  if [ "${SHMUTANT_KEEP:-0}" != 1 ] && [ ! -L "$2" ] && _shmutant_is_id "$2" "${SHMUTANT_WD_ID:-}"; then
     # And the tree itself, by the identity recorded when it was made: a callback that renamed
     # it away and put a directory of its own at the path does not get that removed.
     if [ ! -e "$2/pristine" ] && [ ! -L "$2/pristine" ]; then :
-    elif [ -L "$2/pristine" ] || [ "$(_shmutant_dir_id "$2/pristine")" != "${SHMUTANT_PRISTINE_ID:-}" ]; then _shmutant_err "$1: refusing to remove $2/pristine: it is not the tree this pool prepared"; SHMUTANT_CLEANUP_FAILED=1
+    elif [ -L "$2/pristine" ] || ! _shmutant_is_id "$2/pristine" "${SHMUTANT_PRISTINE_ID:-}"; then _shmutant_err "$1: refusing to remove $2/pristine: it is not the tree this pool prepared"; SHMUTANT_CLEANUP_FAILED=1
     else _shmutant_remove "$2/pristine" "$2" || { _shmutant_err "$1: could not remove $2/pristine"; SHMUTANT_CLEANUP_FAILED=1; }
     fi
   fi
@@ -2806,7 +3183,7 @@ shmutant_pool() {
 _shmutant_pool_body() {
   if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then _shmutant_err "pool: usage: shmutant_pool <label> <workdir> <prepare> <run> [cap] (got $# arguments)"; return 2; fi
   local label="$1" wd="$2" prep="$3" run="$4" cap="${5:-}"
-  local n jobs root suffix i k sel t0 t1 killed=0 rc=0 verdict detail rjrc linked starts ambiguous=0 cwhy
+  local n jobs root suffix i k sel t0 t1 killed=0 rc=0 verdict detail rjrc linked starts ambiguous=0 cwhy links
   local -a base_sel=() base_verdict=() base_why=() row_why=()
   n="${#SHMUTANT_ROWS_NAME[@]}"
   t0="$(_shmutant_now)"
@@ -2826,7 +3203,7 @@ _shmutant_pool_body() {
   command -p mkdir -p -- "$wd" 2>/dev/null || { _shmutant_err "$label: cannot create workdir $wd"; return 2; }
   wd="$(_shmutant_abs "$wd")" || { _shmutant_err "$label: cannot resolve workdir"; return 2; }
   _shmutant_workdir_owned "$label" "$wd" || return 2
-  SHMUTANT_WD_ID="$(_shmutant_dir_id "$wd")"
+  SHMUTANT_WD_ID="$(_shmutant_dir_id "$wd")" || { _shmutant_err "$label: cannot read the identity of workdir $wd — nothing in it could later be proven this pool's"; return 2; }
   _shmutant_callable "$prep" || { _shmutant_err "$label: prepare callback not found: $prep (a function or an executable; an alias cannot be called by name, and a builtin such as exit or return would end or leave this shell)"; return 2; }
   _shmutant_callable "$run" || { _shmutant_err "$label: run callback not found: $run (a function or an executable; an alias cannot be called by name, and a builtin such as exit or return would end or leave this shell)"; return 2; }
   # Executables by absolute physical path from here: a prepare that changes the working
@@ -2905,7 +3282,7 @@ _shmutant_pool_body() {
   # The workdir itself: prepare could have renamed it away and put another directory at its
   # path. Nothing there is this pool's, so nothing there is removed (the pristine prepare made
   # in it included).
-  if [ -L "$wd" ] || [ "$(_shmutant_dir_id "$wd")" != "${SHMUTANT_WD_ID:-}" ]; then _shmutant_err "$label: $wd is no longer the directory this pool marked as its own — prepare moved or replaced it"; _shmutant_pool_fail "$label" "$wd"; return 2; fi
+  if [ -L "$wd" ] || ! _shmutant_is_id "$wd" "${SHMUTANT_WD_ID:-}"; then _shmutant_err "$label: $wd is no longer the directory this pool marked as its own — prepare moved or replaced it"; _shmutant_pool_fail "$label" "$wd"; return 2; fi
   _shmutant_callable "$run" || { _shmutant_err "$label: run callback not found after prepare: $run"; _shmutant_pool_fail "$label" "$wd"; return 2; }
   # prepare may have declared rows or had one refused: the table is read again here, and a
   # refusal after prepare is the same harness error as one before it.
@@ -2938,7 +3315,12 @@ _shmutant_pool_body() {
     fi
     # Link count is `ls -l` column 2. A clone gives each hard link its own inode, so a test
     # reading the alias would see pristine code while the named target carries the defect.
-    if [ "$(command -p ls -ld -- "$root/${SHMUTANT_ROWS_FILE[$i]}" | command -p awk '{ print $2 }')" -gt 1 ]; then
+    # A count that could not be read is refused too: it is no evidence of a single link.
+    if ! links="$(_shmutant_link_count "$root/${SHMUTANT_ROWS_FILE[$i]}")"; then
+      _shmutant_err "$label: row '${SHMUTANT_ROWS_NAME[$i]}' targets ${SHMUTANT_ROWS_FILE[$i]}, whose hard-link count cannot be read"
+      _shmutant_pool_fail "$label" "$wd"; return 2
+    fi
+    if [ "$links" -gt 1 ]; then
       _shmutant_err "$label: row '${SHMUTANT_ROWS_NAME[$i]}' targets ${SHMUTANT_ROWS_FILE[$i]}, which has more than one hard link — a clone cannot keep them joined"
       _shmutant_pool_fail "$label" "$wd"; return 2
     fi
@@ -3210,7 +3592,7 @@ _shmutant_cli_keep_exit_trap() {
 
 # _shmutant_cli_wd_is_ours <path> — true while <path> is, by identity, the workdir this run made.
 _shmutant_cli_wd_is_ours() {
-  [ ! -L "$1" ] && [ "$(_shmutant_dir_id "$1")" = "${SHMUTANT_CLI_WD_ID:-}" ]
+  [ ! -L "$1" ] && _shmutant_is_id "$1" "${SHMUTANT_CLI_WD_ID:-}"
 }
 
 # _shmutant_cli_end_group <pgid> <holder-pid> — end what the plan subshell left in its process
@@ -3220,13 +3602,18 @@ _shmutant_cli_wd_is_ours() {
 # <holder> is `pid identity` as the plan subshell published it: a holder that went (a plan
 # killed it) and a stranger now at its number are told apart, as for a run's holder; with no
 # identity readable now the holder is taken as it was, as with no ps at all.
+# The group is ended by a freeze of it (_shmutant_kill_tree_twice -g). The plan subshell, reaped by
+# now, is named as reaped (`<pgid>:`), so neither its number nor anything beneath it is touched:
+# only the group is frozen and killed. Under the freeze's guard the holder is stopped before the
+# check that licenses the group's KILL, a stop that reached a process given its number since is
+# undone, and the holder is ended through its group, never by number. A holder already gone here
+# starts no freeze. A freeze with no guard to be had says so on the CLI's stderr.
 _shmutant_cli_end_group() {
-  local hp="${2%% *}" hid=""
-  case "$2" in *" "*) hid="${2#* }" ;; esac
-  [ -n "$hp" ] || return 0
-  _shmutant_holder_state "$hp" "$hid" || [ "$?" = 2 ] || return 0
-  kill -KILL -- -"$1" 2>/dev/null
-  kill -KILL "$hp" 2>/dev/null
+  local holder="${2%% *}" holderid="" err_fd=2
+  case "$2" in *" "*) holderid="${2#* }" ;; esac
+  [ -n "$holder" ] || return 0
+  _shmutant_holder_state "$holder" "$holderid" || [ "$?" = 2 ] || return 0
+  _shmutant_kill_tree_twice -g "$1" "$1:"
   return 0
 }
 
@@ -3247,6 +3634,8 @@ _shmutant_cli_end_sampled() {
   done
   exec {SHMUTANT_CLI_SEEN_R}<&-; unset SHMUTANT_CLI_SEEN_R SHMUTANT_CLI_SEEN_W
   [ "${#sampled[@]}" -gt 0 ] || return 0
+  # Its reports (a freeze with no guard, one that did not settle) on the CLI's stderr.
+  local err_fd=2
   _shmutant_kill_tree_twice "$1" "${sampled[@]}"
   return 0
 }

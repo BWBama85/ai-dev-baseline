@@ -11,6 +11,16 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Changed
 
+- **The vendored shmutant moves to v0.4.0.** `scripts/shmutant.sh` is the
+  [shmutant](https://github.com/BWBama85/shmutant) v0.4.0 release, copied byte for byte, and
+  `scripts/shmutant.sh.sha256` records its new digest. It hardens the guard that keeps a frozen
+  mutant's process tree from being left stopped: the guard's process-table reads are bounded, it
+  tells a clock step from a reused pid, and a group a freeze stopped is never left stopped
+  (BWBama85/shmutant#51, #53). A failed pipeline stage no longer passes as a directory identity, a
+  stream check, a hard-link count or a test count (#52), so a row whose target's link count cannot
+  be read is now refused. Nothing this repo calls changed, so `check_shmutant_pool` and the ported
+  rows take no edit.
+
 - **The global install follows the newest stable release, not `main` (#534).** `baseline update`,
   the `SessionStart` currency hook and `/cleanup`'s currency step now move the install-source clone
   from one published release to the next: a published, non-draft, non-prerelease GitHub Release
