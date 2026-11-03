@@ -6,6 +6,7 @@
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: resolve-pr-threads
 description: On an open PR, await async review, then fix and resolve its threads until the reviewer passes. Optional PR number; --once for one pass.
+# adb:supersedes review-feedback
 ---
 
 # /resolve-pr-threads

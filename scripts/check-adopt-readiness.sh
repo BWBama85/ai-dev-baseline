@@ -169,7 +169,7 @@ mkrepo() {  # <dir>
 # --- 1. the contract is DATA, and it is the single source the verdict reads ----------------------
 out="$(ar contract)"
 n="$(printf '%s\n' "$out" | grep -c .)"
-eq "$n" "13" "contract: 13 rungs"
+eq "$n" "14" "contract: 14 rungs"
 # Every count below is derived from the contract rather than restated, so the next rung moves one
 # literal (the line above) instead of six.
 NRUNGS="$n"
@@ -469,6 +469,28 @@ ln -sf "$canary" "$ADB_STATE_DIR/.adopt-receipt.tmp"
 ar receipt run "$d" >/dev/null 2>&1
 eq "$(cat "$canary")" "untouched" "receipt: a pre-planted temp symlink is not written through"
 rm -f "$ADB_STATE_DIR/.adopt-receipt.tmp"
+
+# THE WORKFLOWS RUNG (#535): adopt-lib.sh workflows, translated. The fixture install ships an
+# `implement-issue` skill whose frontmatter declares `implement` superseded.
+wfinstall="$WORK/wfinstall"; wfhome="$WORK/wfhome"
+mkdir -p "$wfinstall/agents/claude/skills/implement-issue"
+printf -- '---\nname: implement-issue\ndescription: x\n# adb:supersedes implement\n---\nbody\n' \
+  > "$wfinstall/agents/claude/skills/implement-issue/SKILL.md"
+mkinstall "$wfinstall" "$wfhome" claude
+d="$WORK/p-workflows"; mkrepo "$d"; mkdir -p "$d/.claude/skills/implement"; printf 'x\n' > "$d/.claude/skills/implement/SKILL.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}todo" "probe: a competing project skill makes the workflows rung todo"
+has "$out" "competes .claude/skills/implement (owner)" "probe: ...naming the finding, its path and its owner"
+printf '%s\n' "$out" | grep "^workflows$TAB" > "$WORK/wf-rung.tsv"
+ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
+[ "$rc" -ne 0 ] && ok || bad "verdict: a todo workflows rung is never green (rc=$rc)"
+d="$WORK/p-workflows-ok"; mkrepo "$d"; mkdir -p "$d/.claude/skills/release"; printf 'x\n' > "$d/.claude/skills/release/SKILL.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}ok" "probe: only the exempt release skill -> workflows ok"
+has "$out" "exempt=1" "probe: ...with the counts visible"
+out="$( HOME="$WORK/no-install-home" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}unknown" "probe: no installed baseline -> workflows unknown, never ok"
+has "$out" "could not read what the baseline ships" "probe: ...saying the baseline could not be read"
 
 # THE HARNESS RUNG CHECKS WHAT A RUN NEEDS, not that a directory exists: every manifest destination
 # of each requested agent is our link into the source AND resolves (#539). The fixture resolves an
@@ -1462,6 +1484,14 @@ shmutant_mut facts-ignores-declaration \
     '  bots="$(bash "$_AR_LIB_DIR/role-dispatch.sh" bots --comparable 2>/dev/null)"; brc=$?' \
     '  bots=""; brc=0' \
     'status: the corrected declaration is no longer outstanding'
+shmutant_mut workflows-unknown-reads-ok \
+    '    11) _ar_emit workflows unknown' \
+    '    11) _ar_emit workflows ok' \
+    'probe: no installed baseline -> workflows unknown, never ok'
+shmutant_mut workflows-findings-read-ok \
+    '    10) _ar_emit workflows todo' \
+    '    10) _ar_emit workflows ok' \
+    'probe: a competing project skill makes the workflows rung todo'
 
 # Width from `adb_pool_size` (min(cpu, 4)); `ADB_POOL_JOBS` is the operator/test seam. The cap is
 # 4 because that is what it already was — nothing measured justifies moving it (D66).

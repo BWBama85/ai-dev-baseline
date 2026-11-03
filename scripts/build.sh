@@ -351,6 +351,9 @@ build_skill_awk='
       if (fmmode == "verbatim") { print; if ($0 == "---") infm = 0; next }
       # synth: capture the (single-line) description; emit synthesized block at close.
       if ($0 ~ /^description:/) { desc = $0; sub(/^description:[[:space:]]*/, "", desc) }
+      # The superseded-name map line (#535) is carried into every agent, so the map reads the same
+      # whichever agent install it is read from.
+      if ($0 ~ /^# adb:supersedes /) { supersedes = $0 }
       if ($0 == "---") {
         print "---"
         marker()
@@ -358,6 +361,7 @@ build_skill_awk='
         print "# in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent."
         print "name: " name
         print "description: " desc
+        if (supersedes != "") print supersedes
         print "---"
         infm = 0
       }
@@ -662,19 +666,18 @@ render_agent_skill() {
   # installed skill missing. Codex also honours CODEX_HOME, so its default is only a fallback.
   # PROJECT-LOCAL discovery is agent-specific and is NOT assumed. A space-separated LIST, empty
   # when this agent has no established project-local skill discovery.
-  #   * Claude resolves a repo's own `.claude/skills/<name>/` ahead of the global one
-  #     (docs/per-project-overrides.md, Override 2a).
+  #   * Claude loads a repo's own `.claude/skills/<name>/`, but a PERSONAL skill of the same name
+  #     runs instead of it ("personal over project", code.claude.com/docs/en/skills).
   #   * Codex loads `.codex/skills` AND `.agents/skills` from the repository — verified in review
   #     against Codex CLI 0.144.0-alpha.4 via `codex debug prompt-input`, which listed skills from
   #     both under "Available skills". That supersedes base/workflows/new-release.md's older claim
   #     that Codex "does NOT auto-load repo-local settings/rules/skills", which described the
   #     settings/rules mirror files, not skills.
   #   * Antigravity's project-local SKILL discovery is still unestablished -> empty, fail closed.
-  case "$agent" in
-    gemini) skills_subdirs="";                            skills_user_root="\"\$HOME/.gemini/config/skills\"" ;;
-    codex)  skills_subdirs=".codex/skills .agents/skills"; skills_user_root="\"\${CODEX_HOME:-\$HOME/.codex}/skills\"" ;;
-    *)      skills_subdirs=".$agent/skills";              skills_user_root="\"\$HOME/.$agent/skills\"" ;;
-  esac
+  # The table itself is common.sh's (adb_agent_project_skill_dirs / adb_agent_user_skill_root_literal),
+  # shared with adopt-lib.sh's scan so the two cannot disagree about where an agent looks (#535).
+  skills_subdirs="$(adb_agent_project_skill_dirs "$agent")"
+  skills_user_root="$(adb_agent_user_skill_root_literal "$agent")"
   # An AGENT-NATIVE registry probe, when one exists: it is the ground truth, because it accounts
   # for state the filesystem cannot show — a skill disabled via `[[skills.config]] enabled = false`
   # is omitted from Codex's registry while its SKILL.md sits right there. Prints one skill name per
@@ -931,6 +934,62 @@ render_agent_skill() {
     done
   fi
 }
+
+# THE SUPERSEDED-NAME MAP (#535). A workflow source may declare, in its frontmatter, the legacy
+# workflow names it replaces: one `# adb:supersedes <name>…` line. Every agent's render carries the
+# line, and `adopt-lib.sh supersedes` reads it back from the installed skills, so the map ships with
+# the release it belongs to. Refused here, before anything is written: a malformed line, a second
+# line in one file, a line outside the frontmatter, `release` (the baseline's own role, never a
+# legacy name), a name that is itself a shipped workflow, and a name two workflows both claim.
+validate_supersedes() {
+  local wf stem line ln infm n tok
+  local -A stems=() claimed=()
+  for wf in "$workflows"/*.md; do
+    stem="$(basename "$wf" .md)"
+    [ "$stem" = README ] || stems["$stem"]=1
+  done
+  for wf in "$workflows"/*.md; do
+    stem="$(basename "$wf" .md)"
+    [ "$stem" = README ] && continue
+    ln=0; infm=0; n=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      ln=$((ln + 1))
+      if [ "$ln" -eq 1 ]; then [ "$line" = "---" ] && infm=1; continue; fi
+      [ "$infm" -eq 1 ] && [ "$line" = "---" ] && { infm=2; continue; }
+      case "$line" in *adb:supersedes*) ;; *) continue ;; esac
+      if [ "$infm" -ne 1 ]; then
+        echo "build.sh: base/workflows/$stem.md:$ln carries adb:supersedes outside its frontmatter — the marker is frontmatter-only" >&2
+        return 3
+      fi
+      if ! printf '%s\n' "$line" | LC_ALL=C grep -Eq '^# adb:supersedes( [a-z0-9][a-z0-9-]*)+$'; then
+        echo "build.sh: base/workflows/$stem.md:$ln has a malformed adb:supersedes line — the shape is '# adb:supersedes <name> [<name>…]', names [a-z0-9-]" >&2
+        return 3
+      fi
+      n=$((n + 1))
+      if [ "$n" -gt 1 ]; then
+        echo "build.sh: base/workflows/$stem.md:$ln is a second adb:supersedes line — declare every name on one line" >&2
+        return 3
+      fi
+      for tok in ${line#"# adb:supersedes "}; do
+        if [ "$tok" = release ]; then
+          echo "build.sh: base/workflows/$stem.md:$ln declares 'release' superseded — release is a role, never a legacy name to map" >&2
+          return 3
+        fi
+        if [ -n "${stems[$tok]:-}" ]; then
+          echo "build.sh: base/workflows/$stem.md:$ln declares '$tok' superseded, but $tok is itself a shipped workflow" >&2
+          return 3
+        fi
+        if [ -n "${claimed[$tok]:-}" ]; then
+          echo "build.sh: base/workflows/$stem.md:$ln declares '$tok' superseded, but ${claimed[$tok]} already claims it — one legacy name maps to one workflow" >&2
+          return 3
+        fi
+        claimed["$tok"]="$stem"
+      done
+    done < "$wf"
+  done
+  return 0
+}
+validate_supersedes || exit 3
 
 for wf in "$workflows"/*.md; do
   case "$(basename "$wf")" in README.md) continue ;; esac

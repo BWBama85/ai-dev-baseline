@@ -36,6 +36,7 @@
 #   - detecting or running gates             -> project-gates.sh detect / status / run
 #   - the release-convention primitives       -> release-convention.sh status
 #   - classifying a project's own artifacts  -> adopt-lib.sh scan / classify / plan
+#   - which workflow the project runs (#535) -> adopt-lib.sh workflows (the `workflows` rung)
 # This file consumes those readers' output. It does not re-derive any of them.
 #
 # Usage:
@@ -135,6 +136,7 @@ settings${TAB}owner${TAB}repo settings were offered and applied with consent, in
 reviewers${TAB}owner${TAB}[reviewers] bots agrees with the GitHub Apps that review this repo's pull requests
 release${TAB}owner${TAB}the release command resolves to a real target
 decisions${TAB}agent${TAB}a decision log exists for the unknowns adoption hit
+workflows${TAB}owner${TAB}the project runs the baseline's workflows — no competing, same-name or project skill, no prior framework's pin
 EOF
 }
 
@@ -648,6 +650,21 @@ cmd_probe() {
   else
     _ar_emit decisions todo "no .ai-dev-baseline/decisions.md — handling-the-unknown.md requires every unmodeled thing adoption hit to be recorded there"
   fi
+
+  # --- workflows (#535) -------------------------------------------------------------------
+  # Which workflow does this project send its work through? `adopt-lib.sh workflows` decides by
+  # name and path, offline; this rung only translates its exit status, naming each finding by path
+  # and owner. Its trailer (`summary`) carries the counts, so a zero is visible.
+  local wout wrc wfind wsum
+  wout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" workflows "$root" --agents "$agents" 2>/dev/null)"; wrc=$?
+  wsum="$(printf '%s\n' "$wout" | awk -F'\t' '$1=="summary" {print $6; exit}')"
+  wfind="$(printf '%s\n' "$wout" | awk -F'\t' '$1!="summary" && $1!="exempt" && $1!="unknown" && NF>=5 {printf " %s %s (%s);", $1, $2, $5}')"
+  case "$wrc" in
+    0)  _ar_emit workflows ok "no competing, same-name or project skill and no prior framework's pin — $wsum" ;;
+    10) _ar_emit workflows todo "the project carries skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each to .ai-dev-baseline/retired/<date>/ in a normal PR; $wsum" ;;
+    11) _ar_emit workflows unknown "workflows not judged in full$( [ -n "$wfind" ] && printf ' (found so far:%s)' "$wfind") — ${wsum:-no summary}; $(printf '%s\n' "$wout" | awk -F'\t' '$1=="unknown" {print $6; exit}')" ;;
+    *)  _ar_emit workflows unknown "adopt-lib.sh workflows failed (exit $wrc) — workflows not judged" ;;
+  esac
 }
 
 # --- tracker: the rungs that need live reads ------------------------------------------------------

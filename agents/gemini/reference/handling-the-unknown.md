@@ -29,8 +29,8 @@ yet is itself an escalation (bucket 4) — say so and ask, don't invent a home.
 | Role assignment (who is primary / reviews / …) | `agents.toml [roles]` |
 | Project rule / convention / stack boundary | the repo's own root doc (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`) |
 | Custom gate *policy* (order, conditional) | the repo's own `.claude/scripts/precommit-gate.sh` |
-| Workflow that genuinely diverges | a project-scoped skill shadowing the global one |
-| Deviation from a baseline rule | a `DEVIATION` entry in the decision log |
+| Workflow that genuinely diverges | a baseline issue — a project carries no skills of its own (`policy:one-baseline`); `/adopt`'s `workflows` rung reports any it finds |
+| Deviation from a baseline rule | a `DEVIATION` entry in the decision log (it explains a `workflows` finding; it never clears one) |
 | A recurring review-finding class this project keeps hitting | `.ai-dev-baseline/patterns.md` — the pattern ledger and its promoted checklist |
 | General gap (would help many projects) | the supported stopgap surface; a baseline issue **only if it clears the bar** |
 

@@ -2155,6 +2155,29 @@ adb_claude_settings_count_agrees() {
   return 0
 }
 
+# Where <agent> discovers skills, the ONE table both scripts/build.sh (rendered skill tokens) and
+# scripts/lib/adopt-lib.sh (the adoption scan) read (#535).
+#   adb_agent_project_skill_dirs <agent>  — repo-relative project skill roots, space-separated;
+#     empty when the agent has no ESTABLISHED project-local discovery (Antigravity/Gemini).
+#   adb_agent_user_skill_root_literal <agent> — the user skill root as a QUOTED shell literal, for
+#     rendering into a skill body ($HOME may hold whitespace; Codex honours CODEX_HOME).
+# Codex's two roots were verified against `codex debug prompt-input` (Codex CLI 0.144.0-alpha.4).
+adb_agent_project_skill_dirs() {
+  case "$1" in
+    gemini) printf '' ;;
+    codex)  printf '%s' '.codex/skills .agents/skills' ;;
+    *)      printf '%s' ".$1/skills" ;;
+  esac
+}
+
+adb_agent_user_skill_root_literal() {
+  case "$1" in
+    gemini) printf '%s' '"$HOME/.gemini/config/skills"' ;;
+    codex)  printf '%s' '"${CODEX_HOME:-$HOME/.codex}/skills"' ;;
+    *)      printf '"$HOME/.%s/skills"' "$1" ;;
+  esac
+}
+
 
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s

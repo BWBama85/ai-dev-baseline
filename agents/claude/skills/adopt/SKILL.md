@@ -161,11 +161,27 @@ echo "baseline artifacts: $SHIPPED_N"
 # ADB-SNIPPET: scan
 mkdir -p ".claude/state"
 bash "$HOME/.claude/scripts/lib/adopt-lib.sh" scan "$PROJECT" ${AGENTS:+--agents "$AGENTS"} > ".claude/state/adopt-scan.tsv"
+# Which workflow the project runs (#535) — by name and path, never by reading a skill's text.
+# 0 none · 10 findings · 11 not judged in full (report it; never read it as clean) · 2 stop.
+WF_RC=0
+bash "$HOME/.claude/scripts/lib/adopt-lib.sh" workflows "$PROJECT" ${AGENTS:+--agents "$AGENTS"} --baseline "$BASELINE" \
+  > ".claude/state/adopt-workflows.tsv" || WF_RC=$?
+case "$WF_RC" in 0|10|11) : ;; *) echo "STOP: adopt-lib.sh workflows failed (rc $WF_RC)"; exit 1 ;; esac
 ```
 
 Records are `<kind>TAB<relpath>TAB<name>TAB<agent>`, where `agent` is `-` for an agent-neutral
 artifact (a root doc, `agents.toml`). A `warning` record means a filename carried a tab or a
 newline and could not be represented — report it and move on; the rest of the inventory is intact.
+
+`adopt-workflows.tsv` is `<class>TAB<path>TAB<agent>TAB<target>TAB<owner>TAB<remedy>`, ending in
+one `summary` record with the counts. The baseline carries no project skills (owner policy
+`policy:one-baseline`, D148), so every project skill is a finding: `competes` (a legacy name a
+baseline workflow supersedes — `target` names it), `shadows` (same name as a baseline skill, and
+this agent loads both), `duplicates` (Claude: the installed personal baseline skill runs instead,
+so this copy never does), `project-specific` (anything else). A prior framework's pin is
+`foreign-pin`. Only `release` is `exempt`, and only while the baseline ships no `release` skill
+(D7). A `DEVIATION` entry may explain a finding; it never clears one. Report every finding with
+its owner; the completion contract's `workflows` rung (step 12) re-reads the same answer.
 
 An `other` record is a file under an agent directory that none of the modelled kinds recognise.
 It classifies to `escalate` on purpose: an artifact the baseline does not model must reach
@@ -228,13 +244,17 @@ while IFS="$TABC" read -r kind rel name agent; do
     src="$(awk -F'\t' -v k="$kind" -v n="$name" -v g="$agent" \
              '$1==k && $2==n && $3==g {print $4; exit}' ".claude/state/adopt-shipped.tsv")"
   fi
+  # The record's `workflows` class (step 3), `-` when it has none.
+  wclass="$(awk -F'\t' -v r="$rel" -v g="$agent" '$2==r && $3==g {print $1; exit}' \
+              ".claude/state/adopt-workflows.tsv")"
+  case "$kind:$wclass" in skill:competes|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;; *) wclass=- ;; esac
   coll=no;  [ -n "$src" ] && coll=yes
   presc=no; bash "$HOME/.claude/scripts/lib/adopt-lib.sh" prescribed "$kind" "$name" >/dev/null 2>&1 && presc=yes
   delta=unknown
   [ -n "$src" ] && delta="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" delta "$kind" "$PROJECT/$rel" "$src")"
   # ONE call, not two. Calling `classify` twice to take `cut -f1` from one and `cut -f2` from the
   # other invites the two to disagree the moment anything about it stops being pure.
-  line="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" classify "$kind" "$coll" "$delta" "$presc")" || exit 1
+  line="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" classify "$kind" "$coll" "$delta" "$presc" "$wclass")" || exit 1
   printf '%s\t%s\t%s\t%s\n' "${line%%"$TABC"*}" "$kind" "$rel" "${line#*"$TABC"}"
 done < ".claude/state/adopt-scan.tsv" > ".claude/state/adopt-classified.tsv"
 ```
@@ -243,16 +263,16 @@ What the four verdicts oblige you to say:
 
 | Verdict | What it means | What you must report |
 |---|---|---|
-| `keep` | project-specific, or a prescribed home | nothing to do — but list it, so "unmentioned" never means "keep" |
+| `keep` | a prescribed home, an unmodelled-but-harmless artifact, or the exempt `release` skill | nothing to do — but list it, so "unmentioned" never means "keep" |
 | `remove` | a **byte-identical** copy of a baseline artifact | safe to delete; the global install already provides it |
 | `move` | collides **but differs** | the **parity caveat**: name what the delta does, and where it must land first |
 | `escalate` | the difference could not be established, or the kind is unmodelled | stop and ask (`handling-the-unknown.md` bucket 4) |
 
 **`move` is never `remove`.** The difference between them is the project's forked behavior. A
-forked skill's delta belongs in a `.claude/skills/<name>/overrides.md` (see
-`docs/per-project-overrides.md` §2b, and `baseline skill-compose list-anchors <name>` for the
-valid anchors); a bespoke gate command belongs in `agents.toml [gates]`; a path condition belongs
-in `[gates.scope]`. Re-home first, delete second — never the reverse.
+project skill — forked, superseded or project-specific — is captured as a baseline issue or as
+project config (the root doc, `agents.toml`), then retired to `.ai-dev-baseline/retired/<date>/` in
+a normal PR (`policy:one-baseline`); a bespoke gate command belongs in `agents.toml [gates]`; a path
+condition belongs in `[gates.scope]`. Re-home first, retire second — never the reverse.
 
 ### 5. Infer and propose an `agents.toml`
 
@@ -706,9 +726,13 @@ steps are the operator's to execute, and that this run did not perform them.
 - **Everything classifies as `keep`** → check that step 2 actually produced records. An empty
   `adopt-shipped.tsv` makes every collision test answer `no`, which looks exactly like a clean
   project. This is the silent-no-op shape; verify the count rather than trusting the verdicts.
-- **A forked skill is `move` and you want it gone** → re-home the delta into an `overrides.md`
-  first (`baseline skill-compose`), recompose, confirm the composed skill still carries the
-  behavior, and only then delete the fork. That order is not negotiable.
+- **A project skill is `move` and you want it gone** → capture what it does that the baseline does
+  not as a baseline issue or project config first, then retire it to
+  `.ai-dev-baseline/retired/<date>/` in a normal PR (`policy:one-baseline`). That order is not
+  negotiable.
+- **`workflows` exits 11** → something was not judged: no installed baseline, an unreadable shipped
+  set or map, or a path it could not represent. The rung is `unknown`, never `ok`; fix the cause
+  and re-run rather than reading the partial records as the whole answer.
 - **`stack` says `unknown`** → an answer, not an error. Record it; do not invent a label the pin
   would reject.
 - **The project already has another framework's pin** → step 7. Retire it in the plan; never

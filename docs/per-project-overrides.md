@@ -37,18 +37,26 @@ cost-safety policy for a particular cloud) that have nothing to do with — and
 never restate — the baseline's shell-portability or CI-discipline rules. Both
 apply at once: the project doc adds, the baseline remains in force underneath.
 
-## Override 2: a project-scoped skill with the same name
+## Override 2: a project-scoped skill with the same name — retired
 
-Claude Code resolves a project-scoped skill (one living in the repo's own
-`.claude/skills/<name>/`) ahead of a same-named skill installed globally at
-`~/.claude/skills/<name>/` — "most specific wins." This isn't something
-`ai-dev-baseline`'s scripts implement; it's the underlying Claude Code
-harness behavior that the global-install design deliberately relies on: a
-project's `.claude/skills/<name>/SKILL.md` silently shadows the global one for
-that repo only — no edit to the global copy.
+**Retired by owner policy (2026-10-14, `policy:one-baseline`, D148): a project carries no skills of
+its own.** A project skill — a same-name fork, a composed override, a legacy workflow the baseline
+supersedes, or a project-specific skill — is reported by `/adopt`'s `workflows` rung
+(`adopt-lib.sh workflows`, #535) and retired to `.ai-dev-baseline/retired/<date>/` in a normal PR.
+What it did that the baseline does not becomes a baseline issue or project config (the root doc,
+`agents.toml`). The one exception is `release`, while the baseline ships no `release` skill (D7). A
+`DEVIATION` entry may explain a finding; it never clears one.
 
-There are **two ways** to produce that project-scoped skill, and the second is
-almost always the right one:
+A same-named project skill does not behave the same on every agent:
+
+- **Claude Code** runs a *personal* skill over a same-named *project* one ("personal over
+  project", [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)). While the
+  baseline's `~/.claude/skills/<name>` link is installed, the project copy never runs at all; the
+  rung calls it `duplicates`.
+- **Codex** loads `.codex/skills` and `.agents/skills` from the repository and lists both
+  same-named copies (#540); the rung calls that `shadows`.
+
+The two forms below are documented for the projects that still carry one until they migrate.
 
 ### 2a. Full shadow fork (whole-file replacement)
 
