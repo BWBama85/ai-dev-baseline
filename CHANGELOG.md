@@ -11,6 +11,14 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Changed
 
+- **A local selfcheck no longer takes the whole machine (#599).** Every run lowers its own
+  priority (`nice -n 15`, inherited by every worker; `ADB_SELFCHECK_PRIORITY=normal` opts out). A
+  plain `bash scripts/selfcheck.sh` now holds every `*-mutation` harness back and names them, as
+  CI's per-PR jobs do; `--mutation` runs the ones your change touches and `ADB_MUTATION_RUN_ALL=1`
+  runs them all. Under one user and state home, one run's harnesses run at a time: a second run
+  finds the lock held (by a live run, or by workers a dead one left), runs its other steps and
+  names the holder. A lock that cannot be used at all fails the run rather than overlap.
+
 - **The vendored shmutant moves to v0.4.0.** `scripts/shmutant.sh` is the
   [shmutant](https://github.com/BWBama85/shmutant) v0.4.0 release, copied byte for byte, and
   `scripts/shmutant.sh.sha256` records its new digest. It hardens the guard that keeps a frozen

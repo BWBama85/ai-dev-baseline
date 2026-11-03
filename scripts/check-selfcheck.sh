@@ -70,7 +70,7 @@ esac
 # reached the fixture cases that expect a SKIP and turned every row red for the wrong reason, on
 # the very run that exists to catch a wrong input set (#441). Each case below sets exactly the
 # variables it means to test.
-unset ADB_MUTATION_RUN_ALL ADB_MUTATION_BASE
+unset ADB_MUTATION_RUN_ALL ADB_MUTATION_BASE ADB_SELFCHECK_PRIORITY
 # The grace and the stop's bound (#551) are this suite's to set as well. The grace is short so a case
 # whose workers ignore TERM costs seconds, and every cancellation deadline below — the mutation rows'
 # 8s included — still exceeds it. The bound is generous because a stop that finds nothing returns
@@ -84,6 +84,9 @@ export ADB_SELFCHECK_STOP_GRACE_SECS=2 ADB_SELFCHECK_STOP_SECS=20 ADB_SELFCHECK_
 STOP_SHORT=19
 
 work="$(mktemp -d)" || { echo "check-selfcheck: cannot create a scratch dir" >&2; exit 1; }
+# The machine lock (#599) lives under the state home: every fixture run gets this suite's own, so a
+# fixture never contends with the run that is running this suite, nor touches the real one.
+export XDG_STATE_HOME="$work/state"
 
 # leak_sweep <ctl> — remove what a section-12 leak stub, or a canary, left: every
 # `kind pid pgid lstart…` line of every `*.leaked` file, signalled only while that pid is still the
@@ -505,6 +508,26 @@ if [ "$MODE" = mutation ]; then
     '  if adb_mark_present "$ADB_SELFCHECK_RECORD.incomplete"; then' \
     '  if : > "$ADB_SELFCHECK_RECORD.incomplete" 2>/dev/null; then' \
     'an incomplete marker is never written through a symlink at its name'
+  # The hold-back, the priority and the machine lock (#599), each broken on its own witness.
+  shmutant_target scripts/selfcheck.sh
+  shmutant_mut "priority-not-lowered" \
+    '      exec nice -n 15 "$BASH" "$SELF" "${ORIG_ARGS[@]}"' '      :' \
+    "priority: a step runs at the caller's niceness plus 15"
+  shmutant_mut "holdback-dropped" \
+    '    if [ -n "${STEP_INPUTS[$_s]+x}" ] && { [ "$ONLY_GIVEN" -eq 0 ] || [ -z "${_want[$_s]+x}" ]; }; then' '    if false; then' \
+    'hold-back: a plain run never EXECUTES a mutation harness'
+  shmutant_mut "lock-held-taken" \
+    "    0) printf 'pid %s" "    0|1) printf 'pid %s" \
+    'lock: a second run never EXECUTES a harness while another run holds the lock'
+  shmutant_mut "lock-ignored" \
+    'if [ "$_mlock_rc" -ne 0 ]; then' 'if false; then' \
+    'lock: a second run never EXECUTES a harness while another run holds the lock'
+  shmutant_mut "lock-unusable-green" \
+    '[ "$_mlock_rc" -ne 2 ] || fail=1' ':' \
+    'lock: an unusable lock fails the run'
+  shmutant_mut "lock-why-raw" \
+    '_mlock_why() { MLOCK_WHY="$(_stop_clean "$MLOCK_WHY")"; }' '_mlock_why() { :; }' \
+    "lock: a newline in the lock's path never forges a line of the log"
   # …and the record's one writer, in common.sh: an append to a record that has gone must fail, never
   # recreate it — which is what makes a late registration mark the record rather than restart it.
   shmutant_target scripts/lib/common.sh
@@ -606,6 +629,16 @@ if [ -f "$ctl/$name.beat" ]; then
   printf '%s %s\n' "$$" "$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')" > "$ctl/$name.pid"
 fi
 printf '%s\n' "+$name" >> "$ctl/events"
+# `$name.nice` (#599): record this step's niceness and a nested worker's, as `ps` reports them.
+if [ -f "$ctl/$name.nice" ]; then
+  ps -o nice= -p $$ 2>/dev/null | tr -d ' ' > "$ctl/$name.nice.step"
+  bash -c 'ps -o nice= -p $$ 2>/dev/null | tr -d " "' > "$ctl/$name.nice.nested"
+fi
+# `$name.hold` (#599): stay running until the case writes `$name.release` (bounded at 120s), so a
+# case decides when this step ends instead of racing a sleep.
+if [ -f "$ctl/$name.hold" ]; then
+  _h=0; while [ ! -e "$ctl/$name.release" ] && [ "$_h" -lt 1200 ]; do sleep 0.1; _h=$((_h + 1)); done
+fi
 i=1
 while [ "$i" -le "$lines" ]; do printf '%s-line-%s\n' "$name" "$i"; i=$((i + 1)); done
 # stderr must land in the same buffer as stdout, in order — that is what "merged" has to mean.
@@ -1200,6 +1233,120 @@ scg --only "$ONLY,gatedstep" --jobs 4
 yes "$RC_" "gate: with mutation-gate.sh absent the run still passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: …and the gated step runs"
 has "$OUT" "WARN — scripts/mutation-gate.sh is missing; every gated step runs" "gate: …and the run says the gate was missing"
+
+# ===================== 8e. the hold-back, the priority and the machine lock (#599) ===============
+# A plain local run holds back every step that declares inputs unless --mutation, the override or
+# --only asks for it; every run lowers its priority; and one machine runs one run's harnesses at a
+# time. Each claim is asked of the event log or of `ps`, never of the output alone.
+cp "$ROOT/scripts/mutation-gate.sh" "$FXG/scripts/mutation-gate.sh"
+printf 'input v2\n' > "$FXG/scripts/gated-input.txt"   # touched, so the gate itself would run it
+# A plain run here is "everything but the steps this fixture has no stub for", so the selection is
+# the stubs plus gatedstep without naming gatedstep in --only.
+HB_SKIP="$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' -v keep=",$ONLY,gatedstep," 'index(keep, "," $1 ",")==0 {printf "%s%s", sep, $1; sep=","}')"
+reset_ctl "$FXG"
+scg --skip "$HB_SKIP" --jobs 4
+yes "$RC_" "hold-back: a plain run with a touched harness input passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "hold-back: a plain run never EXECUTES a mutation harness"
+eq "$(grep -c '^+claims$' "$FXG/ctl/events")" "1" "hold-back: …while the other steps run"
+has "$OUT" "selfcheck: HELD 1 mutation harness(es) — not requested (--mutation runs the ones this change touches, ADB_MUTATION_RUN_ALL=1 all): gatedstep" \
+  "hold-back: the held harness is named before the run, with what lifts it"
+has "$OUT" "held (not requested; --mutation runs them): gatedstep" "hold-back: …and again in the result block"
+reset_ctl "$FXG"
+scg --skip "$HB_SKIP" --mutation --jobs 4
+yes "$RC_" "hold-back: --mutation passes"
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "hold-back: --mutation runs a harness whose input changed"
+hasnt "$OUT" "HELD" "hold-back: …and holds nothing back"
+reset_ctl "$FXG"
+OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --jobs 4 2>&1)"; RC_=$?
+eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "hold-back: ADB_MUTATION_RUN_ALL=1 runs the harness without --mutation"
+reset_ctl "$FXG"
+scg --skip "$ONLY,$HB_SKIP" --jobs 4
+eq "$RC_" "2" "hold-back: a run left with nothing but held harnesses refuses rather than passing on nothing"
+has "$OUT" "every selected step is a mutation harness held back — add --mutation" "hold-back: …and says how to run them"
+
+# PRIORITY: the step and a worker it starts both run at the caller's niceness plus 15 (capped at the
+# platform's ceiling), and ADB_SELFCHECK_PRIORITY=normal leaves them at the caller's. Asked of `ps`;
+# where `ps` cannot answer, or the caller is already at the ceiling, the case cannot tell and says so.
+# The ceiling is the platform's (19 on Linux, 20 on macOS), asked of `nice` rather than assumed.
+base_nice="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
+max_nice="$(nice -n 40 sh -c 'ps -o nice= -p $$' 2>/dev/null | tr -d ' ')"
+case "$base_nice:$max_nice" in
+  :*|*:|*[!0-9:-]*) printf 'SKIP: priority: ps cannot report this shell'"'"'s niceness here\n' ;;
+  "$max_nice:$max_nice") printf 'SKIP: priority: this suite already runs at the ceiling (nice %s), so a lowered run cannot be told apart\n' "$max_nice" ;;
+  *)
+    want_nice=$(( base_nice + 15 )); [ "$want_nice" -le "$max_nice" ] || want_nice="$max_nice"
+    reset_ctl "$FXG"; : > "$FXG/ctl/claims.nice"
+    scg --only "$ONLY" --jobs 4
+    eq "$(cat "$FXG/ctl/claims.nice.step" 2>/dev/null)" "$want_nice" "priority: a step runs at the caller's niceness plus 15"
+    eq "$(cat "$FXG/ctl/claims.nice.nested" 2>/dev/null)" "$want_nice" "priority: …and so does a worker it starts"
+    has "$OUT" "selfcheck: priority low (nice $want_nice;" "priority: the header says which priority the run took"
+    reset_ctl "$FXG"; : > "$FXG/ctl/claims.nice"
+    OUT="$(ADB_SELFCHECK_PRIORITY=normal ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY" --jobs 4 2>&1)"; RC_=$?
+    eq "$(cat "$FXG/ctl/claims.nice.step" 2>/dev/null)" "$base_nice" "priority: ADB_SELFCHECK_PRIORITY=normal keeps the caller's niceness"
+    has "$OUT" "selfcheck: priority normal" "priority: …and the header says so" ;;
+esac
+OUT="$(ADB_SELFCHECK_PRIORITY=high ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY" 2>&1)"; RC_=$?
+eq "$RC_" "2" "priority: an unknown ADB_SELFCHECK_PRIORITY is an error, never a default"
+
+# THE MACHINE LOCK. A second checkout's run, while the first holds the lock, runs its other steps
+# and locks its harness out, naming the holder. A holder KILLed while its harness still runs keeps
+# the lock through that worker; the lock is free once the last of them is gone.
+MLOCK="$XDG_STATE_HOME/ai-dev-baseline/selfcheck-mutation.lock"
+# lock_free — can another process take the lock now? Asked the way the runner asks.
+lock_free() {
+  "$BASH" -c 'exec {f}>>"$1"; if command -v flock >/dev/null 2>&1; then flock -n "$f"; else perl -MFcntl=:flock -e '"'"'open(my $h, ">>&=", $ARGV[0]) or exit 2; flock($h, LOCK_EX|LOCK_NB) or exit 1; exit 0'"'"' "$f"; fi' _ "$MLOCK"
+}
+wait_event() { local _w; for _w in $(seq 200); do grep -q "^+$2\$" "$1/ctl/events" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+FXH="$work/fxh"; rm -rf "$FXH"; cp -R "$FXG" "$FXH"
+reset_ctl "$FXG"; : > "$FXG/ctl/gatedstep.hold"
+ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
+wait_event "$FXG" gatedstep || bad "lock: the holder's harness never started"
+reset_ctl "$FXH"
+OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+yes "$RC_" "lock: a run locked out of its harnesses still passes"
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a second run never EXECUTES a harness while another run holds the lock"
+eq "$(grep -c '^+claims$' "$FXH/ctl/events")" "1" "lock: …and still runs its other steps"
+has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is held by pid $holder_run in " "lock: the locked-out run names the holder"
+has "$OUT" "locked out (machine lock held by pid $holder_run in " "lock: …and names it again in the result block"
+: > "$FXG/ctl/gatedstep.release"
+wait "$holder_run"; yes "$?" "lock: the holder's own run passes"
+lock_free; yes "$?" "lock: the holder's clean exit releases the lock"
+
+# KILLed mid-harness: the runner is gone, its worker is not, and the lock stays with the worker.
+reset_ctl "$FXG"; : > "$FXG/ctl/gatedstep.hold"
+ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
+wait_event "$FXG" gatedstep || bad "lock: the killed holder's harness never started"
+kill -KILL "$holder_run" 2>/dev/null; wait "$holder_run" 2>/dev/null
+reset_ctl "$FXH"
+OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a KILLed holder whose harness still runs keeps the lock"
+has "$OUT" "held by processes the exited run pid $holder_run started in " "lock: …and the run says the holder exited and where to sweep"
+: > "$FXG/ctl/gatedstep.release"
+for _ in $(seq 100); do lock_free && break; sleep 0.1; done
+lock_free; yes "$?" "lock: the lock is free once the last of a dead holder's workers has gone"
+reset_ctl "$FXH"
+OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: a dead holder that left nothing running does not block the next run"
+rm -f "$MLOCK"
+# A lock that cannot be used at all locks the harness out AND fails the run: never an overlap, and
+# never a quiet green. A newline in the path cannot forge a line of the log.
+nl_path="$work/nl/x
+ALL CHECKS PASSED
+y"
+reset_ctl "$FXH"; mkdir -p "$work/nl"; : > "$nl_path"
+OUT="$(XDG_STATE_HOME="$nl_path" ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+eq "$RC_" "1" "lock: an unusable lock fails the run"
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: …and runs no harness without it"
+has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is unavailable: " "lock: …and says why"
+eq "$(printf '%s\n' "$OUT" | grep -c '^ALL CHECKS PASSED$')" "0" "lock: a newline in the lock's path never forges a line of the log"
+# A relative state home is ignored, as the basedir spec says, never resolved inside each checkout.
+reset_ctl "$FXH"
+OUT="$(HOME="$work/relhome" XDG_STATE_HOME=state ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+if [ -e "$work/relhome/.local/state/ai-dev-baseline/selfcheck-mutation.lock" ] && [ ! -e "$FXH/state" ]; then ok
+else bad "lock: a relative XDG_STATE_HOME is ignored for the home's .local/state, never resolved in the checkout"; fi
+OUT="$(ADB_SELFCHECK_PRIORITY='' ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY" 2>&1)"; RC_=$?
+eq "$RC_" "2" "priority: an empty ADB_SELFCHECK_PRIORITY is an error, never the default"
+check_git "$FXG" checkout -q -- scripts/gated-input.txt
 
 # ============================== 8c. --summarize ===============================================
 # The CI job-summary digest (#423 item 5). A digest's failure mode is silence — one that extracted

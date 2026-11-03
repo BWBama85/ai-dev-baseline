@@ -1571,7 +1571,7 @@ fact build-atomic-wired 'regex:^[^#]*check-build-atomic\.sh' -- \
 # Since #456 (D126) no harness runs per PR: `mutation-nightly.yml` builds its matrix from the
 # registry, so a harness un-registered from `scripts/selfcheck.sh` would silently stop running
 # ANYWHERE — on the schedule, by dispatch and on a labelled PR alike. The registry line is the
-# wiring now, and it is what stays pinned. A plain local `selfcheck.sh` still selects every one.
+# wiring now, and it is what stays pinned. A plain local `selfcheck.sh` holds every one back (#599).
 fact adopt-readiness-mutation-wired 'regex:^[^#]*check-adopt-readiness\.sh --mutation' -- scripts/selfcheck.sh
 fact pattern-ledger-mutation-wired 'regex:^[^#]*check-pattern-ledger\.sh --mutation' -- scripts/selfcheck.sh
 fact session-context-mutation-wired 'regex:^[^#]*check-session-context\.sh --mutation' -- scripts/selfcheck.sh

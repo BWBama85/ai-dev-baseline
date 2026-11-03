@@ -78,7 +78,8 @@
 # Environment:
 #   ADB_MUTATION_RUN_ALL   non-empty → every decision is RUN, and the line says the override fired.
 #                          The scheduled workflow sets it; a local `ADB_MUTATION_RUN_ALL=1 bash
-#                          scripts/selfcheck.sh` is the whole-registry run golden rule 3 describes.
+#                          scripts/selfcheck.sh` is the whole-registry run golden rule 3 describes
+#                          (a plain local run holds every harness back since #599).
 #   ADB_MUTATION_BASE      the ref the diff is taken against. Default: origin/<default branch>.
 #                          `--base` outranks it. CI sets it per event (the PR's base branch, or
 #                          the push's previous tip).

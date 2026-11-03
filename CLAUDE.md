@@ -60,9 +60,9 @@ those. The rules below are specific to this repo's code.
    is as long as the longest of three harnesses that each take about an hour inside it —
    `pattern-ledger-mutation`, `settings-fragment-mutation`, `review-loop-mutation` — and every
    `*-mutation` step runs its suite once per injected defect, whole or per block.
-   That range is a **forced** full run (`ADB_MUTATION_RUN_ALL=1`): since #441 a plain run pays for
-   a mutation harness only when the change touches its inputs — see the gate, below — so an
-   untouched tree finishes in a fraction of it, and says which steps it held back.
+   That range is a **forced** full run (`ADB_MUTATION_RUN_ALL=1`): since #599 a plain run pays for
+   no mutation harness at all — it holds every one back and names them — and `--mutation` pays
+   only for those the change touches (the gate, below), so a plain run finishes in a fraction of it.
 
    **Read the run, not this line.** The `result` block prints its own elapsed time and three
    slowest steps every time, and that output is always current where this sentence is only as
@@ -79,6 +79,18 @@ those. The rules below are specific to this repo's code.
    - **`--serial`** runs the registry in declaration order with output streaming live. Reach for it
      when a parallel failure is hard to attribute — it is the debugging mode, and it is what the
      acceptance criterion means by "reproduces today's behaviour".
+   - **Mutation harnesses run locally only on request** (#599, D147) — a plain run HOLDS every
+     `*-mutation` step back, named before the run and in the `result` block (`held (not requested;
+     …)`), as CI's per-PR jobs do. `--mutation` lifts the hold-back and applies the gate below;
+     naming a harness in `--only`, or `ADB_MUTATION_RUN_ALL=1`, runs it too. One run's harnesses at
+     a time per user and state home: a kernel `flock` under `${XDG_STATE_HOME:-~/.local/state}/ai-dev-baseline/`,
+     held while any process holding the run's descriptor lives (the runner, every step and worker),
+     so a dead run's surviving workers keep it; a lock that cannot be used at all locks them out
+     and fails the run.
+     A second run finds it held and loses its harnesses (`locked out (…)`, naming the holder), never
+     its other steps. A direct `check-*.sh --mutation` takes no lock.
+     Every run lowers its own priority (`nice -n 15`, inherited by every worker; the header says
+     which) — `ADB_SELFCHECK_PRIORITY=normal` keeps the caller's.
    - **The mutation gate** (#441, D91) — a `*-mutation` step declares the paths its verdict depends
      on (the library it mutates, its suite, `check-lib.sh`, `common.sh`), and the runner dispatches
      it only when the change under test — working tree plus untracked files, against the merge-base
@@ -187,8 +199,8 @@ those. The rules below are specific to this repo's code.
    or an on-demand run, not by that PR's CI. `/implement-issue`'s close-out asks
    `mutation-gate.sh touched` which harnesses a change gives something new to say, dispatches each
    against the PR head and links the runs. `check-mutation-gate.sh` pins all of it.
-   A plain local `bash scripts/selfcheck.sh` still *selects* the whole registry — the skip is a
-   CI-invocation choice, never a new default — and then applies the gate above to it.
+   Since #599 a plain local `bash scripts/selfcheck.sh` holds the harnesses back too (above):
+   `--mutation` is the local way to run the ones a change touches.
 
    **Two CI steps are deliberately not mirrored** (D13, extended by D24), and both are the same
    shape — a verdict that depends on network, auth and externally-mutable state:
