@@ -6,6 +6,7 @@
 # in per step, not a live variable. Claude-specific refs ride #14/#25 for this agent.
 name: implement-issue
 description: Use to implement GitHub issues end to end, from gap analysis through gates and review to a PR. Argument is one or more issue numbers.
+# adb:supersedes implement swarm review pr
 ---
 
 # /implement-issue

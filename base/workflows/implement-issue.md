@@ -4,6 +4,7 @@ description: Use to implement GitHub issues end to end, from gap analysis throug
 argument-hint: <issue-number> [more-issue-numbers…] [extra hints]
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, TaskCreate, TaskUpdate, TaskList, Agent, Skill
 user-invocable: true
+# adb:supersedes implement swarm review pr
 ---
 
 # /implement-issue

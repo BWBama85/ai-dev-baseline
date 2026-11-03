@@ -37,37 +37,48 @@ cost-safety policy for a particular cloud) that have nothing to do with — and
 never restate — the baseline's shell-portability or CI-discipline rules. Both
 apply at once: the project doc adds, the baseline remains in force underneath.
 
-## Override 2: a project-scoped skill with the same name
+## Override 2: a project-scoped skill with the same name — retired
 
-Claude Code resolves a project-scoped skill (one living in the repo's own
-`.claude/skills/<name>/`) ahead of a same-named skill installed globally at
-`~/.claude/skills/<name>/` — "most specific wins." This isn't something
-`ai-dev-baseline`'s scripts implement; it's the underlying Claude Code
-harness behavior that the global-install design deliberately relies on: a
-project's `.claude/skills/<name>/SKILL.md` silently shadows the global one for
-that repo only — no edit to the global copy.
+**Retired by owner policy (2026-10-14, `policy:one-baseline`, D148): a project carries no skills of
+its own.** A project skill — a same-name fork, a composed override, a legacy workflow the baseline
+supersedes, or a project-specific skill — is reported by `/adopt`'s `workflows` rung
+(`adopt-lib.sh workflows`, #535) and retired to `.ai-dev-baseline/retired/<date>/` in a normal PR.
+What it did that the baseline does not becomes a baseline issue or project config (the root doc,
+`agents.toml`). The one exception is `release`, while the baseline ships no `release` skill (D7). A
+`DEVIATION` entry may explain a finding; it never clears one.
 
-There are **two ways** to produce that project-scoped skill, and the second is
-almost always the right one:
+A same-named project skill does not behave the same on every agent:
+
+- **Claude Code** runs a *personal* skill over a same-named *project* one ("personal over
+  project", [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)). While the
+  baseline's `~/.claude/skills/<name>` link is installed, the project copy never runs at all; the
+  rung calls it `duplicates`.
+- **Codex** loads `.codex/skills` and `.agents/skills` from the repository and lists both
+  same-named copies (#540); the rung calls that `shadows`.
+
+The two forms below are documented for the projects that still carry one until they migrate.
 
 ### 2a. Full shadow fork (whole-file replacement)
 
-Drop a complete `.claude/skills/<name>/SKILL.md`. It replaces the global skill
-outright for this repo. Use this only when a project's workflow genuinely
-diverges *wholesale* — a fundamentally different procedure, not a couple of
-extra lines.
+A complete project `SKILL.md` — `.claude/skills/<name>/` for Claude, or
+`.codex/skills/<name>/` / `.agents/skills/<name>/` for Codex. Codex lists it
+beside the global skill; on Claude, where a personal skill runs over a project
+one, it runs only on a machine without the global install (#540).
 
 The cost is real: **a forked skill is a skill frozen in time.** It stops
 inheriting every later baseline improvement to *every* step, even the 90% the
 fork never meant to change. A fork that carried ~25 novel lines on top of a
 500-line skill silently falls behind on the other 475.
 
-### 2b. Partial compose-override (carry only your deltas) — preferred
+### 2b. Partial compose-override (carry only your deltas) — retired
 
-Carry *only* your deltas in a tiny `.claude/skills/<name>/overrides.md`, and
-let `skill-compose` **merge them onto the current installed baseline skill**.
-(A composed project-local `SKILL.md` shadows the installed one but carries no
-sibling supporting files (#433). The base skill's navigator therefore states the
+Do not write a new one: `/adopt`'s `workflows` rung reports an `overrides.md`
+as a finding. What follows describes the form for the projects still carrying
+one. A tiny `.claude/skills/<name>/overrides.md` carries only the deltas, and
+`skill-compose` **merges them onto the current installed baseline skill**.
+(A composed project-local `SKILL.md` sits beside the installed one — on Claude
+the personal copy runs instead of it while the global install is present (#540)
+— and carries no sibling supporting files (#433). The base skill's navigator therefore states the
 files' installed location once, up front — a composed copy's reader follows that
 stated path; bare mentions of a file elsewhere in the skill mean the file the
 navigator located.)
@@ -550,12 +561,10 @@ The changeset matters for the same reason: without it `[gates.scope]` cannot
 be evaluated and every scoped gate runs unconditionally.
 
 **A repo whose `/implement-issue` needs one extra sign-off line, nothing
-else:** carry just that line in
-`.claude/skills/implement-issue/overrides.md` (Override 2b) and
-`baseline skill-compose compose` — the other steps keep inheriting the
-baseline. Only reach for a full
-`.claude/skills/implement-issue/SKILL.md` shadow fork (Override 2a) when the
-whole procedure diverges.
+else:** that is baseline work, not a project skill (`policy:one-baseline`):
+put a project fact in the repo's root doc or `agents.toml`, or file a
+baseline issue for the missing behaviour. Neither an `overrides.md` nor a
+shadow fork is the answer any more; `/adopt`'s `workflows` rung reports both.
 
 ## See also
 

@@ -112,8 +112,9 @@ scattered through code or forked into the baseline.**
   read through the one `adb_toml_get`.
 - Every override surface has an **escape hatch** so a project is never stuck: a repo can
   set an explicit gate command (or `""` to disable), ship its own
-  `.claude/scripts/precommit-gate.sh` that the global gate defers to, or shadow a global
-  skill with a project-scoped one (see [per-project-overrides.md](per-project-overrides.md)).
+  `.claude/scripts/precommit-gate.sh` that the global gate defers to. A project-scoped skill
+  is no longer one of them: a project carries no skills of its own (`policy:one-baseline`, see
+  [per-project-overrides.md](per-project-overrides.md)).
 
 Handling a project-specific unknown deterministically — which config surface it lands in,
 and how the decision is recorded — is its own practice:

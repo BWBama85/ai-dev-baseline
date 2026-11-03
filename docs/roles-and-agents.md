@@ -82,11 +82,11 @@ general form here to extract, only four specific ones.
 
 ### What you do instead
 
-**1. Write your repo's own `/release` skill.** This is the
-`handling-the-unknown` prescribed home for a workflow that genuinely diverges:
-a project-scoped skill. For Claude the path is verified today —
-`.claude/skills/release/SKILL.md`, which takes precedence over any installed
-base skill of the same name (see
+**1. Write your repo's own `/release` skill.** It is the one project skill
+the baseline accepts, and only while the baseline ships no `release` skill of
+its own (D7; #541 tracks the generic one) — `/adopt`'s `workflows` rung reports
+it `exempt` and every other project skill as a finding (`policy:one-baseline`).
+For Claude the path is `.claude/skills/release/SKILL.md` (see
 [per-project-overrides.md](per-project-overrides.md)). Codex and Gemini
 project-local skill placement is **not** verified end-to-end yet
 (`scripts/lib/skill-compose.sh` is Claude-only in v1, and Gemini's skills
@@ -435,10 +435,10 @@ expecting it to arm. That contradiction is #168, tracked rather than resolved by
 
 > **Scope.** The role model is a static declaration plus this bot allowlist — **not** a dynamic
 > orchestration engine. Bespoke per-project patterns (dynamic mid-task consult agents,
-> worktree-parallel swarms, a hardened per-repo CLI wrapper) stay **project-scoped skills** (the
-> `handling-the-unknown` home for a genuinely-diverging workflow), not new `agents.toml`
-> vocabulary. The baseline hands every project the same resolvable roles; it does not replace a
-> project's own orchestrator.
+> worktree-parallel swarms, a hardened per-repo CLI wrapper) are not baseline features, and they
+> are not project-scoped skills either: a project carries no skills of its own
+> (`policy:one-baseline`), and `/adopt`'s `workflows` rung reports one. A need the roles and the
+> dispatch helper do not meet is a baseline issue, never new `agents.toml` vocabulary.
 
 ## Worked example (a): Claude primary + Codex gap-analysis + Codex & Gemini review
 

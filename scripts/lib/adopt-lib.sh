@@ -55,7 +55,9 @@
 #                                                          #   <kind>TAB<relpath>TAB<name>TAB<agent|->
 #   adopt-lib.sh prescribed  <kind> <name>                  # is this a prescribed home?
 #   adopt-lib.sh delta       <kind> <project-path> <baseline-path>   # same|differs|unknown
-#   adopt-lib.sh classify    <kind> <collision yes|no> <delta same|differs|unknown> <prescribed yes|no>
+#   adopt-lib.sh classify    <kind> <collision yes|no> <delta same|differs|unknown> <prescribed yes|no> [<workflows-class>]
+#                                                          # class: competes:<target>|shadows|duplicates|
+#                                                          #   project-specific|exempt|unjudged|-
 #   adopt-lib.sh roles-infer <project-root>                 # propose [roles] from evidence
 #   adopt-lib.sh propose     [--observed <f>] [--gates <f>] [--answers <f>]
 #                                                          # roles-infer TSV on stdin -> agents.toml,
@@ -69,6 +71,11 @@
 #   adopt-lib.sh pin-read    <pin-file> <key>
 #   adopt-lib.sh pin-drift   <pin-file> <baseline-root>     # the drift command, printed
 #   adopt-lib.sh plan                                       # classified TSV on stdin
+#   adopt-lib.sh supersedes  <baseline-root>                # <legacy-name>TAB<workflow>, the shipped map
+#   adopt-lib.sh workflows   <project-root> [--agents a,b] [--scope project|all] [--baseline <dir>]
+#                                                          # workflow conformance (#535); the one subcommand
+#                                                          #   with its own exit codes: 0 none · 10 findings
+#                                                          #   · 11 not judged in full · 2 usage
 #   adopt-lib.sh -h | --help
 #
 # Requires: awk, sed, git (hygiene's ignore and tracked-file axes, and pin-describe). jq is NOT
@@ -732,9 +739,6 @@ cmd_prescribed() {
     "rootdoc${TAB}CLAUDE.md"|"rootdoc${TAB}AGENTS.md"|"rootdoc${TAB}GEMINI.md") return 0 ;;
     # Role assignment + gate commands — agents.toml.
     "manifest${TAB}agents.toml") return 0 ;;
-    # A workflow that genuinely diverges — a partial compose-override is the preferred form
-    # (docs/per-project-overrides.md §2b), so an overrides.md is a home, not a duplicate.
-    "override${TAB}overrides.md") return 0 ;;
     # The decision log itself.
     "decisions${TAB}decisions.md") return 0 ;;
     # The pattern ledger (#421) — this project's own learned finding classes and the checklist
@@ -795,7 +799,7 @@ _ad_owns() {
 #             prescribed home. The only case where deleting costs the project nothing — and even
 #             here /adopt only ever PRINTS the word.
 #   move      a colliding artifact that DIFFERS. The delta is real behavior; it has to be re-homed
-#             (a forked skill -> overrides.md, a gate command -> [gates]) before the fork can go.
+#             (a forked skill -> a baseline issue, a gate command -> [gates]) before the fork can go.
 #             Never `remove`: that is what "parity caveat" means in the issue text.
 #   escalate  the delta could not be established, or the kind is not modelled. Bucket 4 of
 #             handling-the-unknown.md: stop and ask, never improvise.
@@ -803,9 +807,21 @@ _ad_owns() {
 # NOTE THE ORDER OF THE ARMS. `prescribed` is tested BEFORE collision, because a prescribed home
 # that collides is still a home. Reversing them recommends deleting every adopting project's
 # precommit-gate.sh, which is the concrete regression check-adopt.sh pins.
+# THE OPTIONAL FIFTH ARGUMENT is the record's `workflows` class (#535), `-` when there is none:
+# `competes:<target-workflow>`, `shadows`, `duplicates`, `project-specific`, `exempt`, or `unjudged`
+# (`workflows` could not judge it). It changes the no-collision skill arm: under
+# `policy:one-baseline` a project skill is not "project-specific, keep" — `competes` and
+# `project-specific` are `move` (capture, then retire), `unjudged` is `escalate`, and only `exempt`
+# (release, D7) stays `keep`. A byte-identical skill is still `remove`, worded as retirement.
 cmd_classify() {
-  [ "$#" -eq 4 ] || die "classify: needs <kind> <collision yes|no> <delta same|differs|unknown> <prescribed yes|no>"
-  local kind="$1" collision="$2" delta="$3" prescribed="$4"
+  [ "$#" -eq 4 ] || [ "$#" -eq 5 ] || die "classify: needs <kind> <collision yes|no> <delta same|differs|unknown> <prescribed yes|no> [<workflows-class>]"
+  local kind="$1" collision="$2" delta="$3" prescribed="$4" wclass="${5:--}" wtarget=""
+  case "$wclass" in
+    competes:*) wtarget="${wclass#competes:}"; wclass=competes
+                case "$wtarget" in ''|-*|*[!a-z0-9-]*) die "classify: competes:<target> needs a workflow name [a-z0-9-]" ;; esac ;;
+    -|shadows|duplicates|project-specific|exempt|unjudged) ;;
+    *) die "classify: <workflows-class> must be -|competes:<target>|shadows|duplicates|project-specific|exempt|unjudged: $wclass" ;;
+  esac
   case "$collision"  in yes|no) ;;              *) die "classify: <collision> must be yes|no: $collision" ;; esac
   case "$delta"      in same|differs|unknown) ;; *) die "classify: <delta> must be same|differs|unknown: $delta" ;; esac
   case "$prescribed" in yes|no) ;;              *) die "classify: <prescribed> must be yes|no: $prescribed" ;; esac
@@ -841,8 +857,32 @@ cmd_classify() {
     printf 'keep%sa release-pinned baseline payload, owned by .ai-dev-baseline/upstream.toml (mode = "pinned") and listed in its receipt — it is this project'"'"'s runtime, not a fork to re-home. Change it with: baseline pinned upgrade --to <version>\n' "$TAB"
     return 0
   fi
+  # A legacy command or a file `workflows` judged (`.claude/commands/<name>.md`, a project file in a
+  # pinned skill) carries that judgement instead of the generic escalation.
+  if [ "$kind" = other ] && [ "$wclass" = competes ]; then
+    printf 'move%sa legacy command the baseline'"'"'s %s supersedes — capture what it does that %s does not as a baseline issue, then retire it to .ai-dev-baseline/retired/<date>/\n' "$TAB" "$wtarget" "$wtarget"
+    return 0
+  fi
+  case "$kind:$wclass" in
+    other:shadows|other:duplicates)
+      printf 'move%sa legacy command with the same name as a baseline skill — retire it to .ai-dev-baseline/retired/<date>/ in a normal PR, capturing any delta as a baseline issue first\n' "$TAB"
+      return 0 ;;
+    other:exempt)
+      printf 'keep%srelease is exempt while the baseline ships no release skill (D7)\n' "$TAB"
+      return 0 ;;
+  esac
+  if [ "$kind" = other ] && [ "$wclass" = project-specific ]; then
+    printf 'move%sthe baseline carries no project skills or commands — capture what it does as a baseline issue or project config, then retire it to .ai-dev-baseline/retired/<date>/\n' "$TAB"
+    return 0
+  fi
   if [ "$kind" = other ]; then
     printf 'escalate%sthe baseline does not model this artifact — classify it per handling-the-unknown.md (general / project-delta / deviation), place it in that bucket'"'"'s prescribed home, and record the decision; do not improvise\n' "$TAB"
+    return 0
+  fi
+  # A COMPOSE-OVERRIDE IS RETIRED (policy:one-baseline, D148): no longer a prescribed home, and not
+  # `keep` merely because the baseline ships no file of that name.
+  if [ "$kind" = override ]; then
+    printf 'move%sper-project skill overrides are retired (policy:one-baseline) — capture the delta as a baseline issue or project config, then retire it with its skill to .ai-dev-baseline/retired/<date>/\n' "$TAB"
     return 0
   fi
   if [ "$kind" = foreign-pin ]; then
@@ -853,13 +893,34 @@ cmd_classify() {
     printf 'keep%sa prescribed home for project-specific content (handling-the-unknown.md) — it exists to carry a delta, so a name collision with a baseline artifact is expected here, not a duplicate\n' "$TAB"
     return 0
   fi
+  if [ "$kind" = skill ] && [ "$wclass" = unjudged ]; then
+    printf 'escalate%sadopt-lib.sh workflows could not judge this skill — re-run it once its cause is fixed; never read an unjudged skill as keep\n' "$TAB"
+    return 0
+  fi
+  if [ "$collision" = no ] && [ "$kind" = skill ]; then
+    case "$wclass" in
+      competes)
+        printf 'move%ssuperseded by the baseline'"'"'s %s — capture what it does that %s does not as a baseline issue, then retire it to .ai-dev-baseline/retired/<date>/\n' "$TAB" "$wtarget" "$wtarget"
+        return 0 ;;
+      project-specific)
+        printf 'move%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\n' "$TAB"
+        return 0 ;;
+      exempt)
+        printf 'keep%srelease is exempt while the baseline ships no release skill (D7)\n' "$TAB"
+        return 0 ;;
+    esac
+  fi
   if [ "$collision" = no ]; then
     printf 'keep%sthe baseline ships nothing of this identity — project-specific, adoption does not touch it\n' "$TAB"
     return 0
   fi
   case "$delta" in
     same)
-      printf 'remove%sbyte-identical to the baseline artifact it shadows — the global install already provides it, so removing costs nothing\n' "$TAB" ;;
+      if [ "$kind" = skill ]; then
+        printf 'remove%sbyte-identical to the baseline skill — the install already provides it; retire it to .ai-dev-baseline/retired/<date>/ in a normal PR (policy:one-baseline), never delete it silently\n' "$TAB"
+      else
+        printf 'remove%sbyte-identical to the baseline artifact it shadows — the global install already provides it, so removing costs nothing\n' "$TAB"
+      fi ;;
     differs)
       # THE DESTINATION DEPENDS ON THE KIND, and a generic sentence here is a real cost rather
       # than a wording nit. The first live run against a real adopted project returned `move` for
@@ -869,7 +930,7 @@ cmd_classify() {
       # stop. Each kind gets the destination it actually has.
       case "$kind" in
         skill)
-          printf 'move%scollides with a baseline skill BUT differs — carry ONLY the delta in .<agent>/skills/<name>/overrides.md and recompose (baseline skill-compose), then the fork can go; deleting it as-is loses whatever it changed\n' "$TAB" ;;
+          printf 'move%scollides with a baseline skill BUT differs — capture the delta as a baseline issue or project config, then retire the fork to .ai-dev-baseline/retired/<date>/; deleting it as-is loses whatever it changed\n' "$TAB" ;;
         script)
           # No compose mechanism exists for a hook script, so the honest instruction is to diff
           # and confirm — not to name a home that does not exist.
@@ -933,7 +994,15 @@ cmd_scan() {
   # Prior-framework artifacts (ai-dev-workflow). Reported as their own kind so the plan can carry
   # a reconcile step rather than classifying them as ordinary project content — bama-politics
   # carries both and has diverged far beyond the template they came from.
-  [ -f "$root/.claude/UPSTREAM_VERSION" ] && _ad_emit foreign-pin .claude/UPSTREAM_VERSION UPSTREAM_VERSION -
+  # `_ad_emitted` lists every path an explicit arm reported, so the catch-all below never reports
+  # the same file a second time under a contradicting verdict (#535: `.claude/UPSTREAM_VERSION` was
+  # both `foreign-pin` -> move and `other` -> escalate).
+  local _ad_emitted="" nl
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  if [ -f "$root/.claude/UPSTREAM_VERSION" ]; then
+    _ad_emit foreign-pin .claude/UPSTREAM_VERSION UPSTREAM_VERSION -
+    _ad_emitted="$_ad_emitted.claude/UPSTREAM_VERSION$nl"
+  fi
   [ -f "$root/CLAUDE.md.upstream" ]       && _ad_emit foreign-pin CLAUDE.md.upstream CLAUDE.md.upstream -
 
   # RELEASE-PINNED OWNERSHIP, resolved once and consulted by every arm below. One aggregate record
@@ -946,20 +1015,42 @@ cmd_scan() {
   fi
 
   # Per-agent config trees.
+  local sroot sroots
   while IFS= read -r a; do
     [ -n "$a" ] || continue
+    # EVERY PROJECT SKILL ROOT THE AGENT LOADS (#535), read from common.sh's one table, plus the
+    # agent's own `.<agent>/skills` (kept for Gemini, whose project-local discovery is unestablished).
+    # Walked before the agent-dir guard below: Codex's `.agents/skills` lives outside `.codex`.
+    sroots=".$a/skills"
+    for sroot in $(adb_agent_project_skill_dirs "$a"); do
+      case " $sroots " in *" $sroot "*) ;; *) sroots="$sroots $sroot" ;; esac
+    done
+    for sroot in $sroots; do
+      # AN UNREADABLE ROOT IS NOT AN EMPTY ONE: the glob below cannot tell them apart, so a root (or
+      # a skill directory) the scan cannot list is a `warning`, which `workflows` reads as unjudged.
+      if [ -e "$root/$sroot" ] || [ -L "$root/$sroot" ]; then
+        if [ ! -d "$root/$sroot" ] || [ ! -r "$root/$sroot" ] || [ ! -x "$root/$sroot" ]; then
+          printf 'warning%sthe skill root %s could not be listed — its skills were not inventoried\n' "$TAB" "$sroot"
+          continue
+        fi
+      fi
+      for d in "$root/$sroot"/*/; do
+        [ -d "$d" ] || continue
+        n="${d%/}"; n="${n##*/}"
+        if [ ! -r "$d" ] || [ ! -x "$d" ]; then
+          _ad_emit warning "a skill directory under $sroot could not be read — it was not inventoried"
+          continue
+        fi
+        [ -f "$d/overrides.md" ] && _ad_emit override "$sroot/$n/overrides.md" overrides.md "$a"
+        # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
+        # one, so its presence is the project's own — and in pinned mode it is a delta with no
+        # working home, which is precisely what the operator needs told.
+        _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && continue
+        [ -f "$d/SKILL.md" ]     && _ad_emit skill    "$sroot/$n" "$n" "$a"
+      done
+    done
     [ -d "$root/.$a" ] || continue
     [ -f "$root/.$a/settings.json" ] && _ad_emit settings ".$a/settings.json" settings.json "$a"
-    for d in "$root/.$a"/skills/*/; do
-      [ -d "$d" ] || continue
-      n="${d%/}"; n="${n##*/}"
-      [ -f "$d/overrides.md" ] && _ad_emit override ".$a/skills/$n/overrides.md" overrides.md "$a"
-      # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
-      # one, so its presence is the project's own — and in pinned mode it is a delta with no
-      # working home, which is precisely what the operator needs told.
-      _ad_owns "$_ad_owned" ".$a/skills/$n/SKILL.md" && continue
-      [ -f "$d/SKILL.md" ]     && _ad_emit skill    ".$a/skills/$n" "$n" "$a"
-    done
     # THE VENDORED SHARED LIBRARY IS ONE ARTIFACT, emitted before the flat file loop. `shipped`
     # reports `lib` as a single identity (install.sh links the whole `scripts/lib` DIRECTORY), so a
     # project that vendored a copy had no `scan` record that could ever join against it: the flat
@@ -998,7 +1089,18 @@ cmd_scan() {
     # `mapfile -d ''` rather than a pipeline, for the reason the credential axis learned: `-print0`
     # output cannot survive a command substitution, because bash strips NUL bytes.
     _ad_others=()
-    mapfile -d '' -t _ad_others < <(cd "$root" 2>/dev/null && find ".$a" -type f -print0 2>/dev/null | LC_ALL=C sort -z)
+    # A TRAVERSAL THAT FAILED PART-WAY is not a complete one (#535: an unreadable `.claude/commands`
+    # read as "no commands"). A process substitution cannot report its status, so the walk appends
+    # it as one last NUL-delimited field: the status of `cd`, `find` and `sort` together.
+    mapfile -d '' -t _ad_others < <(
+      cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
+      find ".$a" -type f -print0 2>/dev/null | LC_ALL=C sort -z
+      _ad_ps=("${PIPESTATUS[@]}")
+      printf '\0%s' "$(( _ad_ps[0] | _ad_ps[1] ))")
+    if [ "${#_ad_others[@]}" -eq 0 ] || [ "${_ad_others[-1]}" != 0 ]; then
+      printf 'warning%sthe agent directory .%s could not be walked in full — some of its files were not inventoried\n' "$TAB" "$a"
+    fi
+    [ "${#_ad_others[@]}" -eq 0 ] || unset '_ad_others[-1]'
     for rel in "${_ad_others[@]}"; do
       [ -n "$rel" ] || continue
       case "$rel" in
@@ -1027,6 +1129,7 @@ cmd_scan() {
           ;;
       esac
       _ad_owns "$_ad_owned" "$rel" && continue
+      case "$nl$_ad_emitted" in *"$nl$rel$nl"*) continue ;; esac
       _ad_emit other "$rel" "${rel##*/}" "$a"
     done
   done <<EOF
@@ -1966,6 +2069,255 @@ cmd_plan() {
   return 0
 }
 
+# --- supersedes ----------------------------------------------------------------------------------
+# The superseded-name map (#535): `<legacy-name>TAB<workflow>` per line, sorted. Read from the
+# `# adb:supersedes` line of every installed skill's SKILL.md (build.sh renders it into every agent
+# and validates it), so the map is the one the installed release shipped. Dies (2) on an unreadable
+# SKILL.md, a malformed name, a legacy name two workflows claim, or two agents' renders that
+# disagree: a map that cannot be read whole must never read as "nothing is superseded".
+cmd_supersedes() {
+  [ "$#" -eq 1 ] || die "supersedes: needs <baseline-root>"
+  local root="$1" shipped kind name agent src line tok out=""
+  local -A claim=() marker=() markerfrom=()
+  shipped="$( (cmd_shipped "$root") )" || die "supersedes: could not read what the baseline ships under $(adb_display_value "$root")"
+  # EVERY BASELINE AGENT CONTRIBUTES TO THE ONE MAP, so each must have a listable skills directory
+  # holding at least one shipped skill: a render whose skills cannot be listed still ships root docs
+  # and scripts, and would otherwise read as "supersedes nothing".
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    if [ ! -d "$root/agents/$agent/skills" ] || [ ! -r "$root/agents/$agent/skills" ] || [ ! -x "$root/agents/$agent/skills" ] \
+       || ! printf '%s\n' "$shipped" | awk -F'\t' -v g="$agent" '$1=="skill" && $3==g {f=1} END {exit !f}'; then
+      die "supersedes: the shipped skills of $agent could not be listed — the map cannot be read whole"
+    fi
+  done <<< "$(_ad_agents_from_baseline "$root")"
+  # EVERY BASELINE AGENT SHIPS THE SAME SKILL SET: a workflow one agent's render lacks would
+  # otherwise be offered there as the replacement for a legacy name.
+  local first_set="" this_set
+  while IFS= read -r agent; do
+    [ -n "$agent" ] || continue
+    this_set="$(printf '%s\n' "$shipped" | awk -F'\t' -v g="$agent" '$1=="skill" && $3==g {print $2}' | LC_ALL=C sort)" \
+      || die "supersedes: could not compare the agents' skill sets"
+    if [ -z "$first_set" ]; then first_set="$this_set"
+    elif [ "$this_set" != "$first_set" ]; then die "supersedes: the baseline agents ship different skill sets — rebuild the baseline"
+    fi
+  done <<< "$(_ad_agents_from_baseline "$root")"
+  while IFS="$TAB" read -r kind name agent src; do
+    [ "$kind" = skill ] || continue
+    case "$name" in ''|-*|*[!a-z0-9-]*) die "supersedes: a shipped skill name is outside [a-z0-9-] — the map would carry it" ;; esac
+    [ -f "$src/SKILL.md" ] && [ -r "$src/SKILL.md" ] \
+      || die "supersedes: $(adb_display_value "$src/SKILL.md") is missing or unreadable — the map cannot be read whole"
+    # THE READ SIDE HOLDS THE BUILD'S RULES: a frontmatter opened on line 1 and closed, exactly one
+    # marker line inside it and none after it, its grammar, no `release`, no shipped skill name.
+    line="$(awk '
+      NR==1 { if ($0 != "---") { print "ERR no-frontmatter"; exit } ; fm=1; next }
+      fm && $0 == "---" { fm=0; closed=1; next }
+      /adb:supersedes/ { if (fm) print; else { print "ERR body-marker"; exit } }
+      END { if (NR == 0) print "ERR empty"; else if (!closed) print "ERR unterminated" }
+    ' "$src/SKILL.md")" || die "supersedes: could not read $(adb_display_value "$src/SKILL.md")"
+    case "$line" in *"ERR "*) die "supersedes: $name ($agent) has a malformed frontmatter for the map (${line##*ERR })" ;; esac
+    case "$line" in *$'\n'*) die "supersedes: $name ($agent) carries more than one adb:supersedes line" ;; esac
+    if [ -n "$line" ] && ! printf '%s\n' "$line" | LC_ALL=C grep -Eq '^# adb:supersedes( [a-z0-9][a-z0-9-]*)+$'; then
+      die "supersedes: $name ($agent) carries a malformed adb:supersedes line"
+    fi
+    # EVERY AGENT THAT SHIPS A SKILL MUST CARRY THE SAME LINE FOR IT, absent included: a render
+    # that dropped the line for one agent would otherwise read as "supersedes nothing" there.
+    if [ -n "${markerfrom[$name]:-}" ]; then
+      [ "${marker[$name]}" = "$line" ] \
+        || die "supersedes: $name's adb:supersedes line differs between ${markerfrom[$name]} and $agent — rebuild the baseline"
+      continue
+    fi
+    marker["$name"]="$line"; markerfrom["$name"]="$agent"
+    [ -n "$line" ] || continue
+    for tok in ${line#"# adb:supersedes "}; do
+      [ "$tok" != release ] || die "supersedes: $name declares release superseded — release is a role, never a legacy name"
+      printf '%s\n' "$shipped" | awk -F'\t' -v t="$tok" '$1=="skill" && $2==t {f=1} END {exit !f}' \
+        && die "supersedes: $name declares $tok superseded, but $tok is itself a shipped skill"
+      [ -z "${claim[$tok]:-}" ] || die "supersedes: $tok is claimed by both ${claim[$tok]} and $name"
+      claim["$tok"]="$name"
+      out="$out$tok$TAB$name"$'\n'
+    done
+  done <<< "$shipped"
+  [ -n "$out" ] || return 0
+  local sorted
+  sorted="$(printf '%s' "$out" | LC_ALL=C sort)" || die "supersedes: could not sort the map"
+  printf '%s\n' "$sorted"
+}
+
+# --- workflows -----------------------------------------------------------------------------------
+# Workflow conformance (#535): which workflow does this project send its work through? Owner policy
+# (2026-10-14, `policy:one-baseline`): a project carries no skills of its own, so every project
+# skill is a finding except `release` while the baseline ships no `release` skill (D7). Decided by
+# NAME and PATH only — never by reading a skill's text, which is an instruction to an agent and
+# whose words must never reach this output.
+#
+#   adopt-lib.sh workflows <project-root> [--agents a,b] [--scope project|all] [--baseline <dir>]
+#
+# stdout: one record per skill and prior-framework pin,
+#   <class>TAB<path>TAB<agent|->TAB<target-workflow|->TAB<owner>TAB<remedy>
+# classes: competes · shadows (this agent loads both same-named copies) · duplicates (Claude: the
+# installed personal baseline skill runs instead, so the project copy never does) ·
+# project-specific · foreign-pin · exempt (not a finding) · unknown (not judged); then ONE
+# `summary` record, always, so a zero is visible rather than looking like a clean pass.
+# Exit: 0 no finding · 10 findings · 11 something could not be judged (wins over 10) · 2 usage.
+# Pinned-payload skills are never reported: the scan's receipt check (adb_pinned_owned) skips them.
+_ad_wf_rec() {  # <class> <path> <agent> <target> <owner> <remedy>
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@"
+}
+cmd_workflows() {
+  local root="" agents="" scope=all broot="" a
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --agents)   [ "$#" -ge 2 ] && [ -n "$2" ] || die "workflows: --agents needs a non-empty value"; agents="$2"; shift 2 ;;
+      --scope)    [ "$#" -ge 2 ] || die "workflows: --scope needs project|all"
+                  case "$2" in project|all) scope="$2" ;; *) die "workflows: --scope must be project|all" ;; esac; shift 2 ;;
+      --baseline) [ "$#" -ge 2 ] && [ -n "$2" ] || die "workflows: --baseline needs a directory"; broot="$2"; shift 2 ;;
+      -*) die "workflows: unknown option: $1" ;;
+      *)  [ -z "$root" ] || die "workflows: takes exactly one <project-root>"; root="$1"; shift ;;
+    esac
+  done
+  [ -n "$root" ] || die "workflows: needs <project-root>"
+  [ -d "$root" ] || die "workflows: not a directory: $(adb_display_value "$root")"
+  [ -n "$agents" ] || agents="$(_ad_default_agents)"
+  _ad_check_agents "$agents" workflows
+
+  local ug="user-global=not evaluated (not yet modelled)"
+  [ "$scope" = project ] && ug="user-global=not evaluated (scope project)"
+  local roots="" sroot
+  for a in ${agents//,/ }; do
+    for sroot in ".$a/skills" $(adb_agent_project_skill_dirs "$a"); do
+      case ",$roots," in *",$sroot,"*) ;; *) roots="${roots:+$roots,}$sroot" ;; esac
+    done
+  done
+
+  local why=""
+  if [ -z "$broot" ]; then broot="$(adb_install_source 2>/dev/null)" || broot=""; fi
+  local shipped="" map=""
+  if [ -z "$broot" ]; then
+    why="no installed baseline found"
+  elif ! shipped="$( (cmd_shipped "$broot") 2>/dev/null )" || [ -z "$shipped" ]; then
+    why="the shipped set is unreadable"
+  elif ! map="$( (cmd_supersedes "$broot") 2>/dev/null )"; then
+    why="the superseded-name map is unreadable"
+  fi
+  if [ -n "$why" ]; then
+    _ad_wf_rec unknown - - - agent "could not read what the baseline ships ($why) — workflows not judged"
+    _ad_wf_rec summary - - - - "roots=$roots skills=0 mapped=0 same-name=0 exempt=0 unmapped=0 unknown=1; map=not read; $ug"
+    return 11
+  fi
+
+  local scan
+  scan="$( (cmd_scan "$root" --agents "$agents") 2>/dev/null )" || {
+    _ad_wf_rec unknown - - - agent "the project scan failed — workflows not judged"
+    _ad_wf_rec summary - - - - "roots=$roots skills=0 mapped=0 same-name=0 exempt=0 unmapped=0 unknown=1; map=not judged; $ug"
+    return 11
+  }
+
+  local -A target=() ships=()
+  local legacy wf kind name agent src rel nmap=0 nwf
+  while IFS="$TAB" read -r legacy wf; do
+    [ -n "$legacy" ] || continue
+    target["$legacy"]="$wf"; nmap=$((nmap + 1))
+  done <<< "$map"
+  nwf="$(printf '%s\n' "$map" | cut -f2 | LC_ALL=C sort -u | grep -c . || true)"
+  while IFS="$TAB" read -r kind name agent src; do
+    [ "$kind" = skill ] && ships["$agent/$name"]="$src"
+  done <<< "$shipped"
+  local ver
+  ver="$(git -C "$broot" describe --tags --always 2>/dev/null)" || ver=""
+  case "$ver" in ''|*[!A-Za-z0-9._+-]*) ver="unversioned" ;; esac
+
+  # NESTED PROJECT ROOTS — Claude's `<subdir>/.claude/skills`, Codex's `.agents/skills` up the
+  # working-directory ancestry — are not walked here (owner decision 2026-11-03: #535's second PR),
+  # so the trailer says so rather than letting a zero read as coverage.
+  local nested="nested=not evaluated (not yet modelled)"
+
+  local nsk=0 nmapped=0 nsame=0 nex=0 nun=0 nunk=0 npin=0 cls tgt
+  local retire="then retire it to .ai-dev-baseline/retired/<date>/ in a normal PR"
+  while IFS="$TAB" read -r kind rel name agent; do
+    case "$kind" in
+      warning)
+        # Our own warnings name only the skill-root table and an agent token, so they are kept as
+        # evidence; any other warning may carry scanned text and is not repeated.
+        case "$rel" in
+          "the skill root "*|"a skill directory under "*|"the agent directory "*)
+            _ad_wf_rec unknown - - - agent "$rel — not judged" ;;
+          *) _ad_wf_rec unknown - - - agent "a scanned path could not be represented and was not judged" ;;
+        esac
+        nunk=$((nunk + 1)); continue ;;
+      foreign-pin)
+        case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
+        npin=$((npin + 1))
+        _ad_wf_rec foreign-pin "$rel" - - agent "a prior framework's pin — reconcile what it records into .ai-dev-baseline/upstream.toml, then retire it"
+        continue ;;
+      override)
+        case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
+        nun=$((nun + 1))
+        _ad_wf_rec project-specific "$rel" "$agent" - owner "a compose-override, retired by policy:one-baseline — capture its delta as a baseline issue or project config, $retire"
+        continue ;;
+      skill) ;;
+      other)
+        case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
+        # A LEGACY CLAUDE COMMAND (`.claude/commands/<name>.md`) still runs as `/<name>`, so it is
+        # judged by its name exactly as a skill is; one in a subdirectory runs under a qualified
+        # name no map entry names, so it is project-specific.
+        case "$rel" in
+          .claude/commands/*)
+            nsub="${rel#*.claude/commands/}"
+            case "$nsub" in *.md) ;; *) continue ;; esac   # only a Markdown file is a command
+            case "$nsub" in
+              */*) nsk=$((nsk + 1)); nun=$((nun + 1))
+                   _ad_wf_rec project-specific "$rel" claude - owner "a legacy command in a subdirectory — the baseline carries no project skills; capture what it does as a baseline issue, $retire"
+                   continue ;;
+              *.md) name="${nsub%.md}"; agent=claude ;;
+              *) continue ;;
+            esac ;;
+          *)
+            # A project file inside a skill directory the scan suppressed as a pinned payload: the
+            # skill is no longer the baseline's alone.
+            local inroot="" r_
+            for r_ in ${roots//,/ }; do case "$rel" in "$r_"/*/*) inroot=1 ;; esac; done
+            [ -n "$inroot" ] || continue
+            nun=$((nun + 1))
+            _ad_wf_rec project-specific "$rel" "$agent" - owner "a project file inside a pinned baseline skill — the skill is customised; capture the change as a baseline issue, $retire"
+            continue ;;
+        esac ;;
+      *) continue ;;
+    esac
+    nsk=$((nsk + 1))
+    case "$rel$name$agent" in
+      *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a skill path outside the closed charset was not judged"; continue ;;
+    esac
+    tgt="${target[$name]:-}"
+    if [ -n "$tgt" ]; then
+      nmapped=$((nmapped + 1))
+      _ad_wf_rec competes "$rel" "$agent" "$tgt" owner "superseded by the baseline's $tgt — capture what it does that $tgt does not as a baseline issue, $retire"
+    elif [ -n "${ships[$agent/$name]:-}" ]; then
+      nsame=$((nsame + 1))
+      cls=shadows
+      # Claude runs a PERSONAL skill over a same-named project one, so while the baseline's own
+      # link is installed there the project copy never runs. Other agents list both copies.
+      # The link must RESOLVE to a readable skill: a dangling one proves nothing about what runs.
+      if [ "$agent" = claude ] && adb_link_into "$HOME/.claude/skills/$name" "$broot" 2>/dev/null \
+         && [ -f "$HOME/.claude/skills/$name/SKILL.md" ] && [ -r "$HOME/.claude/skills/$name/SKILL.md" ]; then cls=duplicates; fi
+      if [ "$cls" = duplicates ]; then
+        _ad_wf_rec duplicates "$rel" "$agent" "$name" owner "same name as a baseline skill, whose installed personal copy runs instead — this copy never runs; $retire"
+      else
+        _ad_wf_rec shadows "$rel" "$agent" "$name" owner "same name as a baseline skill, and this agent loads both — capture any delta as a baseline issue, $retire"
+      fi
+    elif [ "$name" = release ]; then
+      nex=$((nex + 1))
+      _ad_wf_rec exempt "$rel" "$agent" - - "release is exempt while the baseline ships no release skill (D7)"
+    else
+      nun=$((nun + 1))
+      _ad_wf_rec project-specific "$rel" "$agent" - owner "the baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), $retire"
+    fi
+  done <<< "$scan"
+  _ad_wf_rec summary - - - - "roots=$roots skills=$nsk mapped=$nmapped same-name=$nsame exempt=$nex unmapped=$nun pins=$npin unknown=$nunk; map=$nmap names from $nwf workflows ($ver); $nested; $ug"
+  [ "$nunk" -eq 0 ] || return 11
+  [ $((nmapped + nsame + nun + npin)) -eq 0 ] || return 10
+  return 0
+}
+
 # --- dispatch ------------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -1990,6 +2342,8 @@ main() {
     pin-read)    cmd_pin_read "$@" ;;
     pin-drift)   cmd_pin_drift "$@" ;;
     plan)        cmd_plan "$@" ;;
+    supersedes)  cmd_supersedes "$@" ;;
+    workflows)   cmd_workflows "$@" ;;
     *) printf 'adopt-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }

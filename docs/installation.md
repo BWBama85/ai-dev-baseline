@@ -17,12 +17,13 @@ own section, [Release-pinned, per project](#release-pinned-per-project).
 | Agents | claude · codex · gemini | claude · codex |
 
 **They coexist, and neither one degrades the other.** A machine can run the global install and
-still open a project that carries a pinned payload: the agent harness resolves a project's own
-skills ahead of the user-global ones ("most specific wins" —
-[per-project-overrides.md](per-project-overrides.md), Override 2), so inside such a project the
-pinned version governs, and everywhere else the global install does. Nothing arbitrates that at
-install time; it is the harness's own precedence, and `baseline pinned status` reports the overlap
-rather than pretending to resolve it.
+still open a project that carries a pinned payload. Which copy of a same-named skill runs there
+is the harness's precedence, not the baseline's: Claude Code runs a *personal* skill over a
+same-named *project* one ("personal over project",
+[code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)), so with the global
+install present Claude runs the global copy even inside a pinned project — tracked by #540 — and
+Codex lists both. Nothing arbitrates that at install time, and `baseline pinned status` reports
+the overlap rather than pretending to resolve it.
 
 **Pick the global model** when the machine is yours and you want every project on it to move to
 each new release together. **Pick the pinned model** when a project must state which baseline it runs — a repo
@@ -994,7 +995,7 @@ truncation**, not authenticity — an attacker who can replace one can replace b
 | `.claude/rules/ai-dev-baseline.md` | the practices' rules — a rule with no `paths:` frontmatter loads at session start |
 | `.claude/rules/ai-dev-baseline/<practice>.md` | the path-scoped procedures (#434), which load when a matching file is read |
 | `.claude/adb/reference/<practice>.md` | every other procedure; the vendored root doc's pointers are re-anchored to these project paths |
-| `.claude/skills/<name>/SKILL.md` | the workflows, shadowing any same-named global skill |
+| `.claude/skills/<name>/SKILL.md` | the workflows — on Claude a same-named personal (global) skill still runs instead, while one is installed (#540) |
 | `.claude/adb/lib/*.sh` | the shared shell libraries the skills and gates call |
 | `.claude/adb/{precommit,implement-issue,state-claim}-gate.sh` | the Stop gates |
 | `.claude/adb/session-context.sh` | the `SessionStart` run-state hook (#431): on `compact\|resume` it reads the project's own `.claude/state` back into context |

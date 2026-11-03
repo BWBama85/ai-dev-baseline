@@ -4,6 +4,7 @@ description: On an open PR, await async review, then fix and resolve its threads
 argument-hint: "[pr-number] [--once] [--max-rounds <n>]"
 allowed-tools: Bash, Read, Edit, Write, Glob, Grep, TaskCreate, TaskUpdate, TaskList
 user-invocable: true
+# adb:supersedes review-feedback
 ---
 
 # /resolve-pr-threads
