@@ -76,8 +76,9 @@ Do not write a new one: `/adopt`'s `workflows` rung reports an `overrides.md`
 as a finding. What follows describes the form for the projects still carrying
 one. A tiny `.claude/skills/<name>/overrides.md` carries only the deltas, and
 `skill-compose` **merges them onto the current installed baseline skill**.
-(A composed project-local `SKILL.md` shadows the installed one but carries no
-sibling supporting files (#433). The base skill's navigator therefore states the
+(A composed project-local `SKILL.md` sits beside the installed one — on Claude
+the personal copy runs instead of it while the global install is present (#540)
+— and carries no sibling supporting files (#433). The base skill's navigator therefore states the
 files' installed location once, up front — a composed copy's reader follows that
 stated path; bare mentions of a file elsewhere in the skill mean the file the
 navigator located.)

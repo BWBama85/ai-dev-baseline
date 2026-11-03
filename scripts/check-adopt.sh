@@ -583,15 +583,23 @@ OVX="$WORK/wf-override"; mkdir -p "$OVX/.claude/skills/cleanup"; printf 'x\n' > 
 ovo="$(HOME="$WFX/home" bash "$AD" workflows "$OVX" --agents claude --baseline "$ROOT")"; ovrc=$?
 has "$ovo" "project-specific${TAB}.claude/skills/cleanup/overrides.md" "workflows: a lone overrides.md is a finding"
 eq "$ovrc" 10 "workflows: ...so the project is not clean"
-# NESTED ROOTS come from git's tracked paths; outside a repository they are not evaluated, and said so.
-has "$wfo" "nested=not evaluated (not a git repository)" "workflows: outside a git repository nested roots are not evaluated, and the trailer says so"
-NSX="$WORK/wf-nested"; mkdir -p "$NSX/src/.claude/skills/implement" "$NSX/pkg/.agents/skills/zz-local"
-printf 'x\n' > "$NSX/src/.claude/skills/implement/SKILL.md"; printf 'x\n' > "$NSX/pkg/.agents/skills/zz-local/SKILL.md"
-git -C "$NSX" init -q; check_git "$NSX" add -A; check_git "$NSX" commit -qm seed
-nso="$(HOME="$WFX/home" bash "$AD" workflows "$NSX" --agents claude,codex --baseline "$ROOT")"
-has "$nso" "competes${TAB}src/.claude/skills/implement${TAB}claude${TAB}implement-issue" "workflows: a tracked nested Claude skill root is judged"
-has "$nso" "project-specific${TAB}pkg/.agents/skills/zz-local${TAB}codex" "workflows: a tracked nested Codex .agents/skills root is judged"
-has "$nso" "nested=tracked paths" "workflows: the trailer says nested roots were read from tracked paths"
+# NESTED ROOTS are not walked yet (#535's second PR), and the trailer says so.
+has "$wfo" "nested=not evaluated" "workflows: the trailer says nested roots were not evaluated"
+# A failure anywhere in the inventory walk — here only `sort -z` — is unjudged, never clean.
+SZSTUB="$WORK/sortz-stub"; mkdir -p "$SZSTUB"; REALSORT="$(command -v sort)"
+printf '#!/bin/sh\ncase " $* " in *" -z "*) exit 1 ;; esac\nexec "%s" "$@"\n' "$REALSORT" > "$SZSTUB/sort"; chmod +x "$SZSTUB/sort"
+mkdir -p "$WORK/wf-sortz/.claude/commands"; printf 'x\n' > "$WORK/wf-sortz/.claude/commands/pr.md"
+eq "$(PATH="$SZSTUB:$PATH" HOME="$WFX/home" bash "$AD" workflows "$WORK/wf-sortz" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: an inventory walk whose sort failed is unjudged (11), never clean"
+eq "$(HOME="$WFX/home" bash "$AD" workflows "$WORK/wf-sortz" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 10 \
+   "workflows: ...and the same project with a working sort is judged (10)"
+# Only a Markdown file under .claude/commands is a command.
+mkdir -p "$WORK/wf-assets/.claude/commands/assets"; printf 'x\n' > "$WORK/wf-assets/.claude/commands/assets/readme.txt"
+eq "$(HOME="$WFX/home" bash "$AD" workflows "$WORK/wf-assets" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: a non-Markdown asset under .claude/commands is not a command"
+# A legacy command's same-name and exempt classes survive into classify.
+eq "$(verdict other no unknown no shadows)" move "a same-name legacy command classifies move"
+eq "$(verdict other no unknown no exempt)"  keep "an exempt legacy release command classifies keep"
 # A DANGLING personal link proves nothing about what runs: shadows, never duplicates.
 rm -f "$WFX/home/.claude/skills/cleanup"; ln -s "$ROOT/agents/claude/skills/no-such-skill" "$WFX/home/.claude/skills/cleanup"
 has "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")" \
@@ -683,15 +691,24 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses a SKILL.md that does not open its frontmatter on line 1"
   printf -- '---\nname: debug\n# adb:supersedes fix-bug\n' > "$BFX/agents/claude/skills/debug/SKILL.md"
   eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses an unterminated frontmatter"
+  : > "$BFX/agents/claude/skills/debug/SKILL.md"
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses an empty installed SKILL.md"
   cp "$WORK/debug-claude.ok" "$BFX/agents/claude/skills/debug/SKILL.md"
+  # Every baseline agent must ship the same skill set.
+  mv "$BFX/agents/gemini/skills/debug" "$WORK/gemini-debug.saved"
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses agents that ship different skill sets"
+  mv "$WORK/gemini-debug.saved" "$BFX/agents/gemini/skills/debug"
   # A shipped skill whose NAME is outside the map's charset is refused, never carried as a target.
-  mkdir -p "$BFX/agents/claude/skills/Bad_Name"; printf -- '---\nname: x\n# adb:supersedes zz-legacy\n---\n' > "$BFX/agents/claude/skills/Bad_Name/SKILL.md"
-  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses a shipped skill name outside [a-z0-9-]"
-  rm -rf "$BFX/agents/claude/skills/Bad_Name"
+  for a_ in claude codex gemini; do
+    mkdir -p "$BFX/agents/$a_/skills/Bad_Name"; printf -- '---\nname: x\n# adb:supersedes zz-legacy\n---\n' > "$BFX/agents/$a_/skills/Bad_Name/SKILL.md"
+  done
+  has "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" 2>&1 >/dev/null)" "outside [a-z0-9-]" "supersedes refuses a shipped skill name outside [a-z0-9-]"
+  for a_ in claude codex gemini; do rm -rf "$BFX/agents/$a_/skills/Bad_Name"; done
   put_marker '# adb:supersedes fix-bug'
   # A sort that fails is not an empty map.
   SORTSTUB="$WORK/sortstub"; mkdir -p "$SORTSTUB"; printf '#!/bin/sh\nexit 1\n' > "$SORTSTUB/sort"; chmod +x "$SORTSTUB/sort"
-  has "$(PATH="$SORTSTUB:$PATH" bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" 2>&1 >/dev/null)" "could not sort the map" \
+  # Both sorts the reader runs (the agents' skill sets, the map) refuse; the first one wins.
+  has "$(PATH="$SORTSTUB:$PATH" bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" 2>&1 >/dev/null)" "supersedes: could not" \
       "supersedes: a failed sort is a refusal, never an empty map"
   # One agent's render losing the line is refused, never read as "supersedes nothing" there.
   grep -v '^# adb:supersedes ' "$BFX/agents/codex/skills/debug/SKILL.md" > "$WORK/debug-codex.md"
@@ -1901,10 +1918,14 @@ shmutant_mut scan-partial-walk-silent \
     '      printf '"'"'warning%sthe agent directory .%s could not be walked in full' \
     '      : '"'"'warning%sthe agent directory .%s could not be walked in full' \
     'an unreadable .claude/commands is not judged clean'
-shmutant_mut workflows-nested-roots-dropped \
-    '        case ",$agents," in *",$na,"*) ;; *) continue ;; esac' \
-    '        continue' \
-    'a tracked nested Claude skill root is judged'
+shmutant_mut scan-sort-status-dropped \
+    '      printf '"'"'\0%s'"'"' "$(( _ad_ps[0] | _ad_ps[1] ))")' \
+    '      printf '"'"'\0%s'"'"' "$(( _ad_ps[0] ))")' \
+    'an inventory walk whose sort failed is unjudged'
+shmutant_mut supersedes-skill-sets-unchecked \
+    '    elif [ "$this_set" != "$first_set" ]; then die "supersedes: the baseline agents ship different skill sets' \
+    '    elif false; then die "supersedes: the baseline agents ship different skill sets' \
+    'supersedes refuses agents that ship different skill sets'
 shmutant_mut classify-project-skill-kept \
     "printf 'move%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
     "printf 'keep%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \

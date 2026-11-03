@@ -129,7 +129,9 @@ mkinstall() {
   local src="$1" home="$2" a s d; shift 2
   mkdir -p "$src/scripts/lib" "$home"; : > "$src/install.sh"; : > "$src/scripts/lib/common.sh"
   for a in "$@"; do
-    mkdir -p "$src/agents/$a/skills/adopt"; : > "$src/agents/$a/skills/adopt/SKILL.md"
+    # A minimal frontmatter, as every rendered skill has: the workflows rung's map reader refuses an
+    # empty SKILL.md.
+    mkdir -p "$src/agents/$a/skills/adopt"; printf -- '---\nname: adopt\n---\n' > "$src/agents/$a/skills/adopt/SKILL.md"
     while IFS="$TAB" read -r s d; do
       [ -n "$s" ] && [ -n "$d" ] || continue
       [ -e "$s" ] || { mkdir -p "$(dirname "$s")"; : > "$s"; }
@@ -483,9 +485,14 @@ d="$WORK/p-workflows"; mkrepo "$d"; mkdir -p "$d/.claude/skills/implement"; prin
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}todo" "probe: a competing project skill makes the workflows rung todo"
 has "$out" "competes .claude/skills/implement -> implement-issue (owner)" "probe: ...naming the finding, its path and its owner"
-printf '%s\n' "$out" | grep "^workflows$TAB" > "$WORK/wf-rung.tsv"
+# Every OTHER rung green, so the workflows rung alone decides: todo -> 10, and the same set with it
+# ok -> 0 (an isolated row would be 11 either way, and prove nothing about this rung).
+ar contract | cut -f1 | grep -vx workflows | while IFS= read -r r_; do printf '%s\tok\tfixture\n' "$r_"; done > "$WORK/wf-green.tsv"
+{ cat "$WORK/wf-green.tsv"; printf '%s\n' "$out" | grep "^workflows$TAB"; } > "$WORK/wf-rung.tsv"
 ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
-[ "$rc" -ne 0 ] && ok || bad "verdict: a todo workflows rung is never green (rc=$rc)"
+eq "$rc" 10 "verdict: a todo workflows rung beside an otherwise green contract is exactly 10"
+{ cat "$WORK/wf-green.tsv"; printf 'workflows\tok\tfixture\n'; } | ar verdict >/dev/null 2>&1; rc=$?
+eq "$rc" 0 "verdict: ...and the same contract with workflows ok is green (0)"
 # probe's `claude` default belongs to the harness rung: with no --agents, every agent's skill roots
 # are judged, so Codex's .agents/skills is not missed.
 d="$WORK/p-workflows-codex"; mkrepo "$d"; mkdir -p "$d/.agents/skills/implement"; printf 'x\n' > "$d/.agents/skills/implement/SKILL.md"
