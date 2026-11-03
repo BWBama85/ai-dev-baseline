@@ -235,7 +235,10 @@ refused in a workflow source. Their contract lives in `base/practices/00-index.m
 
 ### Step headings are project-override anchors
 
-A skill's `### ` step headings are a stable contract: a project can carry a small
+Per-project overrides are **retired** (`policy:one-baseline`): `/adopt`'s `workflows` rung
+reports an `overrides.md` and the skill it composes, and a new project should never write one.
+The anchor rule below stays only so the projects still carrying an override fail loud rather than
+silently while they migrate. A skill's `### ` step headings are a stable contract: a project can carry a small
 delta on one step (without forking the whole skill) by targeting its heading as an
 **anchor** in a `.claude/skills/<name>/overrides.md`, which `scripts/lib/skill-compose.sh`
 merges onto the installed base skill (issue #22 — see `docs/per-project-overrides.md`).

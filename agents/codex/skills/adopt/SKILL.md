@@ -237,10 +237,16 @@ while IFS="$TABC" read -r kind rel name agent; do
     src="$(awk -F'\t' -v k="$kind" -v n="$name" -v g="$agent" \
              '$1==k && $2==n && $3==g {print $4; exit}' ".codex/state/adopt-shipped.tsv")"
   fi
-  # The record's `workflows` class (step 3), `-` when it has none.
-  wclass="$(awk -F'\t' -v r="$rel" -v g="$agent" '$2==r && $3==g {print $1; exit}' \
+  # The record's `workflows` class (step 3) — `competes` carries its target — and `-` when it has
+  # none. A skill `workflows` did not judge (it exited 11) is `unjudged`, which escalates: an
+  # unread map must never let a legacy skill fall back to the old "project-specific, keep".
+  wclass="$(awk -F'\t' -v r="$rel" -v g="$agent" '$2==r && $3==g {print ($1=="competes" ? $1 ":" $4 : $1); exit}' \
               ".codex/state/adopt-workflows.tsv")"
-  case "$kind:$wclass" in skill:competes|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;; *) wclass=- ;; esac
+  case "$kind:$wclass" in
+    skill:competes:*|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;;
+    skill:*) if [ "$WF_RC" -eq 11 ]; then wclass=unjudged; else wclass=-; fi ;;
+    *) wclass=- ;;
+  esac
   coll=no;  [ -n "$src" ] && coll=yes
   presc=no; bash "$HOME/.codex/scripts/lib/adopt-lib.sh" prescribed "$kind" "$name" >/dev/null 2>&1 && presc=yes
   delta=unknown
@@ -256,10 +262,10 @@ What the four verdicts oblige you to say:
 
 | Verdict | What it means | What you must report |
 |---|---|---|
-| `keep` | a prescribed home, an unmodelled-but-harmless artifact, or the exempt `release` skill | nothing to do — but list it, so "unmentioned" never means "keep" |
-| `remove` | a **byte-identical** copy of a baseline artifact | safe to delete; the global install already provides it |
-| `move` | collides **but differs** | the **parity caveat**: name what the delta does, and where it must land first |
-| `escalate` | the difference could not be established, or the kind is unmodelled | stop and ask (`handling-the-unknown.md` bucket 4) |
+| `keep` | a prescribed home, an artifact the baseline ships nothing of that is not a skill, or the exempt `release` skill | nothing to do — but list it, so "unmentioned" never means "keep" |
+| `remove` | a **byte-identical** copy of a baseline artifact | the install already provides it; a skill is **retired** to `.ai-dev-baseline/retired/<date>/` in a normal PR, never deleted silently |
+| `move` | collides **but differs**; or a project skill the baseline supersedes (the reason names the workflow) or forbids (`policy:one-baseline`); or a retired compose-override | the **parity caveat**: name what it does that the baseline does not, and where that must land first |
+| `escalate` | the difference could not be established, the kind is unmodelled, or `workflows` could not judge the skill | stop and ask (`handling-the-unknown.md` bucket 4) |
 
 **`move` is never `remove`.** The difference between them is the project's forked behavior. A
 project skill — forked, superseded or project-specific — is captured as a baseline issue or as

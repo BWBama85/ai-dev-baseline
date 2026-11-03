@@ -60,10 +60,9 @@ The two forms below are documented for the projects that still carry one until t
 
 ### 2a. Full shadow fork (whole-file replacement)
 
-Drop a complete `.claude/skills/<name>/SKILL.md`. It replaces the global skill
-outright for this repo. Use this only when a project's workflow genuinely
-diverges *wholesale* — a fundamentally different procedure, not a couple of
-extra lines.
+A complete `.claude/skills/<name>/SKILL.md`. On Codex it is listed beside the
+global skill; on Claude, where a personal skill runs over a project one, it
+runs only on a machine without the global install (#540).
 
 The cost is real: **a forked skill is a skill frozen in time.** It stops
 inheriting every later baseline improvement to *every* step, even the 90% the
@@ -558,12 +557,10 @@ The changeset matters for the same reason: without it `[gates.scope]` cannot
 be evaluated and every scoped gate runs unconditionally.
 
 **A repo whose `/implement-issue` needs one extra sign-off line, nothing
-else:** carry just that line in
-`.claude/skills/implement-issue/overrides.md` (Override 2b) and
-`baseline skill-compose compose` — the other steps keep inheriting the
-baseline. Only reach for a full
-`.claude/skills/implement-issue/SKILL.md` shadow fork (Override 2a) when the
-whole procedure diverges.
+else:** that is baseline work, not a project skill (`policy:one-baseline`):
+put a project fact in the repo's root doc or `agents.toml`, or file a
+baseline issue for the missing behaviour. Neither an `overrides.md` nor a
+shadow fork is the answer any more; `/adopt`'s `workflows` rung reports both.
 
 ## See also
 

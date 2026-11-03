@@ -549,6 +549,63 @@ render_procedure() {
   echo "wrote ${pfile#"$root"/}"
 }
 
+# THE SUPERSEDED-NAME MAP (#535). A workflow source may declare, in its frontmatter, the legacy
+# workflow names it replaces: one `# adb:supersedes <name>…` line. Every agent's render carries the
+# line, and `adopt-lib.sh supersedes` reads it back from the installed skills, so the map ships with
+# the release it belongs to. Refused here, before anything is written: a malformed line, a second
+# line in one file, a line outside the frontmatter, `release` (the baseline's own role, never a
+# legacy name), a name that is itself a shipped workflow, and a name two workflows both claim.
+validate_supersedes() {
+  local wf stem line ln infm n tok
+  local -A stems=() claimed=()
+  for wf in "$workflows"/*.md; do
+    stem="$(basename "$wf" .md)"
+    [ "$stem" = README ] || stems["$stem"]=1
+  done
+  for wf in "$workflows"/*.md; do
+    stem="$(basename "$wf" .md)"
+    [ "$stem" = README ] && continue
+    ln=0; infm=0; n=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      ln=$((ln + 1))
+      if [ "$ln" -eq 1 ]; then [ "$line" = "---" ] && infm=1; continue; fi
+      [ "$infm" -eq 1 ] && [ "$line" = "---" ] && { infm=2; continue; }
+      case "$line" in *adb:supersedes*) ;; *) continue ;; esac
+      if [ "$infm" -ne 1 ]; then
+        echo "build.sh: base/workflows/$stem.md:$ln carries adb:supersedes outside its frontmatter — the marker is frontmatter-only" >&2
+        return 3
+      fi
+      if ! printf '%s\n' "$line" | LC_ALL=C grep -Eq '^# adb:supersedes( [a-z0-9][a-z0-9-]*)+$'; then
+        echo "build.sh: base/workflows/$stem.md:$ln has a malformed adb:supersedes line — the shape is '# adb:supersedes <name> [<name>…]', names [a-z0-9-]" >&2
+        return 3
+      fi
+      n=$((n + 1))
+      if [ "$n" -gt 1 ]; then
+        echo "build.sh: base/workflows/$stem.md:$ln is a second adb:supersedes line — declare every name on one line" >&2
+        return 3
+      fi
+      for tok in ${line#"# adb:supersedes "}; do
+        if [ "$tok" = release ]; then
+          echo "build.sh: base/workflows/$stem.md:$ln declares 'release' superseded — release is a role, never a legacy name to map" >&2
+          return 3
+        fi
+        if [ -n "${stems[$tok]:-}" ]; then
+          echo "build.sh: base/workflows/$stem.md:$ln declares '$tok' superseded, but $tok is itself a shipped workflow" >&2
+          return 3
+        fi
+        if [ -n "${claimed[$tok]:-}" ]; then
+          echo "build.sh: base/workflows/$stem.md:$ln declares '$tok' superseded, but ${claimed[$tok]} already claims it — one legacy name maps to one workflow" >&2
+          return 3
+        fi
+        claimed["$tok"]="$stem"
+      done
+    done < "$wf"
+  done
+  return 0
+}
+# Run before the first render below, so a refused marker writes nothing.
+validate_supersedes || exit 3
+
 # Procedures before root docs: a root doc's pointer asks the manifest for the directory, and the
 # manifest only names a generated tree that exists.
 for f in "$practices"/*.md; do
@@ -935,61 +992,6 @@ render_agent_skill() {
   fi
 }
 
-# THE SUPERSEDED-NAME MAP (#535). A workflow source may declare, in its frontmatter, the legacy
-# workflow names it replaces: one `# adb:supersedes <name>…` line. Every agent's render carries the
-# line, and `adopt-lib.sh supersedes` reads it back from the installed skills, so the map ships with
-# the release it belongs to. Refused here, before anything is written: a malformed line, a second
-# line in one file, a line outside the frontmatter, `release` (the baseline's own role, never a
-# legacy name), a name that is itself a shipped workflow, and a name two workflows both claim.
-validate_supersedes() {
-  local wf stem line ln infm n tok
-  local -A stems=() claimed=()
-  for wf in "$workflows"/*.md; do
-    stem="$(basename "$wf" .md)"
-    [ "$stem" = README ] || stems["$stem"]=1
-  done
-  for wf in "$workflows"/*.md; do
-    stem="$(basename "$wf" .md)"
-    [ "$stem" = README ] && continue
-    ln=0; infm=0; n=0
-    while IFS= read -r line || [ -n "$line" ]; do
-      ln=$((ln + 1))
-      if [ "$ln" -eq 1 ]; then [ "$line" = "---" ] && infm=1; continue; fi
-      [ "$infm" -eq 1 ] && [ "$line" = "---" ] && { infm=2; continue; }
-      case "$line" in *adb:supersedes*) ;; *) continue ;; esac
-      if [ "$infm" -ne 1 ]; then
-        echo "build.sh: base/workflows/$stem.md:$ln carries adb:supersedes outside its frontmatter — the marker is frontmatter-only" >&2
-        return 3
-      fi
-      if ! printf '%s\n' "$line" | LC_ALL=C grep -Eq '^# adb:supersedes( [a-z0-9][a-z0-9-]*)+$'; then
-        echo "build.sh: base/workflows/$stem.md:$ln has a malformed adb:supersedes line — the shape is '# adb:supersedes <name> [<name>…]', names [a-z0-9-]" >&2
-        return 3
-      fi
-      n=$((n + 1))
-      if [ "$n" -gt 1 ]; then
-        echo "build.sh: base/workflows/$stem.md:$ln is a second adb:supersedes line — declare every name on one line" >&2
-        return 3
-      fi
-      for tok in ${line#"# adb:supersedes "}; do
-        if [ "$tok" = release ]; then
-          echo "build.sh: base/workflows/$stem.md:$ln declares 'release' superseded — release is a role, never a legacy name to map" >&2
-          return 3
-        fi
-        if [ -n "${stems[$tok]:-}" ]; then
-          echo "build.sh: base/workflows/$stem.md:$ln declares '$tok' superseded, but $tok is itself a shipped workflow" >&2
-          return 3
-        fi
-        if [ -n "${claimed[$tok]:-}" ]; then
-          echo "build.sh: base/workflows/$stem.md:$ln declares '$tok' superseded, but ${claimed[$tok]} already claims it — one legacy name maps to one workflow" >&2
-          return 3
-        fi
-        claimed["$tok"]="$stem"
-      done
-    done < "$wf"
-  done
-  return 0
-}
-validate_supersedes || exit 3
 
 for wf in "$workflows"/*.md; do
   case "$(basename "$wf")" in README.md) continue ;; esac

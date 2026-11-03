@@ -660,7 +660,7 @@ cmd_probe() {
   local wout wrc wfind wsum
   wout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" workflows "$root" ${agents_given:+--agents "$agents"} 2>/dev/null)"; wrc=$?
   wsum="$(printf '%s\n' "$wout" | awk -F'\t' '$1=="summary" {print $6; exit}')"
-  wfind="$(printf '%s\n' "$wout" | awk -F'\t' '$1!="summary" && $1!="exempt" && $1!="unknown" && NF>=5 {printf " %s %s (%s);", $1, $2, $5}')"
+  wfind="$(printf '%s\n' "$wout" | awk -F'\t' '$1!="summary" && $1!="exempt" && $1!="unknown" && NF>=5 {printf " %s %s%s (%s);", $1, $2, ($1=="competes" ? " -> " $4 : ""), $5}')"
   case "$wrc" in
     0)  _ar_emit workflows ok "no competing, same-name or project skill and no prior framework's pin — $wsum" ;;
     10) _ar_emit workflows todo "the project carries skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each to .ai-dev-baseline/retired/<date>/ in a normal PR; $wsum" ;;

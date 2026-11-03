@@ -9,7 +9,26 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ## [Unreleased]
 
+### Added
+
+- **`/adopt` reports which workflow a project runs (#535, first slice).** `adopt-lib.sh workflows`
+  classifies every project skill and prior-framework pin by name and path, never by reading the
+  skill: `competes` (a legacy name such as `implement`, `swarm`, `review`, `pr` or
+  `review-feedback` that a baseline workflow supersedes), `shadows` / `duplicates` (same name as a
+  baseline skill, per agent), `project-specific`, `foreign-pin`, and `exempt` for `release` while
+  the baseline ships none. The completion contract gains a `workflows` rung, so `baseline adopt
+  status` is red on a project that routes its work through a legacy chain. The scan now walks
+  Codex's `.agents/skills` and judges legacy `.claude/commands/<name>.md`. Root-doc pointers,
+  tracked mirrors and user-root entries are the second slice.
+
 ### Changed
+
+- **A project carries no skills of its own (`policy:one-baseline`, D148).** A project skill — a
+  fork, a composed override, a superseded legacy workflow or a project-specific skill — is now a
+  finding: capture what it does as a baseline issue or project config, then retire it to
+  `.ai-dev-baseline/retired/<date>/` in a normal PR. `overrides.md` is no longer a prescribed home,
+  and `/adopt` no longer advises writing one. The docs now state Claude's precedence correctly: a
+  personal skill runs over a same-named project one (#540).
 
 - **A local selfcheck no longer takes the whole machine (#599).** Every run lowers its own
   priority (`nice -n 15`, inherited by every worker; `ADB_SELFCHECK_PRIORITY=normal` opts out). A

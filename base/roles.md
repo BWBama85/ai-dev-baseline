@@ -338,7 +338,7 @@ variable means "not overridden"; the key layers repo → global. `role-dispatch.
 The role model is a **static declaration** (which agent fills each role) plus the async-bot
 allowlist above — deliberately *not* a dynamic orchestration engine. Bespoke per-project patterns
 — dynamic mid-task consult agents, worktree-parallel implement swarms, a hardened per-repo
-agent-CLI wrapper — are **out of scope for the baseline**. They live as **project-scoped skills**
-(the `handling-the-unknown` prescribed home for "a workflow that genuinely diverges"), not as new
-`agents.toml` vocabulary. The baseline gives every project the same resolvable roles and the same
-dispatch helper; it does not try to replace a project's own orchestrator.
+agent-CLI wrapper — are **out of scope for the baseline**, and they do not live as project-scoped
+skills either: a project carries no skills of its own (`policy:one-baseline`), and `/adopt`'s
+`workflows` rung reports one it finds. A need the roles and the dispatch helper do not meet is a
+baseline issue (`handling-the-unknown.md`), never new `agents.toml` vocabulary.

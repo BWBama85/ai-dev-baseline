@@ -482,7 +482,7 @@ mkinstall "$wfinstall" "$wfhome" claude codex
 d="$WORK/p-workflows"; mkrepo "$d"; mkdir -p "$d/.claude/skills/implement"; printf 'x\n' > "$d/.claude/skills/implement/SKILL.md"
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}todo" "probe: a competing project skill makes the workflows rung todo"
-has "$out" "competes .claude/skills/implement (owner)" "probe: ...naming the finding, its path and its owner"
+has "$out" "competes .claude/skills/implement -> implement-issue (owner)" "probe: ...naming the finding, its path and its owner"
 printf '%s\n' "$out" | grep "^workflows$TAB" > "$WORK/wf-rung.tsv"
 ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
 [ "$rc" -ne 0 ] && ok || bad "verdict: a todo workflows rung is never green (rc=$rc)"
@@ -490,7 +490,7 @@ ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
 # are judged, so Codex's .agents/skills is not missed.
 d="$WORK/p-workflows-codex"; mkrepo "$d"; mkdir -p "$d/.agents/skills/implement"; printf 'x\n' > "$d/.agents/skills/implement/SKILL.md"
 out="$( HOME="$wfhome" ar probe "$d" 2>/dev/null )"
-has "$out" "competes .agents/skills/implement (owner)" "probe: with no --agents, the workflows rung judges Codex's .agents/skills too"
+has "$out" "competes .agents/skills/implement -> implement-issue (owner)" "probe: with no --agents, the workflows rung judges Codex's .agents/skills too"
 d="$WORK/p-workflows-ok"; mkrepo "$d"; mkdir -p "$d/.claude/skills/release"; printf 'x\n' > "$d/.claude/skills/release/SKILL.md"
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}ok" "probe: only the exempt release skill -> workflows ok"

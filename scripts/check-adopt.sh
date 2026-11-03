@@ -135,12 +135,18 @@ has   "$(reason other)"   "handling-the-unknown"  "an unmodelled kind's move say
 
 # THE FIFTH ARGUMENT, the record's `workflows` class (#535). It changes only the no-collision skill
 # arm: under policy:one-baseline a project skill is `move`, never "project-specific, keep".
-eq "$(verdict skill no unknown no competes)"         move "a competing skill (no collision) -> move"
+eq "$(verdict skill no unknown no competes:implement-issue)" move "a competing skill (no collision) -> move"
+has "$(bash "$AD" classify skill no unknown no competes:implement-issue | cut -f2)" "implement-issue" \
+    "a competing skill's move names the workflow that replaces it"
+eq "$(bash "$AD" classify skill no unknown no competes: >/dev/null 2>&1; echo $?)" 2 "competes with no target exits 2"
+eq "$(verdict skill no unknown no unjudged)"  escalate "a skill workflows could not judge -> escalate, never keep"
+has "$(bash "$AD" classify skill yes same no shadows | cut -f2)" "retire" "a byte-identical skill's remove says retire, not delete"
 eq "$(verdict skill no unknown no project-specific)" move "a project-specific skill -> move, not keep"
 eq "$(verdict skill no unknown no exempt)"           keep "the exempt release skill -> keep"
 eq "$(verdict skill no unknown no -)"                keep "no workflows class -> the old no-collision keep"
 eq "$(verdict skill yes same no shadows)"          remove "a byte-identical same-name skill is still remove"
 eq "$(bash "$AD" classify skill no unknown no bogus >/dev/null 2>&1; echo $?)" 2 "an unknown workflows class exits 2"
+eq "$(bash "$AD" classify skill no unknown no competes >/dev/null 2>&1; echo $?)" 2 "a bare competes (no target) exits 2"
 
 # --- 1b. classify: every rejectable argument is observed being REJECTED --------------------------
 # The enum is closed, so the harness injects each invalid form rather than spot-checking one. A
@@ -556,6 +562,38 @@ eq "$(bash "$AD" supersedes "$ROOT" | awk -F"$TAB" '$1=="implement"{print $2}')"
 eq "$(bash "$AD" supersedes "$ROOT" | awk -F"$TAB" '$1=="review-feedback"{print $2}')" resolve-pr-threads "supersedes: review-feedback -> resolve-pr-threads"
 hasnt "$(bash "$AD" supersedes "$ROOT")" "release" "supersedes: release is never mapped"
 
+# A LEGACY CLAUDE COMMAND runs as /<name>, so it is judged by name like a skill; a nested one is not.
+mkdir -p "$WFX/.claude/commands/sub"; printf 'x\n' > "$WFX/.claude/commands/pr.md"; printf 'x\n' > "$WFX/.claude/commands/sub/deep.md"
+wfo3="$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")"
+has "$wfo3" "competes${TAB}.claude/commands/pr.md${TAB}claude${TAB}implement-issue" "workflows: a legacy .claude/commands/pr.md competes"
+hasnt "$wfo3" "commands/sub/deep.md" "workflows: a nested command file is not judged as a skill"
+rm -rf "$WFX/.claude/commands"
+# A DANGLING personal link proves nothing about what runs: shadows, never duplicates.
+rm -f "$WFX/home/.claude/skills/cleanup"; ln -s "$ROOT/agents/claude/skills/no-such-skill" "$WFX/home/.claude/skills/cleanup"
+has "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")" \
+    "shadows${TAB}.claude/skills/cleanup${TAB}claude" "workflows: a dangling personal link is not proof the baseline copy runs"
+rm -f "$WFX/home/.claude/skills/cleanup"
+# AN UNREADABLE SKILL ROOT IS NOT AN EMPTY ONE: exit 11, never a clean 0.
+URX="$WORK/wf-unreadable"; mkdir -p "$URX/.claude/skills/implement"; printf 'x\n' > "$URX/.claude/skills/implement/SKILL.md"
+chmod 000 "$URX/.claude/skills"
+if [ -r "$URX/.claude/skills" ]; then
+  check_note "SKIP: this user can read a mode-000 directory (root?); the unreadable-root case is unexercised"
+else
+  eq "$(HOME="$WFX/home" bash "$AD" workflows "$URX" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unreadable skill root exits 11, never 0"
+fi
+chmod 755 "$URX/.claude/skills"
+# A PROJECT FILE INSIDE A PINNED BASELINE SKILL: the receipt owns SKILL.md, not the helper beside it.
+PNX="$WORK/wf-pinned"; mkdir -p "$PNX/.ai-dev-baseline" "$PNX/.claude/skills/cleanup"
+cp "$ROOT/agents/claude/skills/cleanup/SKILL.md" "$PNX/.claude/skills/cleanup/SKILL.md"
+printf '#!/bin/sh\n' > "$PNX/.claude/skills/cleanup/custom.sh"
+printf '[upstream]\nmode = "pinned"\n' > "$PNX/.ai-dev-baseline/upstream.toml"
+printf '%s  %s\n' "$(adb_sha256 "$PNX/.claude/skills/cleanup/SKILL.md")" .claude/skills/cleanup/SKILL.md > "$PNX/.ai-dev-baseline/pinned-files.sha256"
+pno="$(HOME="$WFX/home" bash "$AD" workflows "$PNX" --agents claude --baseline "$ROOT")"; pnrc=$?
+hasnt "$pno" "${TAB}.claude/skills/cleanup${TAB}" "workflows: a receipt-owned pinned skill is not itself reported"
+has "$pno" "project-specific${TAB}.claude/skills/cleanup/custom.sh" "workflows: a project file inside a pinned skill is a finding"
+eq "$pnrc" 10 "workflows: ...so the pinned project is not clean"
+
 # THE SCAN: every skill root, and one record per path.
 wscan="$(bash "$AD" scan "$WFX" --agents claude,codex)"
 has "$wscan" "skill${TAB}.agents/skills/cleanup${TAB}cleanup${TAB}codex" "scan walks Codex's .agents/skills root"
@@ -594,11 +632,38 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   done
   eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" | awk -F"$TAB" '$1=="fix-bug"{print $2}')" debug \
      "supersedes reads the newly rendered row back"
+  # THE READ SIDE HOLDS THE BUILD'S RULES: every agent's render carries the same doctored line, so
+  # each refusal below is the grammar's, not the cross-agent comparison's.
+  put_marker() {  # <frontmatter-line(s), \n-separated>
+    local a_ f_
+    for a_ in claude codex gemini; do
+      f_="$BFX/agents/$a_/skills/debug/SKILL.md"
+      # awk -v turns the `\n` into a newline, so a two-line argument prints as two lines.
+      awk -v l="$1" 'NR==1{print; next} /^# adb:supersedes/{next} !done && $0=="---"{print l; done=1} {print}' "$f_" > "$f_.new" && mv "$f_.new" "$f_"
+    done
+  }
+  for bad_ in '# adb:supersedes release' '# adb:supersedes cleanup' '# adb:supersedes' '# adb:supersedes fix-bug\n# adb:supersedes old-debug'; do
+    put_marker "$bad_"
+    eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 \
+       "supersedes refuses an installed marker the build would refuse [$bad_]"
+  done
+  put_marker '# adb:supersedes fix-bug'
+  # A sort that fails is not an empty map.
+  SORTSTUB="$WORK/sortstub"; mkdir -p "$SORTSTUB"; printf '#!/bin/sh\nexit 1\n' > "$SORTSTUB/sort"; chmod +x "$SORTSTUB/sort"
+  has "$(PATH="$SORTSTUB:$PATH" bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" 2>&1 >/dev/null)" "could not sort the map" \
+      "supersedes: a failed sort is a refusal, never an empty map"
   # One agent's render losing the line is refused, never read as "supersedes nothing" there.
   grep -v '^# adb:supersedes ' "$BFX/agents/codex/skills/debug/SKILL.md" > "$WORK/debug-codex.md"
   cp "$WORK/debug-codex.md" "$BFX/agents/codex/skills/debug/SKILL.md"
   eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 \
      "supersedes refuses (2) when one agent's render lacks a skill's adb:supersedes line"
+  # A baseline whose skills directory cannot be listed still ships root docs: not a clean 0.
+  chmod 000 "$BFX/agents/codex/skills"
+  if [ ! -r "$BFX/agents/codex/skills" ]; then
+    eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude,codex --baseline "$BFX" >/dev/null 2>&1; echo $?)" 11 \
+       "workflows: a baseline whose codex skills cannot be listed exits 11"
+  fi
+  chmod 755 "$BFX/agents/codex/skills"
 else
   bad "could not copy the tree for the build-time map rules"
 fi
@@ -1758,6 +1823,22 @@ shmutant_mut workflows-unread-baseline-judged \
     '  if [ -n "$why" ]; then' \
     '  if false; then' \
     'an unreadable shipped set exits 11'
+shmutant_mut workflows-dangling-link-trusted \
+    '         && [ -f "$HOME/.claude/skills/$name/SKILL.md" ]' \
+    '         && true' \
+    'a dangling personal link is not proof the baseline copy runs'
+shmutant_mut classify-unjudged-kept \
+    '  if [ "$kind" = skill ] && [ "$wclass" = unjudged ]; then' \
+    '  if false; then' \
+    'a skill workflows could not judge -> escalate'
+shmutant_mut supersedes-read-grammar-unchecked \
+    '    if [ -n "$line" ] && ! printf' \
+    '    if false && ! printf' \
+    'supersedes refuses an installed marker the build would refuse [# adb:supersedes]'
+shmutant_mut workflows-pinned-helper-ignored \
+    '            [ -n "$inroot" ] || continue' \
+    '            continue' \
+    'a project file inside a pinned skill is a finding'
 shmutant_mut classify-project-skill-kept \
     "printf 'move%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
     "printf 'keep%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
