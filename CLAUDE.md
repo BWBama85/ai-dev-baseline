@@ -84,7 +84,8 @@ those. The rules below are specific to this repo's code.
      …)`), as CI's per-PR jobs do. `--mutation` lifts the hold-back and applies the gate below;
      naming a harness in `--only`, or `ADB_MUTATION_RUN_ALL=1`, runs it too. One run's harnesses at
      a time per user and cache home: a kernel `flock` under `${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/`,
-     held while the run or any process it started lives, so a dead run's surviving workers keep it.
+     held while any process holding the run's descriptor lives (the runner, every step and worker),
+     so a dead run's surviving workers keep it; a lock that cannot be used at all runs them anyway.
      A second run finds it held and loses its harnesses (`locked out (…)`, naming the holder), never
      its other steps. A direct `check-*.sh --mutation` takes no lock.
      Every run lowers its own priority (`nice -n 15`, inherited by every worker; the header says

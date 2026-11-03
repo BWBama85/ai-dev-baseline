@@ -1032,8 +1032,9 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
 
   One mutation run at a time (#599), per user and cache home: the harnesses a run dispatches run
   under a lock at ${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/selfcheck-mutation.lock, held while
-  the run or any process it started lives. A run that finds it held runs everything else, locks its
-  harnesses out and names the holder. A direct `bash scripts/check-*.sh --mutation` takes no lock.
+  the runner or any step or worker it started lives. A run that finds it held runs everything else,
+  locks its harnesses out and names the holder; a lock that cannot be used at all runs them with a
+  WARN. A direct `bash scripts/check-*.sh --mutation` takes no lock.
 
   Priority (#599): a run lowers its own priority (POSIX `nice -n 15`, inherited by every step and
   pool worker) and says so in its header. ADB_SELFCHECK_PRIORITY=normal runs it at the caller's
@@ -2328,20 +2329,25 @@ fi
 # before anything is recorded, by re-executing under POSIX `nice -n`, which every step and pool
 # worker inherits. The guard is this pid, which exec keeps, so a nested run lowers itself again, up
 # to the platform's ceiling.
-case "${ADB_SELFCHECK_PRIORITY:-low}" in
+case "${ADB_SELFCHECK_PRIORITY-low}" in
   low)
     if [ "${_ADB_SELFCHECK_LOWERED:-}" != "$$" ] && command -v nice >/dev/null 2>&1; then
       export _ADB_SELFCHECK_LOWERED="$$"
+      _ADB_SELFCHECK_PRENICE="$(ps -o nice= -p "$$" 2>/dev/null | tr -d ' ')" || _ADB_SELFCHECK_PRENICE=""
+      export _ADB_SELFCHECK_PRENICE
       exec nice -n 15 "$BASH" "$SELF" "${ORIG_ARGS[@]}"
     fi
     _nice="$(ps -o nice= -p "$$" 2>/dev/null | tr -d ' ')" || _nice=""
-    if [ "${_ADB_SELFCHECK_LOWERED:-}" = "$$" ]; then
-      printf 'selfcheck: priority low (nice %s; ADB_SELFCHECK_PRIORITY=normal keeps the caller'"'"'s)\n' "${_nice:-unknown}"
-    else
+    if [ "${_ADB_SELFCHECK_LOWERED:-}" != "$$" ]; then
       printf 'selfcheck: WARN — priority low was asked for, but there is no nice command; running at the caller'"'"'s priority\n'
+    elif [ -n "$_nice" ] && [ -n "${_ADB_SELFCHECK_PRENICE:-}" ] && [ "$_nice" -le "$_ADB_SELFCHECK_PRENICE" ] \
+         && [ "$_nice" -lt "$(nice -n 40 sh -c 'ps -o nice= -p $$' 2>/dev/null | tr -d ' ' || echo 20)" ]; then
+      printf 'selfcheck: WARN — priority low was asked for, but nice did not lower it (still %s)\n' "$_nice"
+    else
+      printf 'selfcheck: priority low (nice %s; ADB_SELFCHECK_PRIORITY=normal keeps the caller'"'"'s)\n' "${_nice:-unknown}"
     fi ;;
   normal) printf 'selfcheck: priority normal (ADB_SELFCHECK_PRIORITY=normal)\n' ;;
-  *) echo "selfcheck: ADB_SELFCHECK_PRIORITY must be low or normal, got '${ADB_SELFCHECK_PRIORITY}'" >&2; exit 2 ;;
+  *) echo "selfcheck: ADB_SELFCHECK_PRIORITY must be low or normal, got '${ADB_SELFCHECK_PRIORITY-}'" >&2; exit 2 ;;
 esac
 
 [ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
@@ -3053,18 +3059,21 @@ fi
 
 # =================================== the machine lock (#599) ===================================
 # One run's mutation harnesses at a time per user and cache home (D147). A held lock costs this run
-# its harnesses, never its other steps, and names the holder. The lock is a kernel flock on a
-# descriptor this runner opens and every step inherits: it is held while the runner or anything it
-# started lives, so a dead runner's surviving workers keep it, and the kernel drops it with the last
-# of them. The file's text only names the holder.
+# its harnesses, never its other steps, and names the holder; a lock that cannot be used at all
+# costs exclusion, never coverage, and says so. The lock is a kernel flock on a descriptor this
+# runner opens and every step inherits: it is held while any process holding that descriptor lives
+# (the runner, every step and worker, but not its own ticker), so a dead runner's surviving workers
+# keep it, and the kernel drops it with the last of them. The file's text only names the holder.
 declare -a LOCKED_OUT=()
-MLOCK_FILE="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}/ai-dev-baseline/selfcheck-mutation.lock"
+# A relative XDG_CACHE_HOME is invalid by the basedir spec and would differ per checkout.
+case "${XDG_CACHE_HOME:-}" in /*) _cache="$XDG_CACHE_HOME" ;; *) _cache="${HOME:-/root}/.cache" ;; esac
+MLOCK_FILE="$_cache/ai-dev-baseline/selfcheck-mutation.lock"
 MLOCK_FD="" MLOCK_WHY=""
 # _mlock_try <fd> — flock(2) LOCK_EX|LOCK_NB on <fd>: 0 taken · 1 held by another · else unavailable.
 _mlock_try() {
   if command -v flock >/dev/null 2>&1; then flock -n "$1"; return $?; fi
   command -v perl >/dev/null 2>&1 || return 2
-  perl -MFcntl=:flock -e 'open(my $h, ">>&=", $ARGV[0]) or exit 2; flock($h, LOCK_EX|LOCK_NB) or exit 1; exit 0' "$1"
+  perl -MFcntl=:flock -MErrno -e 'open(my $h, ">>&=", $ARGV[0]) or exit 2; flock($h, LOCK_EX|LOCK_NB) and exit 0; exit($!{EWOULDBLOCK} ? 1 : 2)' "$1"
 }
 # _tick — the overrun ticker's sleep. It is the runner's helper, not its work, so it gives up the
 # lock descriptor first: a ticker outliving a KILLed runner must not hold the lock.
@@ -3074,14 +3083,14 @@ _tick() {
 }
 _mlock_take() {
   local parent="${MLOCK_FILE%/*}" rc um text hpid hroot
-  (umask 077; mkdir -p "$parent") 2>/dev/null || { MLOCK_WHY="unavailable: $parent could not be created"; return 1; }
+  (umask 077; mkdir -p "$parent") 2>/dev/null || { MLOCK_WHY="unavailable: $parent could not be created"; return 2; }
   if [ -L "$MLOCK_FILE" ] || { [ -e "$MLOCK_FILE" ] && [ ! -f "$MLOCK_FILE" ]; }; then
-    MLOCK_WHY="unavailable: $MLOCK_FILE is not a regular file"; return 1
+    MLOCK_WHY="unavailable: $MLOCK_FILE is not a regular file"; return 2
   fi
   um="$(umask)"; umask 077
   { exec {MLOCK_FD}>>"$MLOCK_FILE"; } 2>/dev/null; rc=$?
   umask "$um"
-  [ "$rc" -eq 0 ] || { MLOCK_FD=""; MLOCK_WHY="unavailable: $MLOCK_FILE could not be opened"; return 1; }
+  [ "$rc" -eq 0 ] || { MLOCK_FD=""; MLOCK_WHY="unavailable: $MLOCK_FILE could not be opened"; return 2; }
   _mlock_try "$MLOCK_FD"; rc=$?
   case "$rc" in
     0) printf 'pid %s\nroot %s\n' "$$" "$RUN_ROOT" > "$MLOCK_FILE" 2>/dev/null \
@@ -3093,19 +3102,24 @@ _mlock_take() {
        hroot="$(printf '%s\n' "$text" | awk '$1=="root" {sub(/^root /,""); print; exit}')"
        case "$hpid" in ''|*[!0-9]*) MLOCK_WHY="held by a run this lock does not name" ;;
          *) if adb_pid_gone "$hpid"; then
-              MLOCK_WHY="held by processes the exited run pid $hpid started in ${hroot:-an unnamed checkout} (\`bash scripts/selfcheck.sh --stop\` there sweeps them)"
+              MLOCK_WHY="held by processes the exited run pid $hpid started in ${hroot:-an unnamed checkout} (as last recorded; \`bash scripts/selfcheck.sh --stop\` there sweeps them)"
             else
-              MLOCK_WHY="held by pid $hpid in ${hroot:-an unnamed checkout}"
+              MLOCK_WHY="held by pid $hpid in ${hroot:-an unnamed checkout} (as last recorded)"
             fi ;;
        esac ;;
     *) MLOCK_WHY="unavailable: neither flock nor perl could lock $MLOCK_FILE" ;;
   esac
   exec {MLOCK_FD}>&-; MLOCK_FD=""
+  case "$MLOCK_WHY" in unavailable:*) return 2 ;; esac
   return 1
 }
 _any_harness=0
 for _s in "${SELECTED[@]}"; do [ -z "${STEP_INPUTS[$_s]+x}" ] || _any_harness=1; done
-if [ "$_any_harness" -eq 1 ] && ! _mlock_take; then
+_mlock_rc=0
+[ "$_any_harness" -eq 0 ] || { _mlock_take; _mlock_rc=$?; }
+if [ "$_mlock_rc" -eq 2 ]; then
+  printf 'selfcheck: WARN — the machine lock is %s; the harnesses run without it\n' "$MLOCK_WHY"
+elif [ "$_mlock_rc" -ne 0 ]; then
   declare -a _free=()
   for _s in "${SELECTED[@]}"; do
     if [ -n "${STEP_INPUTS[$_s]+x}" ]; then LOCKED_OUT+=("$_s"); else _free+=("$_s"); fi
