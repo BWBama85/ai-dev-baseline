@@ -90,9 +90,10 @@ touches, and since #441 that is a **gate**: each `*-mutation` step declares the 
 depends on (`--list`, fifth field), and the runner dispatches it only when your change, working
 tree and untracked files included, touches one of them against the merge-base with `origin/main`. Held-back steps are named
 before the run and in the `result` block (`gated (inputs unchanged): …`), with the base and inputs
-each was compared on. A second run that finds another run's harnesses holding the machine lock
-runs everything else and names the holder, and every run lowers its own priority so the rest of
-the machine stays responsive (`ADB_SELFCHECK_PRIORITY=normal` opts out).
+each was compared on. Under one user and cache home, a run whose harnesses would overlap another
+run's (still running, or the leftovers of one that died) runs everything else and names the
+holder. Every run lowers its own priority so the rest of the machine stays responsive
+(`ADB_SELFCHECK_PRIORITY=normal` opts out).
 `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the whole registry,
 every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
 the step. The decision is `scripts/mutation-gate.sh`'s (CI no longer asks it: since #456 no harness
@@ -105,7 +106,7 @@ and the same fail-closed rules apply, and the nightly runs every row regardless 
 that turns out to be too narrow is caught by the next scheduled or on-demand run that happens,
 with no guaranteed bound, since a schedule can be delayed or dropped.
 
-Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs everything
+Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs every selected step
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
 care about (`--list` prints every name; an unknown name is an error rather than a quiet no-op).
@@ -133,8 +134,8 @@ run in `.github/workflows/mutation-nightly.yml` — daily against `main`, by `wo
 job summary states the last scheduled run's verdict and age. **If your change edits a guard or a
 library a harness mutates, run that harness on demand** (`bash scripts/mutation-gate.sh touched`
 names them; `gh workflow run mutation-nightly.yml --ref <branch> -f step=<name>`) and link the run
-in the PR: the PR's own CI no longer will. Your local run is unaffected in *coverage* — a plain
-`bash scripts/selfcheck.sh` still selects the whole registry, then applies the gate above.
+in the PR: the PR's own CI no longer will. Locally, `bash scripts/selfcheck.sh --mutation` runs
+the harnesses your change touches; a plain run holds them all back (#599).
 `check-mutation-gate.sh` pins the wiring, and the nightly's matrix is the registry by construction.
 
 **The whole-suite pool is the vendored [shmutant](https://github.com/BWBama85/shmutant)** (#519,

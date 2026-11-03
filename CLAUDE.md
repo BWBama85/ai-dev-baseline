@@ -82,10 +82,11 @@ those. The rules below are specific to this repo's code.
    - **Mutation harnesses run locally only on request** (#599, D147) — a plain run HOLDS every
      `*-mutation` step back, named before the run and in the `result` block (`held (not requested;
      …)`), as CI's per-PR jobs do. `--mutation` lifts the hold-back and applies the gate below;
-     naming a harness in `--only`, or `ADB_MUTATION_RUN_ALL=1`, runs it too. One machine runs one
-     run's harnesses at a time: a lock under `${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/` that a
-     second run finds held costs it its harnesses (`locked out (…)`, naming the holder), never its
-     other steps; a cancelled holder keeps it until `--stop` in its checkout has swept its workers.
+     naming a harness in `--only`, or `ADB_MUTATION_RUN_ALL=1`, runs it too. One run's harnesses at
+     a time per user and cache home: a kernel `flock` under `${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/`,
+     held while the run or any process it started lives, so a dead run's surviving workers keep it.
+     A second run finds it held and loses its harnesses (`locked out (…)`, naming the holder), never
+     its other steps. A direct `check-*.sh --mutation` takes no lock.
      Every run lowers its own priority (`nice -n 15`, inherited by every worker; the header says
      which) — `ADB_SELFCHECK_PRIORITY=normal` keeps the caller's.
    - **The mutation gate** (#441, D91) — a `*-mutation` step declares the paths its verdict depends

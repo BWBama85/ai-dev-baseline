@@ -515,21 +515,12 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "holdback-dropped" \
     '    if [ -n "${STEP_INPUTS[$_s]+x}" ] && { [ "$ONLY_GIVEN" -eq 0 ] || [ -z "${_want[$_s]+x}" ]; }; then' '    if false; then' \
     'hold-back: a plain run never EXECUTES a mutation harness'
+  shmutant_mut "lock-held-taken" \
+    "    0) printf 'pid %s" "    0|1) printf 'pid %s" \
+    'lock: a second run never EXECUTES a harness while another run holds the lock'
   shmutant_mut "lock-ignored" \
     'if [ "$_any_harness" -eq 1 ] && ! _mlock_take; then' 'if false; then' \
     'lock: a second run never EXECUTES a harness while another run holds the lock'
-  shmutant_mut "lock-dead-pid-enough" \
-    '    if [ -e "$root/$RUN_RECORD.incomplete" ] || grep -qx "pid $pid" "$root/$RUN_RECORD" 2>/dev/null; then' '    if false; then' \
-    'lock: a dead holder whose checkout still records its run keeps the lock'
-  shmutant_mut "lock-reused-pid-trusted" \
-    '    [ "$now" != "$start" ] || {' '    false || {' \
-    'lock: a pid now held by a later process is not the holder'
-  shmutant_mut "lock-start-ignored" \
-    '    [ "$now" != "$start" ] || {' '    true || {' \
-    'lock: a live holder with its recorded start time keeps the lock'
-  shmutant_mut "lock-not-released" \
-    '{ _rec_drop; _mlock_release; }' '{ _rec_drop; }' \
-    "lock: the holder's clean exit did not release the lock"
   # …and the record's one writer, in common.sh: an append to a record that has gone must fail, never
   # recreate it — which is what makes a late registration mark the record rather than restart it.
   shmutant_target scripts/lib/common.sh
@@ -635,6 +626,11 @@ printf '%s\n' "+$name" >> "$ctl/events"
 if [ -f "$ctl/$name.nice" ]; then
   ps -o nice= -p $$ 2>/dev/null | tr -d ' ' > "$ctl/$name.nice.step"
   bash -c 'ps -o nice= -p $$ 2>/dev/null | tr -d " "' > "$ctl/$name.nice.nested"
+fi
+# `$name.hold` (#599): stay running until the case writes `$name.release` (bounded at 120s), so a
+# case decides when this step ends instead of racing a sleep.
+if [ -f "$ctl/$name.hold" ]; then
+  _h=0; while [ ! -e "$ctl/$name.release" ] && [ "$_h" -lt 1200 ]; do sleep 0.1; _h=$((_h + 1)); done
 fi
 i=1
 while [ "$i" -le "$lines" ]; do printf '%s-line-%s\n' "$name" "$i"; i=$((i + 1)); done
@@ -1286,12 +1282,18 @@ OUT="$(ADB_SELFCHECK_PRIORITY=high ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/se
 eq "$RC_" "2" "priority: an unknown ADB_SELFCHECK_PRIORITY is an error, never a default"
 
 # THE MACHINE LOCK. A second checkout's run, while the first holds the lock, runs its other steps
-# and locks its harness out, naming the holder; the holder's clean exit releases the lock.
+# and locks its harness out, naming the holder. A holder KILLed while its harness still runs keeps
+# the lock through that worker; the lock is free once the last of them is gone.
 MLOCK="$XDG_CACHE_HOME/ai-dev-baseline/selfcheck-mutation.lock"
+# lock_free — can another process take the lock now? Asked the way the runner asks.
+lock_free() {
+  bash -c 'exec {f}>>"$1"; if command -v flock >/dev/null 2>&1; then flock -n "$f"; else perl -MFcntl=:flock -e '"'"'open(my $h, ">>&=", $ARGV[0]) or exit 2; flock($h, LOCK_EX|LOCK_NB) or exit 1; exit 0'"'"' "$f"; fi' _ "$MLOCK"
+}
+wait_event() { local _w; for _w in $(seq 200); do grep -q "^+$2\$" "$1/ctl/events" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
 FXH="$work/fxh"; rm -rf "$FXH"; cp -R "$FXG" "$FXH"
-reset_ctl "$FXG"; printf '6\n' > "$FXG/ctl/gatedstep.sleep"
+reset_ctl "$FXG"; : > "$FXG/ctl/gatedstep.hold"
 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
-for _ in $(seq 100); do grep -q '^+gatedstep$' "$FXG/ctl/events" 2>/dev/null && break; sleep 0.1; done
+wait_event "$FXG" gatedstep || bad "lock: the holder's harness never started"
 reset_ctl "$FXH"
 OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
 yes "$RC_" "lock: a run locked out of its harnesses still passes"
@@ -1299,39 +1301,26 @@ eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a second run never E
 eq "$(grep -c '^+claims$' "$FXH/ctl/events")" "1" "lock: …and still runs its other steps"
 has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is held by pid $holder_run in " "lock: the locked-out run names the holder"
 has "$OUT" "locked out (machine lock held by pid $holder_run in " "lock: …and names it again in the result block"
+: > "$FXG/ctl/gatedstep.release"
 wait "$holder_run"; yes "$?" "lock: the holder's own run passes"
-if [ ! -e "$MLOCK" ]; then ok; else bad "lock: the holder's clean exit did not release the lock"; fi
+lock_free; yes "$?" "lock: the holder's clean exit releases the lock"
 
-# A dead holder that left nothing recorded does not block; one whose checkout still records it does,
-# and names `--stop`; a live pid with another start time is not the holder.
-( exit 0 ) & dead_pid=$!; wait "$dead_pid"
-fake_lock() {
-  mkdir -p "$MLOCK"; printf '%s %s\n' "$1" "$(( EPOCHSECONDS - 60 ))" > "$MLOCK/owner"
-  printf 'pid %s\nstart %s\nroot %s\n' "$1" "$2" "$3" > "$MLOCK/holder"
-}
-mkdir -p "$work/deadroot"
-fake_lock "$dead_pid" "Mon Jan  1 00:00:00 2001" "$work/deadroot"
-printf 'adb-selfcheck-run 1\npid %s\n' "$dead_pid" > "$work/deadroot/.selfcheck-run"
+# KILLed mid-harness: the runner is gone, its worker is not, and the lock stays with the worker.
+reset_ctl "$FXG"; : > "$FXG/ctl/gatedstep.hold"
+ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
+wait_event "$FXG" gatedstep || bad "lock: the killed holder's harness never started"
+kill -KILL "$holder_run" 2>/dev/null; wait "$holder_run" 2>/dev/null
 reset_ctl "$FXH"
 OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
-eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a dead holder whose checkout still records its run keeps the lock"
-has "$OUT" "held by a run that ended without cleaning up in $work/deadroot" "lock: …and the run says where to run --stop"
-rm -f "$work/deadroot/.selfcheck-run"
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a KILLed holder whose harness still runs keeps the lock"
+has "$OUT" "held by processes the exited run pid $holder_run started in " "lock: …and the run says the holder exited and where to sweep"
+: > "$FXG/ctl/gatedstep.release"
+for _ in $(seq 100); do lock_free && break; sleep 0.1; done
+lock_free; yes "$?" "lock: the lock is free once the last of a dead holder's workers has gone"
 reset_ctl "$FXH"
 OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
-eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: a dead holder that left no record does not block the next run"
-if [ ! -e "$MLOCK" ]; then ok; else bad "lock: a run that took over a stale lock did not release it"; fi
-sleep 30 & live_other=$!
-fake_lock "$live_other" "Mon Jan  1 00:00:00 2001" "$work/deadroot"
-reset_ctl "$FXH"
-OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
-eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: a pid now held by a later process is not the holder"
-fake_lock "$live_other" "$(LC_ALL=C ps -o lstart= -p "$live_other" | tr -s ' ' | sed 's/^ //; s/ $//')" "$work/deadroot"
-reset_ctl "$FXH"
-OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
-eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a live holder with its recorded start time keeps the lock"
-kill "$live_other" 2>/dev/null; wait "$live_other" 2>/dev/null
-rm -rf "$MLOCK"
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: a dead holder that left nothing running does not block the next run"
+rm -f "$MLOCK"
 check_git "$FXG" checkout -q -- scripts/gated-input.txt
 
 # ============================== 8c. --summarize ===============================================

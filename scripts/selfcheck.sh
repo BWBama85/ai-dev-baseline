@@ -1030,10 +1030,10 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
   base. The decision is scripts/mutation-gate.sh's, and a gate that cannot decide fails CLOSED:
   the step runs, and the line says why.
 
-  One machine, one mutation run (#599): the harnesses a run dispatches run under a lock at
-  ${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/selfcheck-mutation.lock. A run that finds it held
-  runs everything else and holds its harnesses back, naming the holder. A clean exit releases it;
-  a cancelled run keeps it until `--stop` in that run's checkout has swept what the run left.
+  One mutation run at a time (#599), per user and cache home: the harnesses a run dispatches run
+  under a lock at ${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/selfcheck-mutation.lock, held while
+  the run or any process it started lives. A run that finds it held runs everything else, locks its
+  harnesses out and names the holder. A direct `bash scripts/check-*.sh --mutation` takes no lock.
 
   Priority (#599): a run lowers its own priority (POSIX `nice -n 15`, inherited by every step and
   pool worker) and says so in its header. ADB_SELFCHECK_PRIORITY=normal runs it at the caller's
@@ -2324,12 +2324,10 @@ if [ "$STOP" -eq 1 ]; then
   exit $?
 fi
 
-# BACKGROUND PRIORITY (#599). A run takes every core it can get, so interactive work elsewhere on
-# the machine waits behind it. Lowered after the terminal modes (`--stop` must stay prompt) and
+# BACKGROUND PRIORITY (#599, D147). Lowered after the terminal modes (`--stop` must stay prompt) and
 # before anything is recorded, by re-executing under POSIX `nice -n`, which every step and pool
-# worker inherits. Not `renice`: util-linux reads `-n` as absolute and BSD as relative. Not macOS
-# `taskpolicy -b`: it confines the run to efficiency cores even on an idle machine (D147).
-# The guard is this pid, which exec keeps, so a nested run lowers itself again (clamped at 19).
+# worker inherits. The guard is this pid, which exec keeps, so a nested run lowers itself again, up
+# to the platform's ceiling.
 case "${ADB_SELFCHECK_PRIORITY:-low}" in
   low)
     if [ "${_ADB_SELFCHECK_LOWERED:-}" != "$$" ] && command -v nice >/dev/null 2>&1; then
@@ -2337,7 +2335,11 @@ case "${ADB_SELFCHECK_PRIORITY:-low}" in
       exec nice -n 15 "$BASH" "$SELF" "${ORIG_ARGS[@]}"
     fi
     _nice="$(ps -o nice= -p "$$" 2>/dev/null | tr -d ' ')" || _nice=""
-    printf 'selfcheck: priority low (nice %s; ADB_SELFCHECK_PRIORITY=normal keeps the caller'"'"'s)\n' "${_nice:-unknown}" ;;
+    if [ "${_ADB_SELFCHECK_LOWERED:-}" = "$$" ]; then
+      printf 'selfcheck: priority low (nice %s; ADB_SELFCHECK_PRIORITY=normal keeps the caller'"'"'s)\n' "${_nice:-unknown}"
+    else
+      printf 'selfcheck: WARN — priority low was asked for, but there is no nice command; running at the caller'"'"'s priority\n'
+    fi ;;
   normal) printf 'selfcheck: priority normal (ADB_SELFCHECK_PRIORITY=normal)\n' ;;
   *) echo "selfcheck: ADB_SELFCHECK_PRIORITY must be low or normal, got '${ADB_SELFCHECK_PRIORITY}'" >&2; exit 2 ;;
 esac
@@ -2748,7 +2750,7 @@ _on_signal() {
 trap '_on_signal 130' INT
 trap '_on_signal 143' TERM
 trap '_on_signal 129' HUP
-trap 'RUN_EXITING=1; _cleanup; [ "$CANCELLED" -eq 1 ] || { _rec_drop; _mlock_release; }' EXIT
+trap 'RUN_EXITING=1; _cleanup; [ "$CANCELLED" -eq 1 ] || _rec_drop' EXIT
 # The record's path is exported once it exists, so a harness can register its pool in it
 # (`check_register_pool`). An INHERITED path is dropped first: a run that is not recorded must not
 # have its pools land in another run's record.
@@ -2848,7 +2850,7 @@ run_serial() {   # names...
     # The step OR the ticker, whichever ends first: a tick names the step if it is past the ceiling
     # and starts the next one. `-f` for the reason run_pool gives — job control is on here too.
     while :; do
-      sleep "$OVERRUN_TICK" &
+      _tick &
       tick=$!
       _rec_group "$tick"   # the run's too: a KILLed runner leaves it in a group of its own
       got=""
@@ -2909,7 +2911,7 @@ run_pool() {   # names...
     # THE TICKER is one more job in the same `wait -n`, so the dispatcher wakes at least once per
     # tick even when no step finishes. It is never in `pid_name`, so it can never be reported as a
     # step; `_cleanup` reaches it through the shell's job table like any other job.
-    if [ -z "$tick" ]; then sleep "$OVERRUN_TICK" & tick=$!; _rec_group "$tick"; fi
+    if [ -z "$tick" ]; then _tick & tick=$!; _rec_group "$tick"; fi
     pid=""
     if wait -f -n -p pid; then rc=0; else rc=$?; fi
     if [ -n "${pid:-}" ] && [ "$pid" = "$tick" ]; then
@@ -3050,61 +3052,56 @@ else
 fi
 
 # =================================== the machine lock (#599) ===================================
-# One run's mutation harnesses at a time on this machine (per user and cache home). Taken only
-# when a harness is about to run. A held lock costs this run its harnesses, never its other steps,
-# and the holder is named. A holder is gone when its pid is (or now belongs to a later process) AND
-# its checkout no longer records it: a cancelled run keeps its record, and its lock, until `--stop`
-# there has swept the workers it may have left. The break is common.sh's claim-guarded one.
+# One run's mutation harnesses at a time per user and cache home (D147). A held lock costs this run
+# its harnesses, never its other steps, and names the holder. The lock is a kernel flock on a
+# descriptor this runner opens and every step inherits: it is held while the runner or anything it
+# started lives, so a dead runner's surviving workers keep it, and the kernel drops it with the last
+# of them. The file's text only names the holder.
 declare -a LOCKED_OUT=()
-MLOCK_DIR="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}/ai-dev-baseline/selfcheck-mutation.lock"
-MLOCK_TOKEN="" MLOCK_WHY=""
-_mlock_start() { LC_ALL=C adb_run_bounded 10 1 ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
-# _mlock_field <key> — the holder record's value for <key>; fails when the record is unreadable.
-_mlock_field() { awk -v k="$1" '$1==k {sub(/^[^ ]+ /,""); print; exit}' "$MLOCK_DIR/holder"; }
-# _mlock_holder_gone <pid> — 0 when the holder is provably gone and left nothing recorded.
-_mlock_holder_gone() {
-  local pid="$1" start now root
-  if [ -e "$MLOCK_DIR/holder" ]; then
-    start="$(_mlock_field start)" && root="$(_mlock_field root)" || { MLOCK_WHY="its holder record could not be read"; return 1; }
-  fi
-  if ! adb_pid_gone "$pid"; then
-    [ -n "${start:-}" ] || { MLOCK_WHY="held by pid $pid"; return 1; }
-    now="$(_mlock_start "$pid")"
-    [ -n "$now" ] || { MLOCK_WHY="held by pid $pid, whose start time could not be read"; return 1; }
-    [ "$now" != "$start" ] || { MLOCK_WHY="held by pid $pid in ${root:-an unknown checkout}"; return 1; }
-  fi
-  if [ -n "${root:-}" ]; then
-    if [ -e "$root/$RUN_RECORD.incomplete" ] || grep -qx "pid $pid" "$root/$RUN_RECORD" 2>/dev/null; then
-      MLOCK_WHY="held by a run that ended without cleaning up in $root — run \`bash scripts/selfcheck.sh --stop\` there"
-      return 1
-    fi
-  fi
-  return 0
+MLOCK_FILE="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}/ai-dev-baseline/selfcheck-mutation.lock"
+MLOCK_FD="" MLOCK_WHY=""
+# _mlock_try <fd> — flock(2) LOCK_EX|LOCK_NB on <fd>: 0 taken · 1 held by another · else unavailable.
+_mlock_try() {
+  if command -v flock >/dev/null 2>&1; then flock -n "$1"; return $?; fi
+  command -v perl >/dev/null 2>&1 || return 2
+  perl -MFcntl=:flock -e 'open(my $h, ">>&=", $ARGV[0]) or exit 2; flock($h, LOCK_EX|LOCK_NB) or exit 1; exit 0' "$1"
+}
+# _tick — the overrun ticker's sleep. It is the runner's helper, not its work, so it gives up the
+# lock descriptor first: a ticker outliving a KILLed runner must not hold the lock.
+_tick() {
+  [ -z "$MLOCK_FD" ] || exec {MLOCK_FD}>&-
+  exec sleep "$OVERRUN_TICK"
 }
 _mlock_take() {
-  local parent="${MLOCK_DIR%/*}" start
-  (umask 077; mkdir -p "$parent") 2>/dev/null || { MLOCK_WHY="$parent could not be created"; return 1; }
-  if ! _adb_take_lock "$MLOCK_DIR"; then
-    MLOCK_WHY=""
-    if [ -L "$MLOCK_DIR" ] || [ ! -d "$MLOCK_DIR" ]; then MLOCK_WHY="$MLOCK_DIR is not a lock directory"; return 1; fi
-    local _held; _held="$(cat "$MLOCK_DIR/owner" 2>/dev/null)" || { MLOCK_WHY="its owner record could not be read"; return 1; }
-    _adb_break_lock "$MLOCK_DIR" -1 "" _mlock_holder_gone || { MLOCK_WHY="${MLOCK_WHY:-another run took it first}"; return 1; }
-    rm -f "$MLOCK_DIR/holder"
+  local parent="${MLOCK_FILE%/*}" rc um text hpid hroot
+  (umask 077; mkdir -p "$parent") 2>/dev/null || { MLOCK_WHY="unavailable: $parent could not be created"; return 1; }
+  if [ -L "$MLOCK_FILE" ] || { [ -e "$MLOCK_FILE" ] && [ ! -f "$MLOCK_FILE" ]; }; then
+    MLOCK_WHY="unavailable: $MLOCK_FILE is not a regular file"; return 1
   fi
-  MLOCK_TOKEN="$_ADB_LOCK_TOOK"
-  start="$(_mlock_start "$$")"
-  # THE HOLDER RECORD is what lets a later run tell a reused pid from its holder; without a start it
-  # is judged by its pid alone. Published by rename, owner-only.
-  { printf 'pid %s\n' "$$"; [ -z "$start" ] || printf 'start %s\n' "$start"; printf 'root %s\n' "$RUN_ROOT"; } \
-    > "$MLOCK_DIR/holder.$$" 2>/dev/null && chmod 600 "$MLOCK_DIR/holder.$$" && mv -f "$MLOCK_DIR/holder.$$" "$MLOCK_DIR/holder" \
-    || printf 'selfcheck: NOTE — the mutation lock holder record could not be written; a later run judges this one by its pid alone\n'
-  return 0
-}
-_mlock_release() {
-  [ -n "$MLOCK_TOKEN" ] || return 0
-  rm -f "$MLOCK_DIR/holder" 2>/dev/null
-  _adb_release_lock "$MLOCK_DIR" "$MLOCK_TOKEN" && MLOCK_TOKEN="" \
-    || printf 'selfcheck: NOTE — the mutation lock at %s could not be released\n' "$MLOCK_DIR" >&2
+  um="$(umask)"; umask 077
+  { exec {MLOCK_FD}>>"$MLOCK_FILE"; } 2>/dev/null; rc=$?
+  umask "$um"
+  [ "$rc" -eq 0 ] || { MLOCK_FD=""; MLOCK_WHY="unavailable: $MLOCK_FILE could not be opened"; return 1; }
+  _mlock_try "$MLOCK_FD"; rc=$?
+  case "$rc" in
+    0) printf 'pid %s\nroot %s\n' "$$" "$RUN_ROOT" > "$MLOCK_FILE" 2>/dev/null \
+         || printf 'selfcheck: NOTE — the mutation lock is held, but its holder could not be written to %s\n' "$MLOCK_FILE"
+       return 0 ;;
+    1) # held by another
+       text="$(head -c 4096 "$MLOCK_FILE" 2>/dev/null)"
+       hpid="$(printf '%s\n' "$text" | awk '$1=="pid" {print $2; exit}')"
+       hroot="$(printf '%s\n' "$text" | awk '$1=="root" {sub(/^root /,""); print; exit}')"
+       case "$hpid" in ''|*[!0-9]*) MLOCK_WHY="held by a run this lock does not name" ;;
+         *) if adb_pid_gone "$hpid"; then
+              MLOCK_WHY="held by processes the exited run pid $hpid started in ${hroot:-an unnamed checkout} (\`bash scripts/selfcheck.sh --stop\` there sweeps them)"
+            else
+              MLOCK_WHY="held by pid $hpid in ${hroot:-an unnamed checkout}"
+            fi ;;
+       esac ;;
+    *) MLOCK_WHY="unavailable: neither flock nor perl could lock $MLOCK_FILE" ;;
+  esac
+  exec {MLOCK_FD}>&-; MLOCK_FD=""
+  return 1
 }
 _any_harness=0
 for _s in "${SELECTED[@]}"; do [ -z "${STEP_INPUTS[$_s]+x}" ] || _any_harness=1; done
