@@ -718,9 +718,9 @@ adb_update_lock() {
   return 0
 }
 
-# _adb_break_lock <lock> <stale-secs> [holder-pid] — take over <lock> from a holder that is provably
-# gone: 0 with the new token in _ADB_LOCK_TOOK, 1 when it is not provably stale or another breaker
-# got there first. The one take-over rule for every lock of this kind, the update lock's and the
+# _adb_break_lock <lock> <stale-secs> [holder-pid] [gone-check] — take over <lock> from a holder
+# that is provably gone: 0 with the new token in _ADB_LOCK_TOOK, 1 when it is not provably stale or
+# another breaker got there first. [holder-pid] names the new holder ("" for this shell). The one take-over rule for every lock of this kind, the update lock's and the
 # selfcheck run record's (`adb_record_lock`).
 _adb_break_lock() {
   local lock="$1" stale="$2" age holder
@@ -755,7 +755,13 @@ _adb_break_lock() {
   case "$holder" in ''|*[!0-9]*) holder="" ;; esac
   # A RECORDED holder is broken only once PROVEN gone: a bare `kill -0` failure is also the EPERM a
   # live holder returns. (No record, or an unparseable pid, is judged by the age above alone.)
+  # A caller whose holder record says more than a pid passes its own proof as <gone-check>, called
+  # with the holder's pid: 0 = provably gone. It replaces the ESRCH proof, never the claim below.
+  if [ -n "$holder" ] && [ -n "${4:-}" ]; then
+    "$4" "$holder" || return 1   # break-caller-proof
+  else
   [ -n "$holder" ] && ! adb_pid_gone "$holder" && return 1   # update-lock-needs-proof
+  fi
 
   # THE BREAK HAPPENS IN PLACE; THE DIRECTORY NEVER LEAVES ITS PATH. Renamed away, the path was
   # vacant while the breaker was still deciding, and a third process took a fresh lock there: two

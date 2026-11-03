@@ -7,7 +7,8 @@
 # bash-floor-guard, baseline, session-currency, precommit-gate, implement-gate, install-migration,
 # install-guard, fact-drift, fact-mutation, fact-self-test, practice-index, release-skill,
 # selfcheck-guard, mutation-gate, and an install→uninstall dry-run into a throwaway HOME.
-# Every `*-mutation` step is GATED on its declared inputs (#441) — see "the gate" below.
+# Every `*-mutation` step is HELD BACK unless asked for (#599) and then GATED on its declared
+# inputs (#441) — see "the hold-back" and "the gate" below.
 # "Green here" should mean "green in CI". Requires: git, jq. shellcheck is
 # optional (the step SKIPs if it's missing, matching a dev box without it).
 #
@@ -57,6 +58,9 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -uo pipefail
+# This file's own absolute path, taken before the cd: the priority re-exec (#599) restarts exactly
+# the file that was run, which a fixture may have copied under another name.
+SELF="$(cd "$(dirname "$0")" && pwd -P; printf x)"; SELF="${SELF%$'\n'x}/${0##*/}"
 cd "$(dirname "$0")/.." || exit 1
 fail=0
 
@@ -984,6 +988,7 @@ JOBS=0
 SERIAL=0
 ONLY=""
 ONLY_GIVEN=0   # distinct from ONLY="" — see the --only handling below
+MUTATION_REQ=0 # --mutation: a local run holds every mutation harness back unless asked (#599)
 SKIP=""
 SKIP_GIVEN=0   # same distinction, same reason (#339)
 SUMMARIZE=""
@@ -992,7 +997,7 @@ SUMMARIZE_GIVEN=0   # same distinction as --only/--skip: `--summarize ""` must n
 usage() {
   cat <<'USAGE'
 usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip a,b,...]
-                                 [--list] [--summarize FILE]
+                                 [--mutation] [--list] [--summarize FILE]
        bash scripts/selfcheck.sh --stop
 
   --serial      Run every step sequentially, in declaration order, with output streaming
@@ -1013,12 +1018,26 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
                 prologue; the fourth says why; the fifth is the comma-joined input set the step's
                 verdict depends on (#441), or "-" for a step that always runs.
 
-  The mutation gate (#441): a step that declares inputs is dispatched only when the change under
-  test — the working tree plus untracked files, against the merge-base with origin/<default> —
-  touches one of them; otherwise it is SKIPPED, by name, with the base it was compared against.
-  ADB_MUTATION_RUN_ALL=1 runs every step regardless; ADB_MUTATION_BASE=<ref> changes the base.
-  The decision is scripts/mutation-gate.sh's, and a gate that cannot decide fails CLOSED: the
-  step runs, and the line says why.
+  --mutation    Run the mutation harnesses (the steps that declare inputs) that the change under
+                test touches. Without it, or ADB_MUTATION_RUN_ALL=1, or naming the step in
+                --only, a run HOLDS every one of them back and names them (#599), as CI's
+                per-PR jobs do (D126); mutation-nightly.yml runs them all.
+
+  The mutation gate (#441): a requested harness is dispatched only when the change under test —
+  the working tree plus untracked files, against the merge-base with origin/<default> — touches
+  one of its inputs; otherwise it is SKIPPED, by name, with the base it was compared against.
+  ADB_MUTATION_RUN_ALL=1 runs every harness regardless; ADB_MUTATION_BASE=<ref> changes the
+  base. The decision is scripts/mutation-gate.sh's, and a gate that cannot decide fails CLOSED:
+  the step runs, and the line says why.
+
+  One machine, one mutation run (#599): the harnesses a run dispatches run under a lock at
+  ${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/selfcheck-mutation.lock. A run that finds it held
+  runs everything else and holds its harnesses back, naming the holder. A clean exit releases it;
+  a cancelled run keeps it until `--stop` in that run's checkout has swept what the run left.
+
+  Priority (#599): a run lowers its own priority (POSIX `nice -n 15`, inherited by every step and
+  pool worker) and says so in its header. ADB_SELFCHECK_PRIORITY=normal runs it at the caller's
+  priority; any other value but `low` (the default) is an error.
   --summarize F Read a captured run of this suite from F and print a Markdown digest of what
                 failed — the step names and their FAIL: witness lines — then exit 0. For a CI job
                 summary, so a recurring red is readable without opening the log. A reporter, never
@@ -1061,6 +1080,7 @@ USAGE
 
 LIST=0
 STOP=0
+ORIG_ARGS=("$@")   # replayed by the priority re-exec (#599)
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) SERIAL=1 ;;
@@ -1094,6 +1114,7 @@ while [ "$#" -gt 0 ]; do
     # wherever it appears.
     --list) LIST=1 ;;
     --stop) STOP=1 ;;
+    --mutation) MUTATION_REQ=1 ;;
     --summarize)
       [ "$#" -ge 2 ] || { echo "selfcheck: --summarize needs a file" >&2; exit 2; }
       # Keyed on the FLAG, not on a non-empty value. Without the bit, `--summarize ""` fell through
@@ -2303,6 +2324,24 @@ if [ "$STOP" -eq 1 ]; then
   exit $?
 fi
 
+# BACKGROUND PRIORITY (#599). A run takes every core it can get, so interactive work elsewhere on
+# the machine waits behind it. Lowered after the terminal modes (`--stop` must stay prompt) and
+# before anything is recorded, by re-executing under POSIX `nice -n`, which every step and pool
+# worker inherits. Not `renice`: util-linux reads `-n` as absolute and BSD as relative. Not macOS
+# `taskpolicy -b`: it confines the run to efficiency cores even on an idle machine (D147).
+# The guard is this pid, which exec keeps, so a nested run lowers itself again (clamped at 19).
+case "${ADB_SELFCHECK_PRIORITY:-low}" in
+  low)
+    if [ "${_ADB_SELFCHECK_LOWERED:-}" != "$$" ] && command -v nice >/dev/null 2>&1; then
+      export _ADB_SELFCHECK_LOWERED="$$"
+      exec nice -n 15 "$BASH" "$SELF" "${ORIG_ARGS[@]}"
+    fi
+    _nice="$(ps -o nice= -p "$$" 2>/dev/null | tr -d ' ')" || _nice=""
+    printf 'selfcheck: priority low (nice %s; ADB_SELFCHECK_PRIORITY=normal keeps the caller'"'"'s)\n' "${_nice:-unknown}" ;;
+  normal) printf 'selfcheck: priority normal (ADB_SELFCHECK_PRIORITY=normal)\n' ;;
+  *) echo "selfcheck: ADB_SELFCHECK_PRIORITY must be low or normal, got '${ADB_SELFCHECK_PRIORITY}'" >&2; exit 2 ;;
+esac
+
 [ "$JOBS" -gt 0 ] || JOBS="$(adb_pool_size)"
 
 # THE OVERRUN CEILING (#445). `wait -n` has no timeout and the result block prints only once every
@@ -2709,7 +2748,7 @@ _on_signal() {
 trap '_on_signal 130' INT
 trap '_on_signal 143' TERM
 trap '_on_signal 129' HUP
-trap 'RUN_EXITING=1; _cleanup; [ "$CANCELLED" -eq 1 ] || _rec_drop' EXIT
+trap 'RUN_EXITING=1; _cleanup; [ "$CANCELLED" -eq 1 ] || { _rec_drop; _mlock_release; }' EXIT
 # The record's path is exported once it exists, so a harness can register its pool in it
 # (`check_register_pool`). An INHERITED path is dropped first: a run that is not recorded must not
 # have its pools land in another run's record.
@@ -2951,6 +2990,30 @@ done
 # sees the harness run without that line cannot tell "the inputs changed" from "the gate gave up",
 # which is the difference between a filter that works and one that silently never does. The
 # override (12) is said once, not once per step.
+# ===================================== the hold-back (#599) =====================================
+# A local run holds every mutation harness (a step that declares inputs) back unless asked:
+# --mutation, ADB_MUTATION_RUN_ALL, or the step named in --only. CI's per-PR jobs have run none
+# since D126, and a harness run costs rows × suite. Held steps are named here and in `result`.
+declare -a HELD=()
+if [ "$MUTATION_REQ" -eq 0 ] && [ -z "${ADB_MUTATION_RUN_ALL:-}" ]; then
+  declare -a _asked=()
+  for _s in "${SELECTED[@]}"; do
+    if [ -n "${STEP_INPUTS[$_s]+x}" ] && { [ "$ONLY_GIVEN" -eq 0 ] || [ -z "${_want[$_s]+x}" ]; }; then
+      HELD+=("$_s")
+    else
+      _asked+=("$_s")
+    fi
+  done
+  SELECTED=("${_asked[@]}")
+  [ "${#SELECTED[@]}" -gt 0 ] || { echo "selfcheck: every selected step is a mutation harness held back — add --mutation" >&2; exit 2; }
+  PROLOGUE=(); POOLED=()
+  for _s in "${SELECTED[@]}"; do
+    if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
+  done
+  [ "${#HELD[@]}" -eq 0 ] || printf 'selfcheck: HELD %s mutation harness(es) — not requested (--mutation runs the ones this change touches, ADB_MUTATION_RUN_ALL=1 all): %s\n' \
+    "${#HELD[@]}" "${HELD[*]}"
+fi
+
 declare -a GATED=() GATE_LINES=()
 if [ ! -f scripts/mutation-gate.sh ]; then
   _any_inputs=0
@@ -2986,6 +3049,79 @@ else
   done
 fi
 
+# =================================== the machine lock (#599) ===================================
+# One run's mutation harnesses at a time on this machine (per user and cache home). Taken only
+# when a harness is about to run. A held lock costs this run its harnesses, never its other steps,
+# and the holder is named. A holder is gone when its pid is (or now belongs to a later process) AND
+# its checkout no longer records it: a cancelled run keeps its record, and its lock, until `--stop`
+# there has swept the workers it may have left. The break is common.sh's claim-guarded one.
+declare -a LOCKED_OUT=()
+MLOCK_DIR="${XDG_CACHE_HOME:-${HOME:-/root}/.cache}/ai-dev-baseline/selfcheck-mutation.lock"
+MLOCK_TOKEN="" MLOCK_WHY=""
+_mlock_start() { LC_ALL=C adb_run_bounded 10 1 ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+# _mlock_field <key> — the holder record's value for <key>; fails when the record is unreadable.
+_mlock_field() { awk -v k="$1" '$1==k {sub(/^[^ ]+ /,""); print; exit}' "$MLOCK_DIR/holder"; }
+# _mlock_holder_gone <pid> — 0 when the holder is provably gone and left nothing recorded.
+_mlock_holder_gone() {
+  local pid="$1" start now root
+  if [ -e "$MLOCK_DIR/holder" ]; then
+    start="$(_mlock_field start)" && root="$(_mlock_field root)" || { MLOCK_WHY="its holder record could not be read"; return 1; }
+  fi
+  if ! adb_pid_gone "$pid"; then
+    [ -n "${start:-}" ] || { MLOCK_WHY="held by pid $pid"; return 1; }
+    now="$(_mlock_start "$pid")"
+    [ -n "$now" ] || { MLOCK_WHY="held by pid $pid, whose start time could not be read"; return 1; }
+    [ "$now" != "$start" ] || { MLOCK_WHY="held by pid $pid in ${root:-an unknown checkout}"; return 1; }
+  fi
+  if [ -n "${root:-}" ]; then
+    if [ -e "$root/$RUN_RECORD.incomplete" ] || grep -qx "pid $pid" "$root/$RUN_RECORD" 2>/dev/null; then
+      MLOCK_WHY="held by a run that ended without cleaning up in $root — run \`bash scripts/selfcheck.sh --stop\` there"
+      return 1
+    fi
+  fi
+  return 0
+}
+_mlock_take() {
+  local parent="${MLOCK_DIR%/*}" start
+  (umask 077; mkdir -p "$parent") 2>/dev/null || { MLOCK_WHY="$parent could not be created"; return 1; }
+  if ! _adb_take_lock "$MLOCK_DIR"; then
+    MLOCK_WHY=""
+    if [ -L "$MLOCK_DIR" ] || [ ! -d "$MLOCK_DIR" ]; then MLOCK_WHY="$MLOCK_DIR is not a lock directory"; return 1; fi
+    local _held; _held="$(cat "$MLOCK_DIR/owner" 2>/dev/null)" || { MLOCK_WHY="its owner record could not be read"; return 1; }
+    _adb_break_lock "$MLOCK_DIR" -1 "" _mlock_holder_gone || { MLOCK_WHY="${MLOCK_WHY:-another run took it first}"; return 1; }
+    rm -f "$MLOCK_DIR/holder"
+  fi
+  MLOCK_TOKEN="$_ADB_LOCK_TOOK"
+  start="$(_mlock_start "$$")"
+  # THE HOLDER RECORD is what lets a later run tell a reused pid from its holder; without a start it
+  # is judged by its pid alone. Published by rename, owner-only.
+  { printf 'pid %s\n' "$$"; [ -z "$start" ] || printf 'start %s\n' "$start"; printf 'root %s\n' "$RUN_ROOT"; } \
+    > "$MLOCK_DIR/holder.$$" 2>/dev/null && chmod 600 "$MLOCK_DIR/holder.$$" && mv -f "$MLOCK_DIR/holder.$$" "$MLOCK_DIR/holder" \
+    || printf 'selfcheck: NOTE — the mutation lock holder record could not be written; a later run judges this one by its pid alone\n'
+  return 0
+}
+_mlock_release() {
+  [ -n "$MLOCK_TOKEN" ] || return 0
+  rm -f "$MLOCK_DIR/holder" 2>/dev/null
+  _adb_release_lock "$MLOCK_DIR" "$MLOCK_TOKEN" && MLOCK_TOKEN="" \
+    || printf 'selfcheck: NOTE — the mutation lock at %s could not be released\n' "$MLOCK_DIR" >&2
+}
+_any_harness=0
+for _s in "${SELECTED[@]}"; do [ -z "${STEP_INPUTS[$_s]+x}" ] || _any_harness=1; done
+if [ "$_any_harness" -eq 1 ] && ! _mlock_take; then
+  declare -a _free=()
+  for _s in "${SELECTED[@]}"; do
+    if [ -n "${STEP_INPUTS[$_s]+x}" ]; then LOCKED_OUT+=("$_s"); else _free+=("$_s"); fi
+  done
+  SELECTED=("${_free[@]}")
+  printf 'selfcheck: LOCKED OUT %s mutation harness(es) — the machine lock is %s: %s\n' \
+    "${#LOCKED_OUT[@]}" "$MLOCK_WHY" "${LOCKED_OUT[*]}"
+  PROLOGUE=(); POOLED=()
+  for _s in "${SELECTED[@]}"; do
+    if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
+  done
+fi
+
 RUN_T0="$EPOCHSECONDS"
 if [ "$SERIAL" -eq 1 ]; then
   printf 'selfcheck: %s step(s), serial (--serial)\n' "${#SELECTED[@]}"
@@ -3012,6 +3148,9 @@ printf '%s step(s) in %sm%02ds — %s passed, %s failed\n' \
 # …and the gated ones, for the same reason: a step the gate held back produced exactly what a
 # step that passed produced, and the header of a long log is not where a reader looks.
 [ "${#GATED[@]}" -gt 0 ] && printf 'gated (inputs unchanged): %s\n' "${GATED[*]}"
+# …and the harnesses held back because nobody asked for them, or locked out by another run.
+[ "${#HELD[@]}" -gt 0 ] && printf 'held (not requested; --mutation runs them): %s\n' "${HELD[*]}"
+[ "${#LOCKED_OUT[@]}" -gt 0 ] && printf 'locked out (machine lock %s): %s\n' "$MLOCK_WHY" "${LOCKED_OUT[*]}"
 # …and every step that ran past the overrun ceiling, finished or not. A run cancelled while a step
 # hung never reaches this block, which is why each one was also named live when it crossed.
 [ "${#OVERRAN[@]}" -gt 0 ] && printf 'overran (past %ss): %s\n' "$OVERRUN" "${OVERRAN[*]}"

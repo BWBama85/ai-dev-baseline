@@ -83,12 +83,17 @@ D122 has the table. No one step is most of it: the run is as long as the longest
 near an hour each (`pattern-ledger-mutation`, `settings-fragment-mutation`, `review-loop-mutation`).
 The `result` block prints the elapsed time
 and the three slowest steps every run, which is why the number lives there and only a dated
-snapshot lives here. That range is a **forced** full run: since #441 the mutation harnesses are
-**gated** — each `*-mutation` step declares the paths its verdict depends on (`--list`, fifth
-field), and the runner dispatches it only when your change, working tree and untracked files
-included, touches one of them against the merge-base with `origin/main`. Held-back steps are named
+snapshot lives here. That range is a **forced** full run: since #599 a plain
+`bash scripts/selfcheck.sh` runs **no** mutation harness — it holds every one back and names them
+(`held (not requested; …)`). `bash scripts/selfcheck.sh --mutation` runs the ones your change
+touches, and since #441 that is a **gate**: each `*-mutation` step declares the paths its verdict
+depends on (`--list`, fifth field), and the runner dispatches it only when your change, working
+tree and untracked files included, touches one of them against the merge-base with `origin/main`. Held-back steps are named
 before the run and in the `result` block (`gated (inputs unchanged): …`), with the base and inputs
-each was compared on. `ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the whole registry,
+each was compared on. A second run that finds another run's harnesses holding the machine lock
+runs everything else and names the holder, and every run lowers its own priority so the rest of
+the machine stays responsive (`ADB_SELFCHECK_PRIORITY=normal` opts out).
+`ADB_MUTATION_RUN_ALL=1 bash scripts/selfcheck.sh` is the whole registry,
 every time; a gate that cannot decide (no merge-base, an unresolvable base) fails closed and runs
 the step. The decision is `scripts/mutation-gate.sh`'s (CI no longer asks it: since #456 no harness
 runs per pull request).

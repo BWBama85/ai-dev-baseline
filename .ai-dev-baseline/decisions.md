@@ -11246,3 +11246,15 @@ survive is the part a later reader needs.
              `scripts/check-baseline.sh`, `scripts/check-common-lib.sh`,
              `scripts/check-pinned-install.sh`, `scripts/check-fact-drift.sh`.
 - baseline-issue: n/a (this repo IS the baseline; #534 is the tracking issue)
+
+## D147 — #599: selfcheck runs at low priority, holds its mutation harnesses back, and admits one mutation run per machine
+- date: 2026-11-03
+- category: general
+- unknown: a local selfcheck with its mutation pools took the whole machine (load averages above 200 on a 10-core host on 2026-11-02), and the turn-end gates that this baseline ships to other projects then timed out beside it.
+- decision: (1) every run re-executes itself under POSIX `nice -n 15` after its terminal modes, so every step and pool worker inherits the lower priority; `ADB_SELFCHECK_PRIORITY=normal` opts out and any value but `low`/`normal` is an error. (2) A plain local run holds every step that declares inputs (the `*-mutation` harnesses) back and names them; `--mutation`, `ADB_MUTATION_RUN_ALL` or naming the step in `--only` asks for it, and the input gate (D91) then applies. This supersedes D91's local half and matches CI since D126. (3) The harnesses a run dispatches run under a lock at `${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/selfcheck-mutation.lock`, taken with common.sh's claim-guarded lock. A run that finds it held runs its other steps, locks its harnesses out and names the holder. A holder is gone only when its pid is gone (or belongs to a later process, by `ps lstart`) and its checkout no longer records its run, because a cancelled run keeps its record, and so the lock, until `--stop` there has swept the workers it may have left. A clean exit releases it.
+- placement: `scripts/selfcheck.sh`; `_adb_break_lock`'s optional gone-check in `scripts/lib/common.sh`; `scripts/check-selfcheck.sh` §8e; CLAUDE.md golden rule 3, CONTRIBUTING.md.
+- reason: priority costs nothing on an idle machine and yields under contention; the hold-back removes the dominant cost of an ordinary local run, which a contributor rarely needs and the nightly already pays; the lock stops two sessions stacking pools.
+- rejected: `renice` (util-linux reads `-n` as absolute unless POSIXLY_CORRECT, BSD as relative); macOS `taskpolicy -b` (PRIO_DARWIN_BG confines a run to efficiency cores and throttles its I/O even on an idle machine, so it is not "free when idle"); shrinking `adb_pool_size` by load average (load lags, and D66 measured process bounds slower); waiting for a held lock (a bounded wait still stalls the second run, and the harnesses are opt-in now); breaking a lock on a dead pid alone (its workers can outlive it).
+- scope: the lock covers runs sharing one user and cache home, and only harnesses selfcheck dispatches; a direct `bash scripts/check-*.sh --mutation` takes no lock.
+- note: D144-D146 are taken on the unmerged role-profiles branch, so this entry is D147.
+- baseline-issue: #599
