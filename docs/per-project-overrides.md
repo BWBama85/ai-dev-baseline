@@ -60,19 +60,22 @@ The two forms below are documented for the projects that still carry one until t
 
 ### 2a. Full shadow fork (whole-file replacement)
 
-A complete `.claude/skills/<name>/SKILL.md`. On Codex it is listed beside the
-global skill; on Claude, where a personal skill runs over a project one, it
-runs only on a machine without the global install (#540).
+A complete project `SKILL.md` — `.claude/skills/<name>/` for Claude, or
+`.codex/skills/<name>/` / `.agents/skills/<name>/` for Codex. Codex lists it
+beside the global skill; on Claude, where a personal skill runs over a project
+one, it runs only on a machine without the global install (#540).
 
 The cost is real: **a forked skill is a skill frozen in time.** It stops
 inheriting every later baseline improvement to *every* step, even the 90% the
 fork never meant to change. A fork that carried ~25 novel lines on top of a
 500-line skill silently falls behind on the other 475.
 
-### 2b. Partial compose-override (carry only your deltas) — preferred
+### 2b. Partial compose-override (carry only your deltas) — retired
 
-Carry *only* your deltas in a tiny `.claude/skills/<name>/overrides.md`, and
-let `skill-compose` **merge them onto the current installed baseline skill**.
+Do not write a new one: `/adopt`'s `workflows` rung reports an `overrides.md`
+as a finding. What follows describes the form for the projects still carrying
+one. A tiny `.claude/skills/<name>/overrides.md` carries only the deltas, and
+`skill-compose` **merges them onto the current installed baseline skill**.
 (A composed project-local `SKILL.md` shadows the installed one but carries no
 sibling supporting files (#433). The base skill's navigator therefore states the
 files' installed location once, up front — a composed copy's reader follows that

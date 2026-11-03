@@ -249,6 +249,7 @@ while IFS="$TABC" read -r kind rel name agent; do
   case "$kind:$wclass" in
     skill:competes:*|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;;
     skill:*) if [ "$WF_RC" -eq 11 ]; then wclass=unjudged; else wclass=-; fi ;;
+    other:competes:*|other:project-specific|override:project-specific) ;;   # a legacy command, a pinned skill's extra file, an override
     *) wclass=- ;;
   esac
   coll=no;  [ -n "$src" ] && coll=yes

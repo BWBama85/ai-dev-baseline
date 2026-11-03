@@ -534,7 +534,7 @@ has "$wfo" "shadows${TAB}.agents/skills/cleanup${TAB}codex${TAB}cleanup" \
     "workflows: a byte-identical Codex cleanup is still a finding (codex loads both)"
 has "$wfo" "foreign-pin${TAB}.claude/UPSTREAM_VERSION" "workflows: a prior framework's pin is a finding"
 has "$wfo" "summary${TAB}" "workflows: the summary trailer is always printed"
-has "$wfo" "mapped=3 same-name=2 exempt=1 unmapped=1 unknown=0" "workflows: the trailer counts each class"
+has "$wfo" "mapped=3 same-name=2 exempt=1 unmapped=1 pins=1 unknown=0" "workflows: the trailer counts each class"
 hasnt "$wfo" "IGNORE-PREVIOUS" "workflows: no text from a scanned SKILL.md reaches the output"
 printf '%s\n' "$wfo" | awk -F"$TAB" '$1!="summary" && $1!="unknown" && ($2 !~ /^[A-Za-z0-9._\/-]+$/ || $3 !~ /^[a-z0-9-]+$/) {bad=1} END {exit bad}' \
   && ok || bad "workflows: every emitted path and agent field matches its closed charset"
@@ -566,8 +566,32 @@ hasnt "$(bash "$AD" supersedes "$ROOT")" "release" "supersedes: release is never
 mkdir -p "$WFX/.claude/commands/sub"; printf 'x\n' > "$WFX/.claude/commands/pr.md"; printf 'x\n' > "$WFX/.claude/commands/sub/deep.md"
 wfo3="$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")"
 has "$wfo3" "competes${TAB}.claude/commands/pr.md${TAB}claude${TAB}implement-issue" "workflows: a legacy .claude/commands/pr.md competes"
-hasnt "$wfo3" "commands/sub/deep.md" "workflows: a nested command file is not judged as a skill"
+has "$wfo3" "project-specific${TAB}.claude/commands/sub/deep.md${TAB}claude" \
+    "workflows: a command in a subdirectory still runs, so it is project-specific"
+eq "$(verdict other no unknown no competes:implement-issue)" move "a competing legacy command classifies move, not escalate"
+eq "$(verdict other no unknown no project-specific)"         move "a project-specific command classifies move"
+# An unreadable commands directory is an incomplete walk: 11, never a clean 0.
+chmod 000 "$WFX/.claude/commands"
+if [ ! -r "$WFX/.claude/commands" ]; then
+  eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unreadable .claude/commands is not judged clean (exit 11)"
+fi
+chmod 755 "$WFX/.claude/commands"
 rm -rf "$WFX/.claude/commands"
+# A compose-override is a finding on its own (retired), even with no SKILL.md beside it.
+OVX="$WORK/wf-override"; mkdir -p "$OVX/.claude/skills/cleanup"; printf 'x\n' > "$OVX/.claude/skills/cleanup/overrides.md"
+ovo="$(HOME="$WFX/home" bash "$AD" workflows "$OVX" --agents claude --baseline "$ROOT")"; ovrc=$?
+has "$ovo" "project-specific${TAB}.claude/skills/cleanup/overrides.md" "workflows: a lone overrides.md is a finding"
+eq "$ovrc" 10 "workflows: ...so the project is not clean"
+# NESTED ROOTS come from git's tracked paths; outside a repository they are not evaluated, and said so.
+has "$wfo" "nested=not evaluated (not a git repository)" "workflows: outside a git repository nested roots are not evaluated, and the trailer says so"
+NSX="$WORK/wf-nested"; mkdir -p "$NSX/src/.claude/skills/implement" "$NSX/pkg/.agents/skills/zz-local"
+printf 'x\n' > "$NSX/src/.claude/skills/implement/SKILL.md"; printf 'x\n' > "$NSX/pkg/.agents/skills/zz-local/SKILL.md"
+git -C "$NSX" init -q; check_git "$NSX" add -A; check_git "$NSX" commit -qm seed
+nso="$(HOME="$WFX/home" bash "$AD" workflows "$NSX" --agents claude,codex --baseline "$ROOT")"
+has "$nso" "competes${TAB}src/.claude/skills/implement${TAB}claude${TAB}implement-issue" "workflows: a tracked nested Claude skill root is judged"
+has "$nso" "project-specific${TAB}pkg/.agents/skills/zz-local${TAB}codex" "workflows: a tracked nested Codex .agents/skills root is judged"
+has "$nso" "nested=tracked paths" "workflows: the trailer says nested roots were read from tracked paths"
 # A DANGLING personal link proves nothing about what runs: shadows, never duplicates.
 rm -f "$WFX/home/.claude/skills/cleanup"; ln -s "$ROOT/agents/claude/skills/no-such-skill" "$WFX/home/.claude/skills/cleanup"
 has "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")" \
@@ -647,6 +671,23 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
     eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 \
        "supersedes refuses an installed marker the build would refuse [$bad_]"
   done
+  # THE FRONTMATTER STRUCTURE: a marker in the body, an unterminated header, a bad first line.
+  put_marker ''
+  for a_ in claude codex gemini; do printf '\n# adb:supersedes fix-bug\n' >> "$BFX/agents/$a_/skills/debug/SKILL.md"; done
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses an installed marker in the skill body"
+  for a_ in claude codex gemini; do
+    f_="$BFX/agents/$a_/skills/debug/SKILL.md"; grep -v '^# adb:supersedes' "$f_" > "$f_.new" && mv "$f_.new" "$f_"
+  done
+  cp "$BFX/agents/claude/skills/debug/SKILL.md" "$WORK/debug-claude.ok"
+  printf 'not-a-delimiter\n# adb:supersedes fix-bug\n---\n' > "$BFX/agents/claude/skills/debug/SKILL.md"
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses a SKILL.md that does not open its frontmatter on line 1"
+  printf -- '---\nname: debug\n# adb:supersedes fix-bug\n' > "$BFX/agents/claude/skills/debug/SKILL.md"
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses an unterminated frontmatter"
+  cp "$WORK/debug-claude.ok" "$BFX/agents/claude/skills/debug/SKILL.md"
+  # A shipped skill whose NAME is outside the map's charset is refused, never carried as a target.
+  mkdir -p "$BFX/agents/claude/skills/Bad_Name"; printf -- '---\nname: x\n# adb:supersedes zz-legacy\n---\n' > "$BFX/agents/claude/skills/Bad_Name/SKILL.md"
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 "supersedes refuses a shipped skill name outside [a-z0-9-]"
+  rm -rf "$BFX/agents/claude/skills/Bad_Name"
   put_marker '# adb:supersedes fix-bug'
   # A sort that fails is not an empty map.
   SORTSTUB="$WORK/sortstub"; mkdir -p "$SORTSTUB"; printf '#!/bin/sh\nexit 1\n' > "$SORTSTUB/sort"; chmod +x "$SORTSTUB/sort"
@@ -657,11 +698,16 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   cp "$WORK/debug-codex.md" "$BFX/agents/codex/skills/debug/SKILL.md"
   eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 \
      "supersedes refuses (2) when one agent's render lacks a skill's adb:supersedes line"
-  # A baseline whose skills directory cannot be listed still ships root docs: not a clean 0.
+  # A baseline whose skills directory cannot be listed still ships root docs: not a clean 0. The
+  # marker is restored first, so the refusal below is the unlistable directory's alone.
+  put_marker '# adb:supersedes fix-bug'
+  eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 10 \
+     "workflows: the restored copy is judged (10) before its codex skills are made unlistable"
   chmod 000 "$BFX/agents/codex/skills"
   if [ ! -r "$BFX/agents/codex/skills" ]; then
-    eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude,codex --baseline "$BFX" >/dev/null 2>&1; echo $?)" 11 \
-       "workflows: a baseline whose codex skills cannot be listed exits 11"
+    # --agents claude: the map is every baseline agent's, so codex's unreadable skills still count.
+    eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 11 \
+       "workflows: a baseline whose codex skills cannot be listed exits 11, even judging claude only"
   fi
   chmod 755 "$BFX/agents/codex/skills"
 else
@@ -1839,6 +1885,26 @@ shmutant_mut workflows-pinned-helper-ignored \
     '            [ -n "$inroot" ] || continue' \
     '            continue' \
     'a project file inside a pinned skill is a finding'
+shmutant_mut workflows-override-ignored \
+    '        _ad_wf_rec project-specific "$rel" "$agent" - owner "a compose-override, retired' \
+    '        : _ad_wf_rec project-specific "$rel" "$agent" - owner "a compose-override, retired' \
+    'a lone overrides.md is a finding'
+shmutant_mut supersedes-agent-coverage-unchecked \
+    '      die "supersedes: the shipped skills of $agent could not be listed' \
+    '      : "supersedes: the shipped skills of $agent could not be listed' \
+    'a baseline whose codex skills cannot be listed exits 11'
+shmutant_mut supersedes-body-marker-ignored \
+    '      /adb:supersedes/ { if (fm) print; else { print "ERR body-marker"; exit } }' \
+    '      /adb:supersedes/ { if (fm) print }' \
+    'supersedes refuses an installed marker in the skill body'
+shmutant_mut scan-partial-walk-silent \
+    '      printf '"'"'warning%sthe agent directory .%s could not be walked in full' \
+    '      : '"'"'warning%sthe agent directory .%s could not be walked in full' \
+    'an unreadable .claude/commands is not judged clean'
+shmutant_mut workflows-nested-roots-dropped \
+    '        case ",$agents," in *",$na,"*) ;; *) continue ;; esac' \
+    '        continue' \
+    'a tracked nested Claude skill root is judged'
 shmutant_mut classify-project-skill-kept \
     "printf 'move%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
     "printf 'keep%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \

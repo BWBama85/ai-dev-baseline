@@ -995,7 +995,7 @@ truncation**, not authenticity — an attacker who can replace one can replace b
 | `.claude/rules/ai-dev-baseline.md` | the practices' rules — a rule with no `paths:` frontmatter loads at session start |
 | `.claude/rules/ai-dev-baseline/<practice>.md` | the path-scoped procedures (#434), which load when a matching file is read |
 | `.claude/adb/reference/<practice>.md` | every other procedure; the vendored root doc's pointers are re-anchored to these project paths |
-| `.claude/skills/<name>/SKILL.md` | the workflows, shadowing any same-named global skill |
+| `.claude/skills/<name>/SKILL.md` | the workflows — on Claude a same-named personal (global) skill still runs instead, while one is installed (#540) |
 | `.claude/adb/lib/*.sh` | the shared shell libraries the skills and gates call |
 | `.claude/adb/{precommit,implement-issue,state-claim}-gate.sh` | the Stop gates |
 | `.claude/adb/session-context.sh` | the `SessionStart` run-state hook (#431): on `compact\|resume` it reads the project's own `.claude/state` back into context |
