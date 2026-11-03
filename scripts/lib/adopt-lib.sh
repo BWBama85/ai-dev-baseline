@@ -863,16 +863,14 @@ cmd_classify() {
     printf 'move%sa legacy command the baseline'"'"'s %s supersedes — capture what it does that %s does not as a baseline issue, then retire it to .ai-dev-baseline/retired/<date>/\n' "$TAB" "$wtarget" "$wtarget"
     return 0
   fi
-  if [ "$kind" = other ]; then
-    case "$wclass" in
-      shadows|duplicates)
-        printf 'move%sa legacy command with the same name as a baseline skill — retire it to .ai-dev-baseline/retired/<date>/ in a normal PR, capturing any delta as a baseline issue first\n' "$TAB"
-        return 0 ;;
-      exempt)
-        printf 'keep%srelease is exempt while the baseline ships no release skill (D7)\n' "$TAB"
-        return 0 ;;
-    esac
-  fi
+  case "$kind:$wclass" in
+    other:shadows|other:duplicates)
+      printf 'move%sa legacy command with the same name as a baseline skill — retire it to .ai-dev-baseline/retired/<date>/ in a normal PR, capturing any delta as a baseline issue first\n' "$TAB"
+      return 0 ;;
+    other:exempt)
+      printf 'keep%srelease is exempt while the baseline ships no release skill (D7)\n' "$TAB"
+      return 0 ;;
+  esac
   if [ "$kind" = other ] && [ "$wclass" = project-specific ]; then
     printf 'move%sthe baseline carries no project skills or commands — capture what it does as a baseline issue or project config, then retire it to .ai-dev-baseline/retired/<date>/\n' "$TAB"
     return 0
