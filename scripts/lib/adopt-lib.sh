@@ -2017,8 +2017,8 @@ cmd_plan() {
 # disagree: a map that cannot be read whole must never read as "nothing is superseded".
 cmd_supersedes() {
   [ "$#" -eq 1 ] || die "supersedes: needs <baseline-root>"
-  local root="$1" shipped kind name agent src line tok first="" per out
-  local -A claim=() agentmap=()
+  local root="$1" shipped kind name agent src line tok out=""
+  local -A claim=() marker=() markerfrom=()
   shipped="$( (cmd_shipped "$root") )" || die "supersedes: could not read what the baseline ships under $(adb_display_value "$root")"
   while IFS="$TAB" read -r kind name agent src; do
     [ "$kind" = skill ] || continue
@@ -2026,23 +2026,23 @@ cmd_supersedes() {
       || die "supersedes: $(adb_display_value "$src/SKILL.md") is missing or unreadable — the map cannot be read whole"
     line="$(awk 'NR==1 { next } $0 == "---" { exit } /^# adb:supersedes / { print; exit }' "$src/SKILL.md")" \
       || die "supersedes: could not read $(adb_display_value "$src/SKILL.md")"
+    # EVERY AGENT THAT SHIPS A SKILL MUST CARRY THE SAME LINE FOR IT, absent included: a render
+    # that dropped the line for one agent would otherwise read as "supersedes nothing" there.
+    if [ -n "${markerfrom[$name]:-}" ]; then
+      [ "${marker[$name]}" = "$line" ] \
+        || die "supersedes: $name's adb:supersedes line differs between ${markerfrom[$name]} and $agent — rebuild the baseline"
+      continue
+    fi
+    marker["$name"]="$line"; markerfrom["$name"]="$agent"
     [ -n "$line" ] || continue
     for tok in ${line#"# adb:supersedes "}; do
-      case "$tok" in ''|-*|*[!a-z0-9-]*) die "supersedes: $name ($agent) declares a malformed legacy name" ;; esac
-      if [ -n "${claim[$agent/$tok]:-}" ] && [ "${claim[$agent/$tok]}" != "$name" ]; then
-        die "supersedes: $tok is claimed by both ${claim[$agent/$tok]} and $name ($agent)"
-      fi
-      claim["$agent/$tok"]="$name"
-      agentmap["$agent"]="${agentmap[$agent]:-}$tok$TAB$name"$'\n'
+      case "$tok" in ''|-*|*[!a-z0-9-]*) die "supersedes: $name declares a malformed legacy name" ;; esac
+      [ -z "${claim[$tok]:-}" ] || die "supersedes: $tok is claimed by both ${claim[$tok]} and $name"
+      claim["$tok"]="$name"
+      out="$out$tok$TAB$name"$'\n'
     done
   done <<< "$shipped"
-  for agent in "${!agentmap[@]}"; do
-    per="$(printf '%s' "${agentmap[$agent]}" | LC_ALL=C sort -u)"
-    if [ -z "$first" ]; then first="$per"; out="$per"
-    elif [ "$per" != "$first" ]; then die "supersedes: the agents' installed skills disagree about the map — rebuild the baseline"
-    fi
-  done
-  [ -z "${out:-}" ] || printf '%s\n' "$out"
+  [ -z "$out" ] || printf '%s' "$out" | LC_ALL=C sort
   return 0
 }
 

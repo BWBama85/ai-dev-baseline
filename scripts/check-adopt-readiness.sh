@@ -473,10 +473,12 @@ rm -f "$ADB_STATE_DIR/.adopt-receipt.tmp"
 # THE WORKFLOWS RUNG (#535): adopt-lib.sh workflows, translated. The fixture install ships an
 # `implement-issue` skill whose frontmatter declares `implement` superseded.
 wfinstall="$WORK/wfinstall"; wfhome="$WORK/wfhome"
-mkdir -p "$wfinstall/agents/claude/skills/implement-issue"
-printf -- '---\nname: implement-issue\ndescription: x\n# adb:supersedes implement\n---\nbody\n' \
-  > "$wfinstall/agents/claude/skills/implement-issue/SKILL.md"
-mkinstall "$wfinstall" "$wfhome" claude
+for a_ in claude codex; do
+  mkdir -p "$wfinstall/agents/$a_/skills/implement-issue"
+  printf -- '---\nname: implement-issue\ndescription: x\n# adb:supersedes implement\n---\nbody\n' \
+    > "$wfinstall/agents/$a_/skills/implement-issue/SKILL.md"
+done
+mkinstall "$wfinstall" "$wfhome" claude codex
 d="$WORK/p-workflows"; mkrepo "$d"; mkdir -p "$d/.claude/skills/implement"; printf 'x\n' > "$d/.claude/skills/implement/SKILL.md"
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}todo" "probe: a competing project skill makes the workflows rung todo"
@@ -484,6 +486,11 @@ has "$out" "competes .claude/skills/implement (owner)" "probe: ...naming the fin
 printf '%s\n' "$out" | grep "^workflows$TAB" > "$WORK/wf-rung.tsv"
 ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
 [ "$rc" -ne 0 ] && ok || bad "verdict: a todo workflows rung is never green (rc=$rc)"
+# probe's `claude` default belongs to the harness rung: with no --agents, every agent's skill roots
+# are judged, so Codex's .agents/skills is not missed.
+d="$WORK/p-workflows-codex"; mkrepo "$d"; mkdir -p "$d/.agents/skills/implement"; printf 'x\n' > "$d/.agents/skills/implement/SKILL.md"
+out="$( HOME="$wfhome" ar probe "$d" 2>/dev/null )"
+has "$out" "competes .agents/skills/implement (owner)" "probe: with no --agents, the workflows rung judges Codex's .agents/skills too"
 d="$WORK/p-workflows-ok"; mkrepo "$d"; mkdir -p "$d/.claude/skills/release"; printf 'x\n' > "$d/.claude/skills/release/SKILL.md"
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}ok" "probe: only the exempt release skill -> workflows ok"
@@ -1488,6 +1495,10 @@ shmutant_mut workflows-unknown-reads-ok \
     '    11) _ar_emit workflows unknown' \
     '    11) _ar_emit workflows ok' \
     'probe: no installed baseline -> workflows unknown, never ok'
+shmutant_mut workflows-agents-default-claude \
+    '${agents_given:+--agents "$agents"}' \
+    '--agents "$agents"' \
+    "probe: with no --agents, the workflows rung judges Codex's .agents/skills too"
 shmutant_mut workflows-findings-read-ok \
     '    10) _ar_emit workflows todo' \
     '    10) _ar_emit workflows ok' \

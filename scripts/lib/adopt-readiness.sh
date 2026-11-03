@@ -445,11 +445,11 @@ cmd_receipt() {
 # turns it into rung records, which keeps the derivation testable while the gh call stays in the
 # workflow — the same split `release-counts` / `release-ready` already uses.
 cmd_probe() {
-  local root="" agents="claude"
+  local root="" agents="claude" agents_given=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --agents) [ "$#" -ge 2 ] && [ -n "$2" ] || die "probe: --agents needs a non-empty value"
-                agents="$2"; shift 2 ;;
+                agents="$2"; agents_given=1; shift 2 ;;
       -*) die "probe: unknown option $1" ;;
       *)  [ -z "$root" ] || die "probe: takes one project root"; root="$1"; shift ;;
     esac
@@ -654,9 +654,11 @@ cmd_probe() {
   # --- workflows (#535) -------------------------------------------------------------------
   # Which workflow does this project send its work through? `adopt-lib.sh workflows` decides by
   # name and path, offline; this rung only translates its exit status, naming each finding by path
-  # and owner. Its trailer (`summary`) carries the counts, so a zero is visible.
+  # and owner. Its trailer (`summary`) carries the counts, so a zero is visible. EVERY agent's skill
+  # roots unless `--agents` was given: probe's `claude` default is the harness rung's, and a Codex
+  # skill in the repository reaches whoever runs Codex there.
   local wout wrc wfind wsum
-  wout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" workflows "$root" --agents "$agents" 2>/dev/null)"; wrc=$?
+  wout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" workflows "$root" ${agents_given:+--agents "$agents"} 2>/dev/null)"; wrc=$?
   wsum="$(printf '%s\n' "$wout" | awk -F'\t' '$1=="summary" {print $6; exit}')"
   wfind="$(printf '%s\n' "$wout" | awk -F'\t' '$1!="summary" && $1!="exempt" && $1!="unknown" && NF>=5 {printf " %s %s (%s);", $1, $2, $5}')"
   case "$wrc" in

@@ -594,6 +594,11 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   done
   eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" | awk -F"$TAB" '$1=="fix-bug"{print $2}')" debug \
      "supersedes reads the newly rendered row back"
+  # One agent's render losing the line is refused, never read as "supersedes nothing" there.
+  grep -v '^# adb:supersedes ' "$BFX/agents/codex/skills/debug/SKILL.md" > "$WORK/debug-codex.md"
+  cp "$WORK/debug-codex.md" "$BFX/agents/codex/skills/debug/SKILL.md"
+  eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 \
+     "supersedes refuses (2) when one agent's render lacks a skill's adb:supersedes line"
 else
   bad "could not copy the tree for the build-time map rules"
 fi

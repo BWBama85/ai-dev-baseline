@@ -59,8 +59,8 @@ and one **remote** mutation, `baseline repo apply`, which is a shipped, consent-
 that touches GitHub repo settings and nothing in the working tree.
 
 That boundary is deliberate and it is the reason this workflow is safe to run on a repo you care
-about. Executing the plan — re-homing a forked skill into an `overrides.md`, deleting a duplicated
-hook — is **the operator's**, because those are destructive and belong behind a backup mechanism
+about. Executing the plan — retiring a project skill to `.ai-dev-baseline/retired/<date>/`, deleting a
+duplicated hook — is **the operator's**, because those are destructive and belong behind a backup mechanism
 the baseline does not yet have. Say so when you report; do not imply the plan applied itself.
 
 ## What it produces

@@ -61,6 +61,13 @@ bounded by each CLI).
   rule has one home, `scripts/skill-description.awk`;
   `scripts/build.sh` rejects a source that fails it, loud, for every agent. Write it as a selector (#436): when to invoke, the argument, one distinguishing clause,
   at most ~25 words — it is loaded at every session start, and the abstract belongs in the body.
+- **The superseded-name line (#535), optional.** One frontmatter comment,
+  `# adb:supersedes <name> [<name>…]`, names the legacy workflows this one replaces (names in
+  `[a-z0-9-]`). It is rendered into every agent's skill, the Codex/Gemini synthesised header
+  included, and `adopt-lib.sh supersedes` reads the map back from the installed skills, so
+  `/adopt`'s `workflows` rung reports a project skill by that name as `competes`. `build.sh`
+  refuses a malformed line, a second one, one outside the frontmatter, `release`, a name that is
+  itself a shipped workflow, and a name two workflows both claim.
 - **Optional (Claude-specific) keys, passed through verbatim:** `argument-hint`,
   `allowed-tools`, `disallowed-tools`, `effort`. A future non-Claude renderer maps or
   ignores these per its CLI.
