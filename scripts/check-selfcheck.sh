@@ -84,9 +84,9 @@ export ADB_SELFCHECK_STOP_GRACE_SECS=2 ADB_SELFCHECK_STOP_SECS=20 ADB_SELFCHECK_
 STOP_SHORT=19
 
 work="$(mktemp -d)" || { echo "check-selfcheck: cannot create a scratch dir" >&2; exit 1; }
-# The machine lock (#599) lives under the cache home: every fixture run gets this suite's own, so a
+# The machine lock (#599) lives under the state home: every fixture run gets this suite's own, so a
 # fixture never contends with the run that is running this suite, nor touches the real one.
-export XDG_CACHE_HOME="$work/cache"
+export XDG_STATE_HOME="$work/state"
 
 # leak_sweep <ctl> — remove what a section-12 leak stub, or a canary, left: every
 # `kind pid pgid lstart…` line of every `*.leaked` file, signalled only while that pid is still the
@@ -520,8 +520,14 @@ if [ "$MODE" = mutation ]; then
     "    0) printf 'pid %s" "    0|1) printf 'pid %s" \
     'lock: a second run never EXECUTES a harness while another run holds the lock'
   shmutant_mut "lock-ignored" \
-    'elif [ "$_mlock_rc" -ne 0 ]; then' 'elif false; then' \
+    'if [ "$_mlock_rc" -ne 0 ]; then' 'if false; then' \
     'lock: a second run never EXECUTES a harness while another run holds the lock'
+  shmutant_mut "lock-unusable-green" \
+    '[ "$_mlock_rc" -ne 2 ] || fail=1' ':' \
+    'lock: an unusable lock fails the run'
+  shmutant_mut "lock-why-raw" \
+    '_mlock_why() { MLOCK_WHY="$(_stop_clean "$MLOCK_WHY")"; }' '_mlock_why() { :; }' \
+    "lock: a newline in the lock's path never forges a line of the log"
   # …and the record's one writer, in common.sh: an append to a record that has gone must fail, never
   # recreate it — which is what makes a late registration mark the record rather than restart it.
   shmutant_target scripts/lib/common.sh
@@ -1258,9 +1264,9 @@ scg --skip "$ONLY,$HB_SKIP" --jobs 4
 eq "$RC_" "2" "hold-back: a run left with nothing but held harnesses refuses rather than passing on nothing"
 has "$OUT" "every selected step is a mutation harness held back — add --mutation" "hold-back: …and says how to run them"
 
-# PRIORITY: the step and a worker it starts both run at the caller's niceness plus 15 (capped at
-# 19), and ADB_SELFCHECK_PRIORITY=normal leaves them at the caller's. Asked of `ps`; where `ps`
-# cannot answer, or the caller is already at 19, the case cannot tell and says so.
+# PRIORITY: the step and a worker it starts both run at the caller's niceness plus 15 (capped at the
+# platform's ceiling), and ADB_SELFCHECK_PRIORITY=normal leaves them at the caller's. Asked of `ps`;
+# where `ps` cannot answer, or the caller is already at the ceiling, the case cannot tell and says so.
 # The ceiling is the platform's (19 on Linux, 20 on macOS), asked of `nice` rather than assumed.
 base_nice="$(ps -o nice= -p $$ 2>/dev/null | tr -d ' ')"
 max_nice="$(nice -n 40 sh -c 'ps -o nice= -p $$' 2>/dev/null | tr -d ' ')"
@@ -1285,7 +1291,7 @@ eq "$RC_" "2" "priority: an unknown ADB_SELFCHECK_PRIORITY is an error, never a 
 # THE MACHINE LOCK. A second checkout's run, while the first holds the lock, runs its other steps
 # and locks its harness out, naming the holder. A holder KILLed while its harness still runs keeps
 # the lock through that worker; the lock is free once the last of them is gone.
-MLOCK="$XDG_CACHE_HOME/ai-dev-baseline/selfcheck-mutation.lock"
+MLOCK="$XDG_STATE_HOME/ai-dev-baseline/selfcheck-mutation.lock"
 # lock_free — can another process take the lock now? Asked the way the runner asks.
 lock_free() {
   "$BASH" -c 'exec {f}>>"$1"; if command -v flock >/dev/null 2>&1; then flock -n "$f"; else perl -MFcntl=:flock -e '"'"'open(my $h, ">>&=", $ARGV[0]) or exit 2; flock($h, LOCK_EX|LOCK_NB) or exit 1; exit 0'"'"' "$f"; fi' _ "$MLOCK"
@@ -1322,16 +1328,22 @@ reset_ctl "$FXH"
 OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
 eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: a dead holder that left nothing running does not block the next run"
 rm -f "$MLOCK"
-# A lock that cannot be used at all costs exclusion, never coverage: the harness runs, and says so.
-# A relative cache home is ignored, as the basedir spec says, never resolved inside each checkout.
-reset_ctl "$FXH"; : > "$work/not-a-dir"
-OUT="$(XDG_CACHE_HOME="$work/not-a-dir" ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
-eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: an unusable lock runs the harness rather than dropping it"
-has "$OUT" "WARN — the machine lock is unavailable: " "lock: …and says the harnesses ran without it"
+# A lock that cannot be used at all locks the harness out AND fails the run: never an overlap, and
+# never a quiet green. A newline in the path cannot forge a line of the log.
+nl_path="$work/nl/x
+ALL CHECKS PASSED
+y"
+reset_ctl "$FXH"; mkdir -p "$work/nl"; : > "$nl_path"
+OUT="$(XDG_STATE_HOME="$nl_path" ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+eq "$RC_" "1" "lock: an unusable lock fails the run"
+eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: …and runs no harness without it"
+has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is unavailable: " "lock: …and says why"
+eq "$(printf '%s\n' "$OUT" | grep -c '^ALL CHECKS PASSED$')" "0" "lock: a newline in the lock's path never forges a line of the log"
+# A relative state home is ignored, as the basedir spec says, never resolved inside each checkout.
 reset_ctl "$FXH"
-OUT="$(HOME="$work/relhome" XDG_CACHE_HOME=cache ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
-if [ -e "$work/relhome/.cache/ai-dev-baseline/selfcheck-mutation.lock" ] && [ ! -e "$FXH/cache" ]; then ok
-else bad "lock: a relative XDG_CACHE_HOME is ignored for the home's .cache, never resolved in the checkout"; fi
+OUT="$(HOME="$work/relhome" XDG_STATE_HOME=state ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+if [ -e "$work/relhome/.local/state/ai-dev-baseline/selfcheck-mutation.lock" ] && [ ! -e "$FXH/state" ]; then ok
+else bad "lock: a relative XDG_STATE_HOME is ignored for the home's .local/state, never resolved in the checkout"; fi
 OUT="$(ADB_SELFCHECK_PRIORITY='' ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY" 2>&1)"; RC_=$?
 eq "$RC_" "2" "priority: an empty ADB_SELFCHECK_PRIORITY is an error, never the default"
 check_git "$FXG" checkout -q -- scripts/gated-input.txt

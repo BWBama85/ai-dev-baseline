@@ -1031,10 +1031,11 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
   the step runs, and the line says why.
 
   One mutation run at a time (#599), per user and cache home: the harnesses a run dispatches run
-  under a lock at ${XDG_CACHE_HOME:-~/.cache}/ai-dev-baseline/selfcheck-mutation.lock, held while
-  the runner or any step or worker it started lives. A run that finds it held runs everything else,
-  locks its harnesses out and names the holder; a lock that cannot be used at all runs them with a
-  WARN. A direct `bash scripts/check-*.sh --mutation` takes no lock.
+  under a lock at ${XDG_STATE_HOME:-~/.local/state}/ai-dev-baseline/selfcheck-mutation.lock, held
+  while the runner or any step or worker it started lives (do not delete it while a run holds it).
+  A run that finds it held runs everything else, locks its harnesses out and names the holder; a
+  lock that cannot be used at all locks them out and fails the run. A direct
+  `bash scripts/check-*.sh --mutation` takes no lock.
 
   Priority (#599): a run lowers its own priority (POSIX `nice -n 15`, inherited by every step and
   pool worker) and says so in its header. ADB_SELFCHECK_PRIORITY=normal runs it at the caller's
@@ -3060,14 +3061,16 @@ fi
 # =================================== the machine lock (#599) ===================================
 # One run's mutation harnesses at a time per user and cache home (D147). A held lock costs this run
 # its harnesses, never its other steps, and names the holder; a lock that cannot be used at all
-# costs exclusion, never coverage, and says so. The lock is a kernel flock on a descriptor this
+# locks them out too and fails the run, so a broken lock is loud and never overlaps. The lock is a kernel flock on a descriptor this
 # runner opens and every step inherits: it is held while any process holding that descriptor lives
 # (the runner, every step and worker, but not its own ticker), so a dead runner's surviving workers
 # keep it, and the kernel drops it with the last of them. The file's text only names the holder.
 declare -a LOCKED_OUT=()
-# A relative XDG_CACHE_HOME is invalid by the basedir spec and would differ per checkout.
-case "${XDG_CACHE_HOME:-}" in /*) _cache="$XDG_CACHE_HOME" ;; *) _cache="${HOME:-/root}/.cache" ;; esac
-MLOCK_FILE="$_cache/ai-dev-baseline/selfcheck-mutation.lock"
+# Under the STATE home, not the cache: a cache cleaner deleting the file mid-run would let a second
+# run lock a new inode at the same path. A relative XDG_STATE_HOME is invalid by the basedir spec
+# and would differ per checkout, so it is ignored.
+case "${XDG_STATE_HOME:-}" in /*) _state="$XDG_STATE_HOME" ;; *) _state="${HOME:-/root}/.local/state" ;; esac
+MLOCK_FILE="$_state/ai-dev-baseline/selfcheck-mutation.lock"
 MLOCK_FD="" MLOCK_WHY=""
 # _mlock_try <fd> — flock(2) LOCK_EX|LOCK_NB on <fd>: 0 taken · 1 held by another · else unavailable.
 _mlock_try() {
@@ -3113,13 +3116,15 @@ _mlock_take() {
   case "$MLOCK_WHY" in unavailable:*) return 2 ;; esac
   return 1
 }
+# Every path in the lock's diagnostics is arbitrary bytes headed for a log `--summarize` parses.
+_mlock_why() { MLOCK_WHY="$(_stop_clean "$MLOCK_WHY")"; }
 _any_harness=0
 for _s in "${SELECTED[@]}"; do [ -z "${STEP_INPUTS[$_s]+x}" ] || _any_harness=1; done
 _mlock_rc=0
-[ "$_any_harness" -eq 0 ] || { _mlock_take; _mlock_rc=$?; }
-if [ "$_mlock_rc" -eq 2 ]; then
-  printf 'selfcheck: WARN — the machine lock is %s; the harnesses run without it\n' "$MLOCK_WHY"
-elif [ "$_mlock_rc" -ne 0 ]; then
+[ "$_any_harness" -eq 0 ] || { _mlock_take; _mlock_rc=$?; _mlock_why; }
+# An unusable lock fails the run: locked out, and red, never a quiet green over nothing.
+[ "$_mlock_rc" -ne 2 ] || fail=1
+if [ "$_mlock_rc" -ne 0 ]; then
   declare -a _free=()
   for _s in "${SELECTED[@]}"; do
     if [ -n "${STEP_INPUTS[$_s]+x}" ]; then LOCKED_OUT+=("$_s"); else _free+=("$_s"); fi

@@ -90,7 +90,7 @@ touches, and since #441 that is a **gate**: each `*-mutation` step declares the 
 depends on (`--list`, fifth field), and the runner dispatches it only when your change, working
 tree and untracked files included, touches one of them against the merge-base with `origin/main`. Held-back steps are named
 before the run and in the `result` block (`gated (inputs unchanged): …`), with the base and inputs
-each was compared on. Under one user and cache home, a run whose harnesses would overlap another
+each was compared on. Under one user and state home, a run whose harnesses would overlap another
 run's (still running, or the leftovers of one that died) runs everything else and names the
 holder. Every run lowers its own priority so the rest of the machine stays responsive
 (`ADB_SELFCHECK_PRIORITY=normal` opts out).

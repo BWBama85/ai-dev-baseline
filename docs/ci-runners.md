@@ -351,8 +351,9 @@ no longer matches its target — surfaces at the next successful scheduled or on
 something new to say, dispatches each against the PR head and links the runs, as evidence rather
 than a merge gate.
 
-**The local runner is unchanged.** A plain `bash scripts/selfcheck.sh` still selects the whole
-registry and still gates each harness on its inputs (#441), and per row (#470, D108): a row runs
+**Locally, the harnesses run on request** (#599, D147). A plain `bash scripts/selfcheck.sh` holds
+every harness back and names it; `--mutation` runs the ones a change touches, gated on their inputs
+(#441), and per row (#470, D108): a row runs
 only when the change touches the file it mutates or a declared input no row targets, an
 approximation the nightly backstops by gating nothing. `scripts/check-mutation-gate.sh` pins the
 wiring — no `--mutation` line in `ci.yml`, direct or gated; this job's skip read from the registry;
