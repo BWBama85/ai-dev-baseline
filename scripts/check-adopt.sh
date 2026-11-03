@@ -720,13 +720,14 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   put_marker '# adb:supersedes fix-bug'
   eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 10 \
      "workflows: the restored copy is judged (10) before its codex skills are made unlistable"
-  chmod 000 "$BFX/agents/codex/skills"
+  # EVERY agent's skills unlistable: the agents' skill sets are then all empty and agree, so only
+  # the per-agent coverage check can refuse — one defence, observable on its own.
+  for a_ in claude codex gemini; do chmod 000 "$BFX/agents/$a_/skills"; done
   if [ ! -r "$BFX/agents/codex/skills" ]; then
-    # --agents claude: the map is every baseline agent's, so codex's unreadable skills still count.
     eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 11 \
        "workflows: a baseline whose codex skills cannot be listed exits 11, even judging claude only"
   fi
-  chmod 755 "$BFX/agents/codex/skills"
+  for a_ in claude codex gemini; do chmod 755 "$BFX/agents/$a_/skills"; done
 else
   bad "could not copy the tree for the build-time map rules"
 fi
@@ -1887,8 +1888,8 @@ shmutant_mut workflows-unread-baseline-judged \
     '  if false; then' \
     'an unreadable shipped set exits 11'
 shmutant_mut workflows-dangling-link-trusted \
-    '         && [ -f "$HOME/.claude/skills/$name/SKILL.md" ]' \
-    '         && true' \
+    '         && [ -f "$HOME/.claude/skills/$name/SKILL.md" ] && [ -r "$HOME/.claude/skills/$name/SKILL.md" ]; then cls=duplicates; fi' \
+    '         ; then cls=duplicates; fi' \
     'a dangling personal link is not proof the baseline copy runs'
 shmutant_mut classify-unjudged-kept \
     '  if [ "$kind" = skill ] && [ "$wclass" = unjudged ]; then' \
