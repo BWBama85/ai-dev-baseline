@@ -498,6 +498,14 @@ ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
 eq "$rc" 10 "verdict: a todo workflows rung beside an otherwise green contract is exactly 10"
 { cat "$WORK/wf-green.tsv"; printf 'workflows\tok\tfixture\n'; } | ar verdict >/dev/null 2>&1; rc=$?
 eq "$rc" 0 "verdict: ...and the same contract with workflows ok is green (0)"
+# A ROUTING finding alone (#535's second slice): a root-doc pointer, with no project skill at all,
+# makes the rung todo and keeps its <doc>:<line>, its target and its owner.
+d="$WORK/p-pointer"; mkrepo "$d"; printf 'Run /implement 12.\n' > "$d/CLAUDE.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}todo" "probe: a root-doc pointer alone makes the workflows rung todo"
+has "$out" "stale-pointer CLAUDE.md:1 -> implement-issue (owner)" "probe: ...naming the pointer's line, its target and its owner"
+{ cat "$WORK/wf-green.tsv"; printf '%s\n' "$out" | grep "^workflows$TAB"; } | ar verdict >/dev/null 2>&1; rc=$?
+eq "$rc" 10 "verdict: a pointer-only workflows rung beside an otherwise green contract is exactly 10"
 # probe's `claude` default belongs to the harness rung: with no --agents, every agent's skill roots
 # are judged, so Codex's .agents/skills is not missed.
 d="$WORK/p-workflows-codex"; mkrepo "$d"; mkdir -p "$d/.agents/skills/implement"; printf 'x\n' > "$d/.agents/skills/implement/SKILL.md"

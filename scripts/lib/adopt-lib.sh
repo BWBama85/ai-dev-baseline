@@ -2426,7 +2426,7 @@ cmd_workflows() {
   # Names: every legacy name the map supersedes, plus every project skill found above (its class is
   # a finding). A baseline name with no project copy routes to the baseline, so it is not one. A
   # name ends at a character no skill name carries, or at a `.` that does not continue one
-  # (`/implement.` ends a sentence; `/implement.foo` is another name).
+  # (`/implement.` ends a sentence; `/implement.foo`, `/implement..x` and `/implement./f` do not).
   # Fenced blocks and HTML comments are not prose (adb_md_prose); inline code is, because "run
   # `/implement 12`" is still an instruction. Only <doc>:<line> and the name are emitted.
   local -A pnames=() mnames=()
@@ -2444,7 +2444,7 @@ cmd_workflows() {
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
       BEGIN { k = split(names, N, " ")
-              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])" } }
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])" } }
       { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
       nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
       continue
@@ -2522,7 +2522,7 @@ cmd_workflows() {
   # all under --scope project (the CI form). A dangling link loads nothing and is not reported.
   if [ "$scope" = all ]; then
     local -A uroots_=()
-    local ur_ ue_ un_ disp_ tilde_="~"
+    local ur_ ue_ un_ disp_ lt_ tilde_="~"
     for a in ${agents//,/ }; do
       local -a urlist_=()
       mapfile -d '' -t urlist_ < <(adb_agent_user_skill_roots "$a")
@@ -2540,7 +2540,15 @@ cmd_workflows() {
           [ -e "$ue_" ] || [ -L "$ue_" ] || continue
           un_="${ue_##*/}"
           [ -n "${target[$un_]:-}" ] || [ -n "${shipn[$un_]:-}" ] || continue
-          [ -L "$ue_" ] && [ ! -e "$ue_" ] && continue
+          # A link whose target does not exist loads nothing. One whose target lies under a folder
+          # that cannot be searched is not absent — it is not judged.
+          if [ -L "$ue_" ] && [ ! -e "$ue_" ]; then
+            lt_="$(readlink -n "$ue_" 2>/dev/null; printf x)"; lt_="${lt_%x}"
+            case "$lt_" in /*) ;; *) lt_="$ur_/$lt_" ;; esac
+            if [ -n "$lt_" ] && _ad_parents_searchable "" "${lt_#/}"; then continue; fi
+            nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a user skill link of $a points under a folder that could not be searched — not judged"
+            continue
+          fi
           # A SKILL is a directory holding SKILL.md; anything else loads nothing. One the scan cannot
           # search is not judged rather than read as absent.
           [ -d "$ue_" ] || continue
@@ -2578,7 +2586,8 @@ cmd_workflows() {
 # stdout: `competes:<target>`, `shadows`, `duplicates`, `project-specific`, `exempt` · `none` (the
 # file is whole and holds no judgment of this path) · `unjudged` (the file is not whole, so no path
 # is judged by it). Whole means: adb_bytes_whole (regular, non-link, NUL-free, newline-terminated,
-# at most 8 MiB); every line six tab-separated fields with a known class; exactly one `summary`,
+# at most 8 MiB); every line six tab-separated fields with a known class, each field in its grammar
+# (a target is a workflow name as `classify` accepts it); exactly one `summary`,
 # and it is last; and no path judged twice for one agent. Exit 0, or 2 on usage.
 cmd_wclass() {
   [ "$#" -eq 3 ] || die "wclass: needs <workflows-tsv> <relpath> <agent>"
@@ -2591,7 +2600,7 @@ cmd_wclass() {
     # field in its closed charset for that class.
     function rowok(  p, a, t) {
       if (NF != 6 || $6 == "") return 0
-      p = ($2 ~ /^[A-Za-z0-9._\/~:-]+$/); a = ($3 ~ /^[a-z0-9-]+$/); t = ($4 ~ /^[a-z0-9-]+$/)
+      p = ($2 ~ /^[A-Za-z0-9._\/~:-]+$/); a = ($3 ~ /^[a-z0-9-]+$/); t = ($4 ~ /^[a-z0-9][a-z0-9-]*$/)
       if ($1 == "summary") return ($2 == "-" && $3 == "-" && $4 == "-" && $5 == "-")
       if ($1 == "unknown") return ($2 == "-" && $3 == "-" && $4 == "-" && $5 == "agent")
       if ($1 == "competes") return (p && a && t && $5 == "owner")

@@ -776,6 +776,9 @@ eq "$(printf '%s\n' "$dto" | grep -c "^stale-pointer${TAB}CLAUDE.md:1${TAB}")" 1
 printf 'Run /implement.foo here.\n' > "$DTX/CLAUDE.md"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
    "workflows: a dotted name that merely starts with a legacy name is not a pointer to it"
+printf 'Run /implement..foo 12, or open /implement./file.\n' > "$DTX/CLAUDE.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: /implement..foo and /implement./file are another name and a path, not pointers"
 # A user entry is a finding only when it is a SKILL — a directory holding SKILL.md.
 NSH="$WORK/ns-home"; mkdir -p "$NSH/.claude/skills/implement"; printf 'x\n' > "$NSH/.claude/skills/review"
 eq "$(HOME="$NSH" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 0 \
@@ -874,6 +877,20 @@ else
   bad "workflows: could not build the unmerged-index fixture"
 fi
 
+printf 'competes\t.claude/skills/implement\tclaude\t-\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a '-' target is not a workflow name, so the file is not whole"
+eq "$(verdict skill no unknown no "$(wcl)")" escalate "wclass -> classify: a damaged target escalates rather than aborting classify"
+# A user link whose target lies under a folder that cannot be searched is not dangling.
+LKH="$WORK/lk-home"; mkdir -p "$LKH/.claude/skills" "$WORK/lk-locked/inner/implement"
+printf 'x\n' > "$WORK/lk-locked/inner/implement/SKILL.md"; ln -s "$WORK/lk-locked/inner/implement" "$LKH/.claude/skills/implement"
+chmod 000 "$WORK/lk-locked"
+if [ -x "$WORK/lk-locked" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unsearchable link target is unexercised"
+else
+  eq "$(HOME="$LKH" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: a user link into an unsearchable folder is unjudged (11), never dangling"
+fi
+chmod 755 "$WORK/lk-locked"
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2197,7 +2214,7 @@ shmutant_mut classify-project-skill-kept \
 
 # #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
 shmutant_mut pointer-word-boundary-dropped \
-    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
+    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
     'R[i] = "[/$]" re' \
     'are not pointers (word boundary)'
 shmutant_mut pointer-reads-fenced-text \
@@ -2262,9 +2279,21 @@ shmutant_mut wclass-duplicates-unchecked \
     'seen[k] = 1' \
     'wclass: a path judged twice for one agent is not whole'
 shmutant_mut pointer-dotted-prefix-matches \
-    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
+    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
     '[^A-Za-z0-9_/-]"' \
     'a dotted name that merely starts with a legacy name is not a pointer'
+shmutant_mut pointer-dot-terminator-loose \
+    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
+    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
+    '/implement..foo and /implement./file are another name and a path'
+shmutant_mut user-link-unsearchable-is-dangling \
+    '            if [ -n "$lt_" ] && _ad_parents_searchable "" "${lt_#/}"; then continue; fi' \
+    '            continue' \
+    'a user link into an unsearchable folder is unjudged'
+shmutant_mut wclass-target-grammar-loose \
+    't = ($4 ~ /^[a-z0-9][a-z0-9-]*$/)' \
+    't = ($4 ~ /^[a-z0-9-]+$/)' \
+    "a '-' target is not a workflow name"
 shmutant_mut user-global-non-skill-counted \
     '          [ -f "$ue_/SKILL.md" ] || continue' \
     '          :' \
