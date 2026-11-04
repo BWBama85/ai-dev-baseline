@@ -916,6 +916,16 @@ printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\ns
 eq "$(PATH="$WCSTUB:$PATH" bash "$AD" wclass "$WCF" .claude/skills/implement claude)" unjudged \
    "wclass: a file whose size read failed is not whole, whatever wc printed"
 
+# The writer and the reader agree. A repeated --agents token judges each path once...
+RAX="$WORK/wf-repeat"; mkdir -p "$RAX/.claude/skills/implement"; printf 'x\n' > "$RAX/.claude/skills/implement/SKILL.md"
+HOME="$WORK/pt-home" bash "$AD" workflows "$RAX" --agents claude,claude --baseline "$ROOT" --scope project > "$WORK/wf-repeat.tsv"
+eq "$(bash "$AD" wclass "$WORK/wf-repeat.tsv" .claude/skills/implement claude)" competes:implement-issue \
+   "workflows -> wclass: a repeated --agents token still yields a file wclass judges"
+# ...and a whole file far past the old 8 MiB bound is still read (the writer's own output can be).
+awk 'BEGIN { for (i = 0; i < 60000; i++) printf "stale-pointer\tCLAUDE.md:%d\t-\timplement-issue\towner\ta root-doc line routes work to implement — point it at the baseline workflow instead, padded to a realistic record length\n", i + 1
+             printf "competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n" }' > "$WCF"
+eq "$(wcl)" competes:implement-issue "wclass: a whole file past 8 MiB is still judged — the reader's bound covers the writer's output"
+
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2292,7 +2302,7 @@ shmutant_mut supersedes-frontmatter-rule-ignored \
     'supersedes refuses a shipped skill that fails the skill frontmatter rule'
 
 shmutant_mut wclass-final-byte-unchecked \
-    '  if ! adb_bytes_whole "$f" 8388608; then printf '"'"'unjudged\n'"'"'; return 0; fi' \
+    '  if ! adb_bytes_whole "$f" 1073741824; then printf '"'"'unjudged\n'"'"'; return 0; fi' \
     '  :' \
     'wclass: a file without its final newline is not whole'
 shmutant_mut wclass-grammar-unchecked \
@@ -2387,6 +2397,15 @@ shmutant_mut size-read-status-ignored \
     '  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || return 1' \
     '  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || :' \
     'a root doc whose size read failed is unjudged'
+
+shmutant_mut wclass-bound-below-writer \
+    '  if ! adb_bytes_whole "$f" 1073741824; then' \
+    '  if ! adb_bytes_whole "$f" 8388608; then' \
+    "the reader's bound covers the writer's output"
+shmutant_mut workflows-agents-not-deduplicated \
+    '  agents="$(_ad_unique_agents "$agents")"   # repeats would judge every path twice; wclass refuses that' \
+    '  :' \
+    'a repeated --agents token still yields a file wclass judges'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \

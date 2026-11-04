@@ -224,6 +224,16 @@ EOF
   [ "$seen" -eq 1 ] || die "$who: --agents was given no usable token"
 }
 
+# _ad_unique_agents <comma-list> — the list with repeats dropped, order kept. A repeated token would
+# walk the same roots twice and emit every record twice.
+_ad_unique_agents() {
+  local a out=""
+  for a in ${1//,/ }; do
+    case ",$out," in *",$a,"*) ;; *) out="${out:+$out,}$a" ;; esac
+  done
+  printf '%s' "$out"
+}
+
 # --- the agent set -------------------------------------------------------------------------------
 # Derived from `<baseline-root>/agents/*/`, never a second hardcoded list — the same rule
 # bin/agent-init follows for the gitignore set (#250) and for exactly the same reason: a fourth
@@ -1012,6 +1022,7 @@ cmd_scan() {
   [ -d "$root" ] || die "scan: not a directory: $root"
   [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" scan
+  agents="$(_ad_unique_agents "$agents")"
 
   # THE AGENT IS THE FOURTH FIELD on every record, and `-` where the artifact is agent-neutral.
   # Without it the collision lookup could only match on <kind, name> and took the FIRST match,
@@ -2280,6 +2291,7 @@ cmd_workflows() {
   [ -d "$root" ] || die "workflows: not a directory: $(adb_display_value "$root")"
   [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" workflows
+  agents="$(_ad_unique_agents "$agents")"   # repeats would judge every path twice; wclass refuses that
 
   local ug="user-global=not judged"
   [ "$scope" = project ] && ug="user-global=not evaluated (scope project)"
@@ -2594,13 +2606,14 @@ cmd_workflows() {
 # stdout: `competes:<target>`, `shadows`, `duplicates`, `project-specific`, `exempt` · `none` (the
 # file is whole and holds no judgment of this path) · `unjudged` (the file is not whole, so no path
 # is judged by it). Whole means: adb_bytes_whole (regular, non-link, NUL-free, newline-terminated,
-# at most 8 MiB); every line six tab-separated fields with a known class, each field in its grammar
+# at most 1 GiB — sized to cover anything `workflows` can write, whose largest output is pointer
+# records from three root docs it caps at 1 MiB each); every line six tab-separated fields with a known class, each field in its grammar
 # (a target is a workflow name as `classify` accepts it); exactly one `summary`,
 # and it is last; and no path judged twice for one agent. Exit 0, or 2 on usage.
 cmd_wclass() {
   [ "$#" -eq 3 ] || die "wclass: needs <workflows-tsv> <relpath> <agent>"
   local f="$1" rel="$2" agent="$3" out
-  if ! adb_bytes_whole "$f" 8388608; then printf 'unjudged\n'; return 0; fi
+  if ! adb_bytes_whole "$f" 1073741824; then printf 'unjudged\n'; return 0; fi
   out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" '
     BEGIN { split("competes shadows duplicates project-specific exempt", J, " ")
             for (i in J) judged[J[i]] = 1 }
