@@ -136,7 +136,7 @@ settings${TAB}owner${TAB}repo settings were offered and applied with consent, in
 reviewers${TAB}owner${TAB}[reviewers] bots agrees with the GitHub Apps that review this repo's pull requests
 release${TAB}owner${TAB}the release command resolves to a real target
 decisions${TAB}agent${TAB}a decision log exists for the unknowns adoption hit
-workflows${TAB}owner${TAB}the project runs the baseline's workflows — no competing, same-name or project skill, no prior framework's pin
+workflows${TAB}owner${TAB}the project runs the baseline's workflows — no competing, same-name or project skill, no prior framework's pin, and nothing routing work to one (root-doc pointer, tracked mirror, user skill root)
 EOF
 }
 
@@ -662,8 +662,8 @@ cmd_probe() {
   wsum="$(printf '%s\n' "$wout" | awk -F'\t' '$1=="summary" {print $6; exit}')"
   wfind="$(printf '%s\n' "$wout" | awk -F'\t' '$1!="summary" && $1!="exempt" && $1!="unknown" && NF>=5 {printf " %s %s%s (%s);", $1, $2, ($1=="competes" ? " -> " $4 : ""), $5}')"
   case "$wrc" in
-    0)  _ar_emit workflows ok "no competing, same-name or project skill and no prior framework's pin — $wsum" ;;
-    10) _ar_emit workflows todo "the project carries skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each to .ai-dev-baseline/retired/<date>/ in a normal PR; $wsum" ;;
+    0)  _ar_emit workflows ok "no competing, same-name or project skill, no prior framework's pin, and nothing routing work to one — $wsum" ;;
+    10) _ar_emit workflows todo "the project carries or routes work to skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each skill and mirror to .ai-dev-baseline/retired/<date>/ in a normal PR, re-point each root-doc line at the baseline workflow, and move each user-level skill out of its user root; $wsum" ;;
     11) _ar_emit workflows unknown "workflows not judged in full$( [ -n "$wfind" ] && printf ' (found so far:%s)' "$wfind") — ${wsum:-no summary}; $(printf '%s\n' "$wout" | awk -F'\t' '$1=="unknown" {print $6; exit}')" ;;
     *)  _ar_emit workflows unknown "adopt-lib.sh workflows failed (exit $wrc) — workflows not judged" ;;
   esac

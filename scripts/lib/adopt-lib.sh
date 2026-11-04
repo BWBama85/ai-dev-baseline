@@ -2198,6 +2198,17 @@ cmd_supersedes() {
 # a zero is visible rather than looking like a clean pass.
 # Exit: 0 no finding · 10 findings · 11 something could not be judged (wins over 10) · 2 usage.
 # Pinned-payload skills are never reported: the scan's receipt check (adb_pinned_owned) skips them.
+# _ad_in_git_tree <dir> — true when <dir> or an ancestor carries a `.git`: there, a git that cannot
+# answer has failed, which is not the same as a directory outside every repository.
+_ad_in_git_tree() {
+  local d
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 0   # unresolvable: never claim "not a repository"
+  while :; do
+    [ -e "$d/.git" ] || [ -L "$d/.git" ] && return 0
+    [ "$d" = / ] || [ -z "$d" ] && return 1
+    d="${d%/*}"; [ -n "$d" ] || d=/
+  done
+}
 _ad_wf_rec() {  # <class> <path> <agent> <target> <owner> <remedy>
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@"
 }
@@ -2399,7 +2410,7 @@ cmd_workflows() {
     _ad_wf_rec unknown - - - agent "git was not found — tracked mirrors were not judged"
   elif [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
     gitok=1
-  elif [ -e "$root/.git" ] || [ -L "$root/.git" ]; then
+  elif _ad_in_git_tree "$root"; then
     mirror="mirrors=not judged (git could not read the repository)"; nunk=$((nunk + 1))
     _ad_wf_rec unknown - - - agent "git could not read the repository — tracked mirrors were not judged"
   else

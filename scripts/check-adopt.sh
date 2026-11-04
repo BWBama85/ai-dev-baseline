@@ -687,6 +687,16 @@ fi
 mkdir -p "$WORK/wf-badgit"; printf 'gitdir: %s/nowhere\n' "$WORK" > "$WORK/wf-badgit/.git"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-badgit" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a .git git cannot read leaves mirrors unjudged (exit 11)"
+# ...and so is a project INSIDE a parent repository git cannot read (no .git at the project root).
+mkdir -p "$WORK/wf-parent/sub"
+if git -C "$WORK/wf-parent" init -q >/dev/null 2>&1; then
+  eq "$(GIT_DIR="$WORK/no-such-gitdir" HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-parent/sub" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: a project inside a repository git cannot read leaves mirrors unjudged (exit 11)"
+  has "$(GIT_DIR="$WORK/no-such-gitdir" HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT")" \
+      "mirrors=not evaluated (not a git repository)" "workflows: ...while a directory outside every repository is simply not evaluated"
+else
+  bad "workflows: could not build the parent-repository fixture"
+fi
 
 # User skill roots: a non-baseline entry named like a legacy workflow or a baseline skill.
 UGH="$WORK/ug-home"
@@ -2087,9 +2097,13 @@ shmutant_mut mirror-reads-untracked \
     '      git ls-files -z --cached --others 2>/dev/null' \
     'an untracked copy is not a mirror'
 shmutant_mut mirror-unreadable-git-not-evaluated \
-    '  elif [ -e "$root/.git" ] || [ -L "$root/.git" ]; then' \
+    '  elif _ad_in_git_tree "$root"; then' \
     '  elif false; then' \
     'a .git git cannot read leaves mirrors unjudged'
+shmutant_mut mirror-git-ancestry-unwalked \
+    '    d="${d%/*}"; [ -n "$d" ] || d=/' \
+    '    return 1' \
+    'a project inside a repository git cannot read leaves mirrors unjudged'
 shmutant_mut user-global-any-link-is-baseline \
     '          adb_link_into "$ue_" "$broot" && continue' \
     '          [ -L "$ue_" ] && continue' \
