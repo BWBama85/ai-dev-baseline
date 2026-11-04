@@ -590,7 +590,9 @@ eq "$ovrc" 10 "workflows: ...so the project is not clean"
 has "$wfo" "nested=not evaluated" "workflows: the trailer says nested roots were not evaluated"
 # A failure anywhere in the inventory walk — here only `sort -z` — is unjudged, never clean.
 SZSTUB="$WORK/sortz-stub"; mkdir -p "$SZSTUB"; REALSORT="$(command -v sort)"
-printf '#!/bin/sh\ncase " $* " in *" -z "*) exit 1 ;; esac\nexec "%s" "$@"\n' "$REALSORT" > "$SZSTUB/sort"; chmod +x "$SZSTUB/sort"
+# The stub DRAINS its input before failing: one that exits unread kills `find` with SIGPIPE, and the
+# walk's find-status check then answers instead of the sort-status check this case exists for.
+printf '#!/bin/sh\ncase " $* " in *" -z "*) cat >/dev/null; exit 1 ;; esac\nexec "%s" "$@"\n' "$REALSORT" > "$SZSTUB/sort"; chmod +x "$SZSTUB/sort"
 mkdir -p "$WORK/wf-sortz/.claude/commands"; printf 'x\n' > "$WORK/wf-sortz/.claude/commands/pr.md"
 eq "$(PATH="$SZSTUB:$PATH" HOME="$WFX/home" bash "$AD" workflows "$WORK/wf-sortz" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
    "workflows: an inventory walk whose sort failed is unjudged (11), never clean"
