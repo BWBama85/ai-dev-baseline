@@ -65,6 +65,9 @@ adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
+# The workflows rung walks Codex's user skill root, which follows CODEX_HOME: a fixture HOME decides
+# it, never the caller's.
+unset CODEX_HOME
 AR="$ROOT/scripts/lib/adopt-readiness.sh"
 WF="$ROOT/base/workflows/adopt.md"
 

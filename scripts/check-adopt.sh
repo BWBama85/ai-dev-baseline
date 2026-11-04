@@ -607,6 +607,16 @@ eq "$(verdict other no unknown no exempt)"  keep "an exempt legacy release comma
 rm -f "$WFX/home/.claude/skills/cleanup"; ln -s "$ROOT/agents/claude/skills/no-such-skill" "$WFX/home/.claude/skills/cleanup"
 has "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")" \
     "shadows${TAB}.claude/skills/cleanup${TAB}claude" "workflows: a dangling personal link is not proof the baseline copy runs"
+# ...nor is one that resolves inside the baseline to a directory holding no SKILL.md.
+rm -f "$WFX/home/.claude/skills/cleanup"; ln -s "$ROOT/agents/claude/skills" "$WFX/home/.claude/skills/cleanup"
+has "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")" \
+    "shadows${TAB}.claude/skills/cleanup${TAB}claude" "workflows: a personal link to a baseline directory with no SKILL.md is not proof"
+# A link that NAMES the baseline but resolves outside it is not the baseline's (resolved, not text).
+mkdir -p "$WORK/foreign-cleanup"; printf 'x\n' > "$WORK/foreign-cleanup/SKILL.md"
+up_=""; r_="$ROOT"; while [ "$r_" != / ] && [ -n "$r_" ]; do up_="$up_/.."; r_="${r_%/*}"; [ -n "$r_" ] || r_=/; done
+rm -f "$WFX/home/.claude/skills/cleanup"; ln -s "$ROOT$up_$WORK/foreign-cleanup" "$WFX/home/.claude/skills/cleanup"
+has "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")" \
+    "shadows${TAB}.claude/skills/cleanup${TAB}claude" "workflows: a personal link that names the baseline but resolves outside it is not the baseline's"
 rm -f "$WFX/home/.claude/skills/cleanup"
 # AN UNREADABLE SKILL ROOT IS NOT AN EMPTY ONE: exit 11, never a clean 0.
 URX="$WORK/wf-unreadable"; mkdir -p "$URX/.claude/skills/implement"; printf 'x\n' > "$URX/.claude/skills/implement/SKILL.md"
@@ -756,6 +766,64 @@ eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$OCX" --agents claude --baselin
 ln -s custom.sh "$PNX/.claude/skills/cleanup/linked.sh"
 has "$(HOME="$WFX/home" bash "$AD" workflows "$PNX" --agents claude --baseline "$ROOT")" \
     "project-specific${TAB}.claude/skills/cleanup/linked.sh" "workflows: a symlink added inside a pinned skill is a finding"
+
+# Review of the second slice (#535). A name ends at a `.` that does not continue it.
+printf 'Run /implement.foo here, then /implement.\n' > "$WORK/wf-dot.md"
+DTX="$WORK/wf-dot"; mkdir -p "$DTX"; cp "$WORK/wf-dot.md" "$DTX/CLAUDE.md"
+dto="$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project)"
+eq "$(printf '%s\n' "$dto" | grep -c "^stale-pointer${TAB}CLAUDE.md:1${TAB}")" 1 \
+   "workflows: '/implement.' ending a sentence is a pointer once; '/implement.foo' is another name"
+printf 'Run /implement.foo here.\n' > "$DTX/CLAUDE.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: a dotted name that merely starts with a legacy name is not a pointer to it"
+# A user entry is a finding only when it is a SKILL — a directory holding SKILL.md.
+NSH="$WORK/ns-home"; mkdir -p "$NSH/.claude/skills/implement"; printf 'x\n' > "$NSH/.claude/skills/review"
+eq "$(HOME="$NSH" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: an empty user directory or a regular file named like a workflow is not a skill"
+# A RELATIVE user link that resolves into the baseline is the baseline's.
+mkdir -p "$NSH/base"; rmdir "$NSH/base"; ln -s "$ROOT" "$NSH/base"
+rm -rf "$NSH/.claude/skills/implement" "$NSH/.claude/skills/review"; ln -s ../../base/agents/claude/skills/cleanup "$NSH/.claude/skills/cleanup"
+eq "$(HOME="$NSH" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: a relative user link that resolves into the baseline is not a finding"
+# A user link that NAMES the baseline but resolves outside it is a finding.
+rm -f "$NSH/.claude/skills/cleanup"; ln -s "$ROOT$up_$WORK/foreign-cleanup" "$NSH/.claude/skills/cleanup"
+has "$(HOME="$NSH" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT")" \
+    "user-global${TAB}~/.claude/skills/cleanup${TAB}claude${TAB}cleanup" "workflows: a user link naming the baseline but resolving outside it is a finding"
+# A newline is a legal byte of a root path: the root is not split into two.
+NLC="$WORK/nl-codex"$'\n'"home"; mkdir -p "$NLC/skills/implement"; printf 'x\n' > "$NLC/skills/implement/SKILL.md"
+has "$(HOME="$WORK/pt-home" CODEX_HOME="$NLC" bash "$AD" workflows "$WORK/wf-clean" --agents codex --baseline "$ROOT")" \
+    "user-global${TAB}CODEX_HOME/skills/implement${TAB}codex" "workflows: a CODEX_HOME holding a newline is still walked whole"
+# A SYMLINKED commands directory is not walked, so its commands are not judged.
+SCX="$WORK/wf-symcmd"; mkdir -p "$SCX/.claude" "$SCX/cmds"; printf 'x\n' > "$SCX/cmds/pr.md"; ln -s ../cmds "$SCX/.claude/commands"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$SCX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a symlinked .claude/commands is unjudged (11), never clean"
+# A receipt-owned pinned skill reached through a SYMLINKED directory is not walked either.
+SPX="$WORK/wf-sympin"; mkdir -p "$SPX/.ai-dev-baseline" "$SPX/.claude/skills" "$SPX/real-cleanup"
+cp "$ROOT/agents/claude/skills/cleanup/SKILL.md" "$SPX/real-cleanup/SKILL.md"; printf '#!/bin/sh\n' > "$SPX/real-cleanup/custom.sh"
+ln -s ../../real-cleanup "$SPX/.claude/skills/cleanup"
+printf '[upstream]\nmode = "pinned"\n' > "$SPX/.ai-dev-baseline/upstream.toml"
+printf '%s  %s\n' "$(adb_sha256 "$SPX/real-cleanup/SKILL.md")" .claude/skills/cleanup/SKILL.md > "$SPX/.ai-dev-baseline/pinned-files.sha256"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$SPX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a symlinked receipt-owned pinned skill is unjudged (11), never clean"
+
+# wclass: one path's class, judged only from a WHOLE workflows file.
+WCF="$WORK/wclass.tsv"
+wcl() { bash "$AD" wclass "$WCF" .claude/skills/implement claude; }
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" competes:implement-issue "wclass: a whole file judges the path"
+eq "$(bash "$AD" wclass "$WCF" .claude/skills/other claude)" none "wclass: a whole file with no record for the path says none"
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a file without its final newline is not whole"
+printf 'competes\t.claude/skills/implement\tclaude\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a record missing fields is not whole"
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nexempt\t.claude/skills/implement\tclaude\t-\t-\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a path judged twice for one agent is not whole"
+printf 'bogus\t.claude/skills/implement\tclaude\t-\t-\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: an unknown class is not whole"
+printf 'summary\t-\t-\t-\t-\ts\ncompetes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a summary that is not last is not whole"
+rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
+eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
 # THE MAP'S BUILD-TIME RULES, on a copy of the tree (never the tracked one).
 BFX="$WORK/build-copy"; mkdir -p "$BFX"
@@ -2019,8 +2087,8 @@ shmutant_mut scan-double-emits-foreign-pin \
     '      :' \
     'scan emits .claude/UPSTREAM_VERSION exactly once'
 shmutant_mut workflows-claude-precedence-ignored \
-    'if [ "$agent" = claude ] && adb_link_into' \
-    'if false && adb_link_into' \
+    'if [ "$agent" = claude ] && _ad_baseline_link' \
+    'if false && _ad_baseline_link' \
     'the Claude copy duplicates (never runs)'
 shmutant_mut workflows-every-skill-exempt \
     'elif [ "$name" = release ]; then' \
@@ -2033,7 +2101,7 @@ shmutant_mut workflows-unread-baseline-judged \
 shmutant_mut workflows-dangling-link-trusted \
     '         && [ -f "$HOME/.claude/skills/$name/SKILL.md" ] && [ -r "$HOME/.claude/skills/$name/SKILL.md" ]; then cls=duplicates; fi' \
     '         ; then cls=duplicates; fi' \
-    'a dangling personal link is not proof the baseline copy runs'
+    'a personal link to a baseline directory with no SKILL.md is not proof'
 shmutant_mut classify-unjudged-kept \
     '  if [ "$kind" = skill ] && [ "$wclass" = unjudged ]; then' \
     '  if false; then' \
@@ -2077,7 +2145,7 @@ shmutant_mut classify-project-skill-kept \
 
 # #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
 shmutant_mut pointer-word-boundary-dropped \
-    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "[^A-Za-z0-9_/-]"' \
+    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
     'R[i] = "[/$]" re' \
     'are not pointers (word boundary)'
 shmutant_mut pointer-reads-fenced-text \
@@ -2093,8 +2161,8 @@ shmutant_mut mirror-retired-not-excluded \
     '          .ai-dev-baseline/retired/NOPE) continue ;;' \
     'the retirement folder is never a mirror'
 shmutant_mut mirror-reads-untracked \
-    '      git ls-files -z 2>/dev/null' \
-    '      git ls-files -z --cached --others 2>/dev/null' \
+    "      git ls-files -z -- '*SKILL.md' 2>/dev/null" \
+    "      git ls-files -z --cached --others -- '*SKILL.md' 2>/dev/null" \
     'an untracked copy is not a mirror'
 shmutant_mut mirror-unreadable-git-not-evaluated \
     '  elif _ad_in_git_tree "$root"; then' \
@@ -2105,7 +2173,7 @@ shmutant_mut mirror-git-ancestry-unwalked \
     '    return 1' \
     'a project inside a repository git cannot read leaves mirrors unjudged'
 shmutant_mut user-global-any-link-is-baseline \
-    '          adb_link_into "$ue_" "$broot" && continue' \
+    '          _ad_baseline_link "$ue_" "$broot" && continue' \
     '          [ -L "$ue_" ] && continue' \
     'a user link outside the baseline is a finding'
 shmutant_mut user-global-walked-in-project-scope \
@@ -2129,10 +2197,47 @@ shmutant_mut supersedes-frontmatter-rule-ignored \
     '      bad"$TAB"*) : "supersedes: $name ($agent) fails the skill frontmatter rule' \
     'supersedes refuses a shipped skill that fails the skill frontmatter rule'
 
+shmutant_mut wclass-final-byte-unchecked \
+    '  if ! adb_bytes_whole "$f" 8388608; then printf '"'"'unjudged\n'"'"'; return 0; fi' \
+    '  :' \
+    'wclass: a file without its final newline is not whole'
+shmutant_mut wclass-grammar-unchecked \
+    '    NF != 6 || !($1 in known) { bad = 1 }' \
+    '    0 { bad = 1 }' \
+    'wclass: a record missing fields is not whole'
+shmutant_mut wclass-duplicates-unchecked \
+    'if (k in seen) bad = 1; seen[k] = 1' \
+    'seen[k] = 1' \
+    'wclass: a path judged twice for one agent is not whole'
+shmutant_mut pointer-dotted-prefix-matches \
+    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
+    '[^A-Za-z0-9_/-]"' \
+    'a dotted name that merely starts with a legacy name is not a pointer'
+shmutant_mut user-global-non-skill-counted \
+    '          [ -f "$ue_/SKILL.md" ] || continue' \
+    '          :' \
+    'an empty user directory or a regular file named like a workflow is not a skill'
+shmutant_mut user-roots-newline-split \
+    "      mapfile -d '' -t urlist_ < <(adb_agent_user_skill_roots \"\$a\")" \
+    "      mapfile -t urlist_ < <(adb_agent_user_skill_roots \"\$a\" | tr '\\0' '\\n')" \
+    'a CODEX_HOME holding a newline is still walked whole'
+shmutant_mut workflows-symlinked-commands-trusted \
+    '            if [ -L "$root/$rel" ] && [ -d "$root/$rel" ]; then' \
+    '            if false; then' \
+    'a symlinked .claude/commands is unjudged'
+shmutant_mut scan-symlinked-pinned-skill-trusted \
+    '        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && [ -L "${d%/}" ]; then' \
+    '        if false; then' \
+    'a symlinked receipt-owned pinned skill is unjudged'
+shmutant_mut baseline-link-compared-as-text \
+    '  case "$t" in "$b"/*) return 0 ;; esac' \
+    '  case "$(readlink "$1")" in "$2"/*) return 0 ;; esac' \
+    'a user link naming the baseline but resolving outside it is a finding'
+
 shmutant_target scripts/lib/common.sh
 shmutant_mut user-roots-drop-agents-skills \
-    '    codex)  printf '"'"'%s\n'"'"' "${CODEX_HOME:-$HOME/.codex}/skills" "$HOME/.agents/skills" ;;' \
-    '    codex)  printf '"'"'%s\n'"'"' "${CODEX_HOME:-$HOME/.codex}/skills" ;;' \
+    "    codex)  printf '%s\\n' 'codex skills' 'home .agents/skills' ;;" \
+    "    codex)  printf '%s\\n' 'codex skills' ;;" \
     "Codex's ~/.agents/skills user root is walked"
 
 shmutant_target base/workflows/adopt.md
@@ -2140,9 +2245,9 @@ shmutant_mut workflow-classify-missing-record-kept \
     '    skill:*) wclass=unjudged ;;' \
     '    skill:*) wclass=- ;;' \
     'workflow classify: a skill with no record is unjudged, never keep'
-shmutant_mut workflow-classify-truncated-file-trusted \
-    '    "{{STATE_DIR}}/adopt-workflows.tsv" 2>/dev/null && WF_OK=1' \
-    '    "{{STATE_DIR}}/adopt-workflows.tsv" 2>/dev/null; WF_OK=1' \
+shmutant_mut workflow-classify-wclass-unchecked \
+    '"$({{ADOPT_LIB}} wclass "{{STATE_DIR}}/adopt-workflows.tsv" "$rel" "$agent")" || wclass=unjudged' \
+    '"$(awk -F"\t" -v r="$rel" -v g="$agent" '"'"'$2==r && $3==g {print ($1=="competes" ? $1 ":" $4 : $1); exit}'"'"' "{{STATE_DIR}}/adopt-workflows.tsv")"' \
     'workflow classify: a truncated adopt-workflows.tsv (no summary) judges no skill'
 shmutant_mut workflow-propose-skips-observe \
     'if ! ( cd "$PROJECT" && {{ADOPT_READINESS}} observe ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \

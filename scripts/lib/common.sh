@@ -2170,24 +2170,41 @@ adb_agent_project_skill_dirs() {
   esac
 }
 
-adb_agent_user_skill_root_literal() {
+# THE USER-ROOT TABLE, one `<base> <relpath>` line per root the agent loads, the root the baseline
+# installs into first. <base> is `home` ($HOME) or `codex` (${CODEX_HOME:-$HOME/.codex}). Codex loads
+# two: `$CODEX_HOME/skills` (deprecated, still read) and `$HOME/.agents/skills` (codex-rs
+# ext/skills host_roots.rs). Both readers below are views of this table, so they cannot drift.
+_adb_agent_user_skill_root_specs() {
   case "$1" in
-    gemini) printf '%s' '"$HOME/.gemini/config/skills"' ;;
-    codex)  printf '%s' '"${CODEX_HOME:-$HOME/.codex}/skills"' ;;
-    *)      printf '"$HOME/.%s/skills"' "$1" ;;
+    gemini) printf '%s\n' 'home .gemini/config/skills' ;;
+    codex)  printf '%s\n' 'codex skills' 'home .agents/skills' ;;
+    *)      printf 'home .%s/skills\n' "$1" ;;
   esac
 }
 
-# adb_agent_user_skill_roots <agent> — EVERY user skill root the agent loads, as evaluated absolute
-# paths, one per line (a path may hold spaces). Codex loads two: `$CODEX_HOME/skills` (deprecated,
-# still read) and `$HOME/.agents/skills` (codex-rs ext/skills host_roots.rs). The literal above
-# names the one root the baseline installs into; this names every root an adopter's skill can sit in.
-adb_agent_user_skill_roots() {
-  case "$1" in
-    gemini) printf '%s\n' "$HOME/.gemini/config/skills" ;;
-    codex)  printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/skills" "$HOME/.agents/skills" ;;
-    *)      printf '%s\n' "$HOME/.$1/skills" ;;
+adb_agent_user_skill_root_literal() {
+  local base rel
+  read -r base rel <<EOF
+$(_adb_agent_user_skill_root_specs "$1")
+EOF
+  case "$base" in
+    codex) printf '"${CODEX_HOME:-$HOME/.codex}/%s"' "$rel" ;;
+    *)     printf '"$HOME/%s"' "$rel" ;;
   esac
+}
+
+# adb_agent_user_skill_roots <agent> — every user skill root the agent loads, as evaluated absolute
+# paths, each NUL-TERMINATED: a root is an operator's path, and a newline is a legal byte of one.
+adb_agent_user_skill_roots() {
+  local base rel
+  while read -r base rel; do
+    case "$base" in
+      codex) printf '%s/%s\0' "${CODEX_HOME:-$HOME/.codex}" "$rel" ;;
+      home)  printf '%s/%s\0' "$HOME" "$rel" ;;
+    esac
+  done <<EOF
+$(_adb_agent_user_skill_root_specs "$1")
+EOF
 }
 
 

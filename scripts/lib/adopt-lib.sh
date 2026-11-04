@@ -76,6 +76,7 @@
 #                                                          # workflow conformance (#535); the one subcommand
 #                                                          #   with its own exit codes: 0 none · 10 findings
 #                                                          #   · 11 not judged in full · 2 usage
+#   adopt-lib.sh wclass      <workflows-tsv> <relpath> <agent>  # one path's workflows class, from a WHOLE file
 #   adopt-lib.sh -h | --help
 #
 # Requires: awk, sed, git (hygiene's ignore and tracked-file axes, and pin-describe). jq is NOT
@@ -1068,6 +1069,12 @@ cmd_scan() {
         # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
         # one, so its presence is the project's own — and in pinned mode it is a delta with no
         # working home, which is precisely what the operator needs told.
+        # A receipt-owned skill reached through a SYMLINKED directory: the walk below does not follow
+        # links, so files a project added inside it would go unseen. Not judged, never clean.
+        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && [ -L "${d%/}" ]; then
+          _ad_emit warning "a skill directory under $sroot is a symlink the scan does not walk — its files were not inventoried"
+          continue
+        fi
         _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && continue
         [ -f "$d/SKILL.md" ]     && _ad_emit skill    "$sroot/$n" "$n" "$a"
       done
@@ -2209,6 +2216,17 @@ _ad_in_git_tree() {
     d="${d%/*}"; [ -n "$d" ] || d=/
   done
 }
+# _ad_baseline_link <path> <baseline-root> — true when <path> is a symlink that RESOLVES inside the
+# baseline. Resolved, never compared as text: `<broot>/../elsewhere` names the baseline and lands
+# outside it, and a relative link into it names nothing the text test would accept.
+_ad_baseline_link() {
+  local t b
+  [ -L "$1" ] || return 1
+  t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"
+  b="$(cd "$2" 2>/dev/null && pwd -P && printf x)" || return 1; b="${b%x}"; b="${b%?}"
+  case "$t" in "$b"/*) return 0 ;; esac
+  return 1
+}
 _ad_wf_rec() {  # <class> <path> <agent> <target> <owner> <remedy>
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@"
 }
@@ -2312,7 +2330,14 @@ cmd_workflows() {
         # judged by its name exactly as a skill is; one in a subdirectory runs under a qualified
         # name no map entry names, so it is project-specific.
         case "$rel" in
-          .claude/commands/*)
+          .claude/commands|.claude/commands/*)
+            # A SYMLINKED directory here is not walked (the scan lists links, it does not follow
+            # them), so the commands under it are not judged — never read as "no commands".
+            if [ -L "$root/$rel" ] && [ -d "$root/$rel" ]; then
+              nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a symlinked directory under .claude/commands was not walked — its commands were not judged"
+              continue
+            fi
+            [ "$rel" != .claude/commands ] || continue
             nsub="${rel#*.claude/commands/}"
             case "$nsub" in *.md) ;; *) continue ;; esac   # only a Markdown file is a command
             case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
@@ -2351,7 +2376,7 @@ cmd_workflows() {
       # Claude runs a PERSONAL skill over a same-named project one, so while the baseline's own
       # link is installed there the project copy never runs. Other agents list both copies.
       # The link must RESOLVE to a readable skill: a dangling one proves nothing about what runs.
-      if [ "$agent" = claude ] && adb_link_into "$HOME/.claude/skills/$name" "$broot" 2>/dev/null \
+      if [ "$agent" = claude ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \
          && [ -f "$HOME/.claude/skills/$name/SKILL.md" ] && [ -r "$HOME/.claude/skills/$name/SKILL.md" ]; then cls=duplicates; fi
       if [ "$cls" = duplicates ]; then
         _ad_wf_rec duplicates "$rel" "$agent" "$name" owner "same name as a baseline skill, whose installed personal copy runs instead — this copy never runs; $retire"
@@ -2369,7 +2394,9 @@ cmd_workflows() {
 
   # --- stale-pointer: a root-doc PROSE line that routes work to a superseded or project skill -----
   # Names: every legacy name the map supersedes, plus every project skill found above (its class is
-  # a finding). A baseline name with no project copy routes to the baseline, so it is not one.
+  # a finding). A baseline name with no project copy routes to the baseline, so it is not one. A
+  # name ends at a character no skill name carries, or at a `.` that does not continue one
+  # (`/implement.` ends a sentence; `/implement.foo` is another name).
   # Fenced blocks and HTML comments are not prose (adb_md_prose); inline code is, because "run
   # `/implement 12`" is still an instruction. Only <doc>:<line> and the name are emitted.
   local -A pnames=() mnames=()
@@ -2387,7 +2414,7 @@ cmd_workflows() {
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
       BEGIN { k = split(names, N, " ")
-              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "[^A-Za-z0-9_/-]" } }
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])" } }
       { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
       nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
       continue
@@ -2403,7 +2430,9 @@ cmd_workflows() {
   # --- mirror: a TRACKED */SKILL.md outside every discovery root, named like a finding -----------
   # Tracked only (git ls-files), so a local run and CI agree. Excluded: every agent's project skill
   # roots (the scan's business), nested roots (not evaluated yet), the retirement folder the remedy
-  # points at, and — when the project IS the baseline — the baseline's own rendered skills.
+  # points at, and — when the project IS the baseline — the baseline's own rendered skills. The INDEX
+  # is the authority, not the working tree: a staged file whose working copy was deleted still ships.
+  # Only `*SKILL.md` paths are listed, so memory follows the candidates, not the repository.
   local gitok=""
   if ! command -v git >/dev/null 2>&1; then
     mirror="mirrors=not judged (git not found)"; nunk=$((nunk + 1))
@@ -2423,7 +2452,7 @@ cmd_workflows() {
     for a in claude codex gemini; do allroots_="$allroots_ .$a/skills $(adb_agent_project_skill_dirs "$a")"; done
     mapfile -d '' -t tracked_ < <(
       cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
-      git ls-files -z 2>/dev/null
+      git ls-files -z -- '*SKILL.md' 2>/dev/null
       printf '\0%s' "$?")
     if [ "${#tracked_[@]}" -eq 0 ] || [ "${tracked_[-1]}" != 0 ]; then
       mirror="mirrors=not judged (git ls-files failed)"; nunk=$((nunk + 1))
@@ -2457,7 +2486,9 @@ cmd_workflows() {
     local -A uroots_=()
     local ur_ ue_ un_ disp_ tilde_="~"
     for a in ${agents//,/ }; do
-      while IFS= read -r ur_; do
+      local -a urlist_=()
+      mapfile -d '' -t urlist_ < <(adb_agent_user_skill_roots "$a")
+      for ur_ in "${urlist_[@]}"; do
         [ -n "$ur_" ] && [ -z "${uroots_[$ur_]:-}" ] || continue
         uroots_["$ur_"]=1
         if ! _ad_parents_searchable "" "${ur_#/}"; then
@@ -2472,7 +2503,14 @@ cmd_workflows() {
           un_="${ue_##*/}"
           [ -n "${target[$un_]:-}" ] || [ -n "${shipn[$un_]:-}" ] || continue
           [ -L "$ue_" ] && [ ! -e "$ue_" ] && continue
-          adb_link_into "$ue_" "$broot" && continue
+          # A SKILL is a directory holding SKILL.md; anything else loads nothing. One the scan cannot
+          # search is not judged rather than read as absent.
+          [ -d "$ue_" ] || continue
+          if [ ! -x "$ue_" ]; then
+            nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a user skill directory of $a could not be searched — not judged"; continue
+          fi
+          [ -f "$ue_/SKILL.md" ] || continue
+          _ad_baseline_link "$ue_" "$broot" && continue
           case "$ur_" in
             "$HOME"/*) disp_="$tilde_/${ur_#"$HOME"/}/$un_" ;;   # displayed, never expanded
             *) disp_="CODEX_HOME/skills/$un_" ;;
@@ -2481,7 +2519,7 @@ cmd_workflows() {
           nug=$((nug + 1))
           _ad_wf_rec user-global "$disp_" "$a" "${target[$un_]:-$un_}" owner "a user-level skill that is not the baseline's, offered in every repository on this machine — move it out of the user skill root"
         done
-      done <<< "$(adb_agent_user_skill_roots "$a")"
+      done
     done
     ug="user-global=$nug"
   fi
@@ -2490,6 +2528,35 @@ cmd_workflows() {
   [ "$nunk" -eq 0 ] || return 11
   [ $((nmapped + nsame + nun + npin + npt + nmir + nug)) -eq 0 ] || return 10
   return 0
+}
+
+# --- wclass --------------------------------------------------------------------------------------
+# The `workflows` class of one scanned path, for `classify`'s fifth argument (#535):
+#   adopt-lib.sh wclass <workflows-tsv> <relpath> <agent>
+# stdout: `competes:<target>`, `shadows`, `duplicates`, `project-specific`, `exempt` · `none` (the
+# file is whole and holds no judgment of this path) · `unjudged` (the file is not whole, so no path
+# is judged by it). Whole means: adb_bytes_whole (regular, non-link, NUL-free, newline-terminated,
+# at most 8 MiB); every line six tab-separated fields with a known class; exactly one `summary`,
+# and it is last; and no path judged twice for one agent. Exit 0, or 2 on usage.
+cmd_wclass() {
+  [ "$#" -eq 3 ] || die "wclass: needs <workflows-tsv> <relpath> <agent>"
+  local f="$1" rel="$2" agent="$3" out
+  if ! adb_bytes_whole "$f" 8388608; then printf 'unjudged\n'; return 0; fi
+  out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" '
+    BEGIN { split("competes shadows duplicates project-specific exempt foreign-pin stale-pointer mirror user-global unknown summary", K, " ")
+            for (i in K) known[K[i]] = 1
+            split("competes shadows duplicates project-specific exempt", J, " ")
+            for (i in J) judged[J[i]] = 1 }
+    NF != 6 || !($1 in known) { bad = 1 }
+    $1 == "summary" { n++; last = NR }
+    ($1 in judged) { k = $2 "\t" $3; if (k in seen) bad = 1; seen[k] = 1
+                     if ($2 == r && $3 == g) hit = ($1 == "competes" ? $1 ":" $4 : $1) }
+    END { if (bad || n != 1 || last != NR) print "unjudged"; else if (hit == "") print "none"; else print hit }
+  ' "$f")" || out=unjudged
+  case "$out" in
+    competes:?*|shadows|duplicates|project-specific|exempt|none) printf '%s\n' "$out" ;;
+    *) printf 'unjudged\n' ;;
+  esac
 }
 
 # --- dispatch ------------------------------------------------------------------------------------
@@ -2518,6 +2585,7 @@ main() {
     plan)        cmd_plan "$@" ;;
     supersedes)  cmd_supersedes "$@" ;;
     workflows)   cmd_workflows "$@" ;;
+    wclass)      cmd_wclass "$@" ;;
     *) printf 'adopt-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }

@@ -233,11 +233,6 @@ decide the verdict yourself** — that decision has one home and it is tested.
 ```bash
 # ADB-SNIPPET: classify
 TABC="$(printf '\t')"
-# THE WORKFLOWS ANSWER IS VALIDATED WHOLE before any skill is judged by it: exactly one `summary`
-# record, and it is the last. A missing, unreadable or truncated file judges no skill (`unjudged`).
-WF_OK=0
-awk -F'\t' '$1=="summary" {n++; last=NR} END {exit !(n==1 && last==NR)}' \
-    ".gemini/state/adopt-workflows.tsv" 2>/dev/null && WF_OK=1
 while IFS="$TABC" read -r kind rel name agent; do
   [ "$kind" = warning ] && continue
   # THE JOIN IS ON <kind, name, AGENT> — all three. Matching on kind and name alone takes the FIRST
@@ -257,14 +252,11 @@ while IFS="$TABC" read -r kind rel name agent; do
     src="$(awk -F'\t' -v k="$kind" -v n="$name" -v g="$agent" \
              '$1==k && $2==n && $3==g {print $4; exit}' ".gemini/state/adopt-shipped.tsv")"
   fi
-  # The record's `workflows` class (step 3) — `competes` carries its target. `workflows` writes one
-  # record for every skill it judged, so a skill with NO record, or a lookup that failed, is
-  # `unjudged`, which escalates: it must never fall back to the old "project-specific, keep".
-  wclass=unjudged
-  if [ "$WF_OK" -eq 1 ]; then
-    wclass="$(awk -F'\t' -v r="$rel" -v g="$agent" '$2==r && $3==g {print ($1=="competes" ? $1 ":" $4 : $1); exit}' \
-                ".gemini/state/adopt-workflows.tsv")" || wclass=unjudged
-  fi
+  # The record's `workflows` class (step 3) — `competes` carries its target — read by `wclass`,
+  # which judges nothing from a file that is not whole. `workflows` writes one record for every
+  # skill it judged, so a skill with NO record (`none`), or a lookup that failed, is `unjudged`,
+  # which escalates: it must never fall back to the old "project-specific, keep".
+  wclass="$(bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" wclass ".gemini/state/adopt-workflows.tsv" "$rel" "$agent")" || wclass=unjudged
   case "$kind:$wclass" in
     skill:competes:*|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;;
     skill:*) wclass=unjudged ;;
