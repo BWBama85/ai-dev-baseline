@@ -893,6 +893,20 @@ else
      "workflows: a user link into an unsearchable folder is unjudged (11), never dangling"
 fi
 chmod 755 "$WORK/lk-locked"
+# CI-fix round of #604. A dangling command link supplies no command.
+DCX="$WORK/wf-dangcmd"; mkdir -p "$DCX/.claude/commands"; ln -s missing-command.md "$DCX/.claude/commands/pr.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DCX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: a dangling .claude/commands/pr.md link supplies no command (exit 0)"
+# A user skill root that is ITSELF a link into the baseline holds the baseline's skills.
+BLH="$WORK/bl-home"; mkdir -p "$BLH/.claude"; ln -s "$ROOT/agents/claude/skills" "$BLH/.claude/skills"
+blo="$(HOME="$BLH" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT")"; blrc=$?
+eq "$blrc" 0 "workflows: a user skill root linked into the baseline is not a finding (exit 0)"
+hasnt "$blo" "user-global${TAB}" "workflows: ...and none of the baseline's skills reached through it is user-global"
+# A NUL byte in a root doc: not judged, never read as clean.
+NUX="$WORK/wf-nul"; mkdir -p "$NUX"; printf 'prefix\000 Run /implement 12.\n' > "$NUX/CLAUDE.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NUX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a root doc holding a NUL byte is unjudged (11), never clean"
+
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2346,6 +2360,21 @@ shmutant_mut mirror-roots-fixed-agent-set \
     '    for ag_ in ${agents//,/ } $(_ad_agents_from_baseline "$broot"); do' \
     '    for ag_ in claude codex gemini; do' \
     "another agent's skill root is not a mirror of itself"
+
+shmutant_mut workflows-dangling-command-counted \
+    '            if [ -L "$root/$rel" ] && [ ! -e "$root/$rel" ]; then continue; fi' \
+    '            :' \
+    'a dangling .claude/commands/pr.md link supplies no command'
+shmutant_mut baseline-ownership-needs-leaf-link \
+    '  local t b
+  t="$(cd' \
+    '  local t b; [ -L "$1" ] || return 1
+  t="$(cd' \
+    'a user skill root linked into the baseline is not a finding'
+shmutant_mut root-doc-nul-unchecked \
+    '       || ! adb_nul_free "$root/$doc_" \' \
+    '       \' \
+    'a root doc holding a NUL byte is unjudged'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut user-roots-drop-agents-skills \

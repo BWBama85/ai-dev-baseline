@@ -2246,12 +2246,13 @@ _ad_in_git_tree() {
     d="${d%/*}"; [ -n "$d" ] || d=/
   done
 }
-# _ad_baseline_link <path> <baseline-root> — true when <path> is a symlink that RESOLVES inside the
-# baseline. Resolved, never compared as text: `<broot>/../elsewhere` names the baseline and lands
-# outside it, and a relative link into it names nothing the text test would accept.
+# _ad_baseline_link <path> <baseline-root> — true when <path> RESOLVES inside the baseline, whether
+# the link is the entry itself or an ancestor (a user skill root that is itself a link into the
+# baseline). Resolved, never compared as text: `<broot>/../elsewhere` names the baseline and lands
+# outside it, and a relative link into it names nothing the text test would accept. A real directory
+# in a user root resolves to itself, so a copy is never the baseline's.
 _ad_baseline_link() {
   local t b
-  [ -L "$1" ] || return 1
   t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"
   b="$(cd "$2" 2>/dev/null && pwd -P && printf x)" || return 1; b="${b%x}"; b="${b%?}"
   case "$t" in "$b"/*) return 0 ;; esac
@@ -2368,6 +2369,9 @@ cmd_workflows() {
               continue
             fi
             [ "$rel" != .claude/commands ] || continue
+            # A command link whose target does not resolve supplies no command (D150 scopes out a
+            # target made deliberately unreadable).
+            if [ -L "$root/$rel" ] && [ ! -e "$root/$rel" ]; then continue; fi
             nsub="${rel#*.claude/commands/}"
             case "$nsub" in *.md) ;; *) continue ;; esac   # only a Markdown file is a command
             case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
@@ -2438,8 +2442,9 @@ cmd_workflows() {
     [ -e "$root/$doc_" ] || [ -L "$root/$doc_" ] || continue
     [ -n "$pt_list" ] || continue
     if [ ! -f "$root/$doc_" ] || [ ! -r "$root/$doc_" ] || ! _ad_size_ok "$root/$doc_" 1048576 \
+       || ! adb_nul_free "$root/$doc_" \
        || ! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"; then
-      nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be read as prose (unreadable, or over 1 MiB) — its pointers were not judged"
+      nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be read as prose (unreadable, over 1 MiB, or holding a NUL byte) — its pointers were not judged"
       continue
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
