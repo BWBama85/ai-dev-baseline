@@ -71,6 +71,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 AD="$ROOT/scripts/lib/adopt-lib.sh"
+# Codex's user skill root follows CODEX_HOME; every fixture HOME must decide it, never the caller's.
+unset CODEX_HOME
 WF="$ROOT/base/workflows/adopt.md"
 PRACTICE="$ROOT/base/practices/handling-the-unknown.md"
 # shellcheck source=/dev/null
@@ -534,7 +536,8 @@ has "$wfo" "shadows${TAB}.agents/skills/cleanup${TAB}codex${TAB}cleanup" \
     "workflows: a byte-identical Codex cleanup is still a finding (codex loads both)"
 has "$wfo" "foreign-pin${TAB}.claude/UPSTREAM_VERSION" "workflows: a prior framework's pin is a finding"
 has "$wfo" "summary${TAB}" "workflows: the summary trailer is always printed"
-has "$wfo" "mapped=3 same-name=2 exempt=1 unmapped=1 pins=1 unknown=0" "workflows: the trailer counts each class"
+has "$wfo" "mapped=3 same-name=2 exempt=1 unmapped=1 pins=1 pointers=0 mirrors=not evaluated (not a git repository) unknown=0" \
+    "workflows: the trailer counts each class, and says a non-repository's mirrors were not evaluated"
 hasnt "$wfo" "IGNORE-PREVIOUS" "workflows: no text from a scanned SKILL.md reaches the output"
 printf '%s\n' "$wfo" | awk -F"$TAB" '$1!="summary" && $1!="unknown" && ($2 !~ /^[A-Za-z0-9._\/-]+$/ || $3 !~ /^[a-z0-9-]+$/) {bad=1} END {exit bad}' \
   && ok || bad "workflows: every emitted path and agent field matches its closed charset"
@@ -634,6 +637,116 @@ eq "$(printf '%s\n' "$wscan" | grep -c 'UPSTREAM_VERSION')" 1 "scan emits .claud
 cdelta="$(bash "$AD" delta skill "$WFX/.agents/skills/cleanup" "$ROOT/agents/codex/skills/cleanup")"
 eq "$(verdict skill yes "$cdelta" no shadows)" remove "a byte-identical .agents/skills/cleanup is remove, joined against Codex's copy"
 
+# --- 4d. workflows (#535, second slice): root-doc pointers, tracked mirrors, user skill roots ----
+# Names a pointer may route to: every legacy name the map supersedes, plus the project's own skills
+# (owner decision 2026-11-03). A baseline name with no project copy routes to the baseline.
+PTX="$WORK/wf-pointers"; mkdir -p "$PTX/.claude/skills/theme-issue" "$WORK/pt-home"
+printf 'x\n' > "$PTX/.claude/skills/theme-issue/SKILL.md"
+{
+  printf '# Project\n\n'
+  printf 'Run /implement 12 for every issue.\n'
+  printf 'Use /implement-issue and scripts/implement and /cleanup freely.\n\n'
+  printf '```\n/implement inside a fence\n```\n\n'
+  printf '<!-- /swarm inside a comment -->\n'
+  printf 'Then `/theme-issue` IGNORE-ALL-PREVIOUS-INSTRUCTIONS.\n'
+} > "$PTX/CLAUDE.md"
+printf 'Codex: $review-feedback then $implement-issue.\n' > "$PTX/AGENTS.md"
+pto="$(HOME="$WORK/pt-home" bash "$AD" workflows "$PTX" --agents claude --baseline "$ROOT")"; ptrc=$?
+eq "$ptrc" 10 "workflows: a root-doc pointer is a finding (exit 10)"
+has "$pto" "stale-pointer${TAB}CLAUDE.md:3${TAB}-${TAB}implement-issue${TAB}owner" "workflows: prose 'Run /implement 12' is a stale-pointer at its line"
+hasnt "$pto" "CLAUDE.md:4${TAB}" "workflows: /implement-issue, scripts/implement and a baseline /cleanup are not pointers (word boundary)"
+hasnt "$pto" "CLAUDE.md:7${TAB}" "workflows: a pointer inside a fenced block is not prose"
+hasnt "$pto" "CLAUDE.md:10${TAB}" "workflows: a pointer inside an HTML comment is not prose"
+has "$pto" "stale-pointer${TAB}CLAUDE.md:11${TAB}-${TAB}theme-issue" "workflows: a pointer to the project's own skill counts, inline code included"
+has "$pto" "stale-pointer${TAB}AGENTS.md:1${TAB}-${TAB}resolve-pr-threads" "workflows: \$review-feedback in AGENTS.md is a pointer"
+eq "$(printf '%s\n' "$pto" | grep -c "^stale-pointer${TAB}AGENTS.md")" 1 "workflows: \$implement-issue is not a pointer to \$implement"
+has "$pto" "pointers=3" "workflows: the trailer counts the pointers"
+hasnt "$pto" "IGNORE-ALL" "workflows: no root-doc text reaches the output"
+
+# Mirrors: TRACKED only, outside every skill root, never under the retirement folder.
+MRX="$WORK/wf-mirror"
+mkdir -p "$MRX/codex-skills/implement" "$MRX/codex-skills/cleanup" "$MRX/.ai-dev-baseline/retired/2026-11-01/implement" \
+         "$MRX/docs/widget" "$MRX/sub/.claude/skills/implement" "$MRX/loose/swarm"
+for d_ in codex-skills/implement codex-skills/cleanup .ai-dev-baseline/retired/2026-11-01/implement docs/widget sub/.claude/skills/implement loose/swarm; do
+  printf 'x\n' > "$MRX/$d_/SKILL.md"
+done
+if git -C "$MRX" init -q >/dev/null 2>&1 && git -C "$MRX" add codex-skills .ai-dev-baseline docs sub >/dev/null 2>&1; then
+  mro="$(HOME="$WORK/pt-home" bash "$AD" workflows "$MRX" --agents claude --baseline "$ROOT")"; mrrc=$?
+  eq "$mrrc" 10 "workflows: a tracked mirror is a finding (exit 10)"
+  has "$mro" "mirror${TAB}codex-skills/implement/SKILL.md${TAB}-${TAB}implement-issue" "workflows: a tracked codex-skills/implement mirror is reported"
+  has "$mro" "mirror${TAB}codex-skills/cleanup/SKILL.md${TAB}-${TAB}cleanup" "workflows: a tracked copy named like a baseline skill is a mirror"
+  hasnt "$mro" "loose/swarm" "workflows: an untracked copy is not a mirror"
+  hasnt "$mro" "mirror${TAB}.ai-dev-baseline/retired/" "workflows: the retirement folder is never a mirror"
+  hasnt "$mro" "docs/widget" "workflows: a tracked SKILL.md with an unrelated name is not a mirror"
+  hasnt "$mro" "sub/.claude/skills" "workflows: a nested skill root is not a mirror (nested is not evaluated yet)"
+  has "$mro" "mirrors=2" "workflows: the trailer counts the mirrors"
+else
+  bad "workflows: could not build the git fixture for mirrors"
+fi
+# A repository git cannot read is not a non-repository: 11, never "not evaluated".
+mkdir -p "$WORK/wf-badgit"; printf 'gitdir: %s/nowhere\n' "$WORK" > "$WORK/wf-badgit/.git"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-badgit" --agents claude --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a .git git cannot read leaves mirrors unjudged (exit 11)"
+
+# User skill roots: a non-baseline entry named like a legacy workflow or a baseline skill.
+UGH="$WORK/ug-home"
+mkdir -p "$UGH/.codex/skills/implement" "$UGH/.agents/skills/review-feedback" "$UGH/.agents/skills/theme-issue" \
+         "$UGH/.claude/skills/pr" "$WORK/ug-codexhome/skills/review"
+for d_ in .codex/skills/implement .agents/skills/review-feedback .agents/skills/theme-issue .claude/skills/pr; do printf 'x\n' > "$UGH/$d_/SKILL.md"; done
+printf 'x\n' > "$WORK/ug-codexhome/skills/review/SKILL.md"
+ln -s "$ROOT/agents/claude/skills/cleanup" "$UGH/.claude/skills/cleanup"
+ln -s "$WORK/no-such-skill" "$UGH/.claude/skills/swarm"
+mkdir -p "$WORK/ug-legacy/review"; printf 'x\n' > "$WORK/ug-legacy/review/SKILL.md"
+ln -s "$WORK/ug-legacy/review" "$UGH/.claude/skills/review"
+ugo="$(HOME="$UGH" bash "$AD" workflows "$WORK/wf-clean" --agents claude,codex --baseline "$ROOT")"; ugrc=$?
+eq "$ugrc" 10 "workflows: a legacy user-level skill is a finding (exit 10)"
+has "$ugo" "user-global${TAB}~/.codex/skills/implement${TAB}codex${TAB}implement-issue${TAB}owner" "workflows: ~/.codex/skills/implement is user-global"
+has "$ugo" "user-global${TAB}~/.agents/skills/review-feedback${TAB}codex${TAB}resolve-pr-threads" "workflows: Codex's ~/.agents/skills user root is walked"
+has "$ugo" "user-global${TAB}~/.claude/skills/pr${TAB}claude${TAB}implement-issue" "workflows: a real ~/.claude/skills/pr is user-global"
+hasnt "$ugo" "skills/cleanup" "workflows: the baseline's own link in a user root is not a finding"
+hasnt "$ugo" "skills/swarm" "workflows: a dangling user link loads nothing and is not a finding"
+hasnt "$ugo" "theme-issue" "workflows: a user skill named like neither a legacy workflow nor a baseline skill is not a finding"
+has "$ugo" "user-global${TAB}~/.claude/skills/review${TAB}claude${TAB}implement-issue" "workflows: a user link outside the baseline is a finding"
+has "$ugo" "user-global=4" "workflows: the trailer counts the user-global findings"
+ugp="$(HOME="$UGH" bash "$AD" workflows "$WORK/wf-clean" --agents claude,codex --baseline "$ROOT" --scope project)"; ugprc=$?
+eq "$ugprc" 0 "workflows --scope project: user roots are not counted (exit 0)"
+hasnt "$ugp" "user-global${TAB}" "workflows --scope project: no user-global record"
+has "$ugp" "user-global=not evaluated (scope project)" "workflows --scope project: the trailer says so"
+ugc="$(HOME="$UGH" CODEX_HOME="$WORK/ug-codexhome" bash "$AD" workflows "$WORK/wf-clean" --agents codex --baseline "$ROOT")"
+has "$ugc" "user-global${TAB}CODEX_HOME/skills/review${TAB}codex${TAB}implement-issue" "workflows: CODEX_HOME is honoured, and displayed without its absolute path"
+hasnt "$ugc" "/.codex/skills/implement" "workflows: with CODEX_HOME set, ~/.codex/skills is not Codex's root"
+chmod 000 "$UGH/.agents"
+if [ -x "$UGH/.agents" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unreadable user root is unexercised"
+else
+  eq "$(HOME="$UGH" bash "$AD" workflows "$WORK/wf-clean" --agents codex --baseline "$ROOT" >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unsearchable user root is unjudged (11), never clean"
+fi
+chmod 755 "$UGH/.agents"
+
+# Carried from #603's review. An unsearchable PARENT of a project skill root is not an absent root.
+AGX="$WORK/wf-agents-locked"; mkdir -p "$AGX/.agents/skills/implement"; printf 'x\n' > "$AGX/.agents/skills/implement/SKILL.md"
+chmod 000 "$AGX/.agents"
+if [ -x "$AGX/.agents" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unsearchable .agents case is unexercised"
+else
+  eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$AGX" --agents codex --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unsearchable .agents makes .agents/skills unjudged (11), never absent"
+fi
+chmod 755 "$AGX/.agents"
+# An UNRELATED file whose name the output cannot carry does not make the answer unjudged...
+OCX="$WORK/wf-oddname"; mkdir -p "$OCX/.claude"; printf 'x\n' > "$OCX/.claude/notes with space.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$OCX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
+   "workflows: an unrelated out-of-charset file under .claude is not judged at all (exit 0)"
+# ...but a COMMAND with such a name is relevant, so it is unjudged.
+mkdir -p "$OCX/.claude/commands"; printf 'x\n' > "$OCX/.claude/commands/my cmd.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$OCX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a command whose path is out of charset is unjudged (11)"
+# A project-added SYMLINK inside a receipt-owned pinned skill is project content too.
+ln -s custom.sh "$PNX/.claude/skills/cleanup/linked.sh"
+has "$(HOME="$WFX/home" bash "$AD" workflows "$PNX" --agents claude --baseline "$ROOT")" \
+    "project-specific${TAB}.claude/skills/cleanup/linked.sh" "workflows: a symlink added inside a pinned skill is a finding"
+
 # THE MAP'S BUILD-TIME RULES, on a copy of the tree (never the tracked one).
 BFX="$WORK/build-copy"; mkdir -p "$BFX"
 if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2>&1; then
@@ -710,6 +823,12 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   # Both sorts the reader runs (the agents' skill sets, the map) refuse; the first one wins.
   has "$(PATH="$SORTSTUB:$PATH" bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" 2>&1 >/dev/null)" "supersedes: could not" \
       "supersedes: a failed sort is a refusal, never an empty map"
+  # A shipped SKILL.md the shared frontmatter rule refuses (scripts/skill-description.awk) is not
+  # trusted for its marker: here a second `description:` key, the marker line left as it was.
+  awk 'NR==2 {print "description: a second one"} {print}' "$WORK/debug-claude.ok" > "$BFX/agents/claude/skills/debug/SKILL.md"
+  has "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" 2>&1 >/dev/null)" "fails the skill frontmatter rule" \
+      "supersedes refuses a shipped skill that fails the skill frontmatter rule"
+  cp "$WORK/debug-claude.ok" "$BFX/agents/claude/skills/debug/SKILL.md"
   # One agent's render losing the line is refused, never read as "supersedes nothing" there.
   grep -v '^# adb:supersedes ' "$BFX/agents/codex/skills/debug/SKILL.md" > "$WORK/debug-codex.md"
   cp "$WORK/debug-codex.md" "$BFX/agents/codex/skills/debug/SKILL.md"
@@ -1507,6 +1626,20 @@ wf_run() {  # <snippet> <readiness-stub> [<baseline>] [<gate-runner>] — run on
   body="${body//\{\{STATE_DIR\}\}/$WFS/state}"
   ( PROJECT="$FX" BASELINE="${3:-}" HOME="$WORK/nohome" bash -c "$body" ) >/dev/null 2>&1
 }
+# The classify block's join against adopt-workflows.tsv (#535): a skill is judged only by a file
+# that is whole and carries its record; otherwise it is `unjudged`, which escalates.
+printf 'skill\t.claude/skills/implement\timplement\tclaude\n' > "$WFS/state/adopt-scan.tsv"
+: > "$WFS/state/adopt-shipped.tsv"
+cls_first() { wf_run classify readiness-ok; cut -f1 "$WFS/state/adopt-classified.tsv" 2>/dev/null; }
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WFS/state/adopt-workflows.tsv"
+eq "$(cls_first)" move "workflow classify: a competing skill with its record is move"
+rm -f "$WFS/state/adopt-workflows.tsv"
+eq "$(cls_first)" escalate "workflow classify: a missing adopt-workflows.tsv judges no skill (escalate, never keep)"
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\n' > "$WFS/state/adopt-workflows.tsv"
+eq "$(cls_first)" escalate "workflow classify: a truncated adopt-workflows.tsv (no summary) judges no skill"
+printf 'competes\t.claude/skills/other\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WFS/state/adopt-workflows.tsv"
+eq "$(cls_first)" escalate "workflow classify: a skill with no record is unjudged, never keep"
+rm -f "$WFS/state/adopt-scan.tsv" "$WFS/state/adopt-shipped.tsv" "$WFS/state/adopt-workflows.tsv" "$WFS/state/adopt-classified.tsv"
 wf_run propose readiness-ok; eq "$?" 0 "workflow: the propose block runs"
 eq "$(adb_toml_get "$WFS/state/adopt-agents.toml" reviewers bots)" '["chatgpt-codex-connector"]' \
    "workflow: the propose block hands the observation to propose (bots inferred from PR history)"
@@ -1932,7 +2065,71 @@ shmutant_mut classify-project-skill-kept \
     "printf 'keep%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
     'a project-specific skill -> move'
 
+# #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
+shmutant_mut pointer-word-boundary-dropped \
+    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "[^A-Za-z0-9_/-]"' \
+    'R[i] = "[/$]" re' \
+    'are not pointers (word boundary)'
+shmutant_mut pointer-reads-fenced-text \
+    '! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"' \
+    '! prose_="$(cat "$root/$doc_")"' \
+    'a pointer inside a fenced block is not prose'
+shmutant_mut pointer-ignores-project-skills \
+    'for n_ in "${!target[@]}" "${!found[@]}"; do pnames' \
+    'for n_ in "${!target[@]}"; do pnames' \
+    "a pointer to the project's own skill counts"
+shmutant_mut mirror-retired-not-excluded \
+    '          .ai-dev-baseline/retired/*) continue ;;' \
+    '          .ai-dev-baseline/retired/NOPE) continue ;;' \
+    'the retirement folder is never a mirror'
+shmutant_mut mirror-reads-untracked \
+    '      git ls-files -z 2>/dev/null' \
+    '      git ls-files -z --cached --others 2>/dev/null' \
+    'an untracked copy is not a mirror'
+shmutant_mut mirror-unreadable-git-not-evaluated \
+    '  elif [ -e "$root/.git" ] || [ -L "$root/.git" ]; then' \
+    '  elif false; then' \
+    'a .git git cannot read leaves mirrors unjudged'
+shmutant_mut user-global-any-link-is-baseline \
+    '          adb_link_into "$ue_" "$broot" && continue' \
+    '          [ -L "$ue_" ] && continue' \
+    'a user link outside the baseline is a finding'
+shmutant_mut user-global-walked-in-project-scope \
+    '  if [ "$scope" = all ]; then' \
+    '  if true; then' \
+    'workflows --scope project: no user-global record'
+shmutant_mut scan-parent-unsearchable-is-absent \
+    '      if ! _ad_parents_searchable "$root" "$sroot"; then' \
+    '      if false; then' \
+    'an unsearchable .agents makes .agents/skills unjudged'
+shmutant_mut workflows-charset-before-relevance \
+    '        # RELEVANCE FIRST, THEN THE CHARSET: an unrelated file under an agent directory whose name' \
+    '        case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); continue ;; esac' \
+    'an unrelated out-of-charset file under .claude is not judged at all'
+shmutant_mut scan-skips-symlinks \
+    'find ".$a" \( -type f -o -type l \) -print0' \
+    'find ".$a" -type f -print0' \
+    'a symlink added inside a pinned skill is a finding'
+shmutant_mut supersedes-frontmatter-rule-ignored \
+    '      bad"$TAB"*) die "supersedes: $name ($agent) fails the skill frontmatter rule' \
+    '      bad"$TAB"*) : "supersedes: $name ($agent) fails the skill frontmatter rule' \
+    'supersedes refuses a shipped skill that fails the skill frontmatter rule'
+
+shmutant_target scripts/lib/common.sh
+shmutant_mut user-roots-drop-agents-skills \
+    '    codex)  printf '"'"'%s\n'"'"' "${CODEX_HOME:-$HOME/.codex}/skills" "$HOME/.agents/skills" ;;' \
+    '    codex)  printf '"'"'%s\n'"'"' "${CODEX_HOME:-$HOME/.codex}/skills" ;;' \
+    "Codex's ~/.agents/skills user root is walked"
+
 shmutant_target base/workflows/adopt.md
+shmutant_mut workflow-classify-missing-record-kept \
+    '    skill:*) wclass=unjudged ;;' \
+    '    skill:*) wclass=- ;;' \
+    'workflow classify: a skill with no record is unjudged, never keep'
+shmutant_mut workflow-classify-truncated-file-trusted \
+    '    "{{STATE_DIR}}/adopt-workflows.tsv" 2>/dev/null && WF_OK=1' \
+    '    "{{STATE_DIR}}/adopt-workflows.tsv" 2>/dev/null; WF_OK=1' \
+    'workflow classify: a truncated adopt-workflows.tsv (no summary) judges no skill'
 shmutant_mut workflow-propose-skips-observe \
     'if ! ( cd "$PROJECT" && {{ADOPT_READINESS}} observe ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \
     'if ! ( cd "$PROJECT" && : ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \

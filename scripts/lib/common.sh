@@ -2178,6 +2178,18 @@ adb_agent_user_skill_root_literal() {
   esac
 }
 
+# adb_agent_user_skill_roots <agent> — EVERY user skill root the agent loads, as evaluated absolute
+# paths, one per line (a path may hold spaces). Codex loads two: `$CODEX_HOME/skills` (deprecated,
+# still read) and `$HOME/.agents/skills` (codex-rs ext/skills host_roots.rs). The literal above
+# names the one root the baseline installs into; this names every root an adopter's skill can sit in.
+adb_agent_user_skill_roots() {
+  case "$1" in
+    gemini) printf '%s\n' "$HOME/.gemini/config/skills" ;;
+    codex)  printf '%s\n' "${CODEX_HOME:-$HOME/.codex}/skills" "$HOME/.agents/skills" ;;
+    *)      printf '%s\n' "$HOME/.$1/skills" ;;
+  esac
+}
+
 
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s

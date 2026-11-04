@@ -128,10 +128,12 @@ SUITE_INSTALL="$WORK/suite-install"
 mkinstall() {
   local src="$1" home="$2" a s d; shift 2
   mkdir -p "$src/scripts/lib" "$home"; : > "$src/install.sh"; : > "$src/scripts/lib/common.sh"
+  # The shared skill frontmatter rule ships in every install source; the map reader runs it.
+  cp "$ROOT/scripts/skill-description.awk" "$src/scripts/skill-description.awk"
   for a in "$@"; do
-    # A minimal frontmatter, as every rendered skill has: the workflows rung's map reader refuses an
-    # empty SKILL.md.
-    mkdir -p "$src/agents/$a/skills/adopt"; printf -- '---\nname: adopt\n---\n' > "$src/agents/$a/skills/adopt/SKILL.md"
+    # A minimal frontmatter that passes that rule, as every rendered skill does: the workflows
+    # rung's map reader refuses an empty SKILL.md or one the rule refuses.
+    mkdir -p "$src/agents/$a/skills/adopt"; printf -- '---\nname: adopt\ndescription: x\n---\n' > "$src/agents/$a/skills/adopt/SKILL.md"
     while IFS="$TAB" read -r s d; do
       [ -n "$s" ] && [ -n "$d" ] || continue
       [ -e "$s" ] || { mkdir -p "$(dirname "$s")"; : > "$s"; }

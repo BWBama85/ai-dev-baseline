@@ -176,6 +176,21 @@ so this copy never does), `project-specific` (anything else). A prior framework'
 (D7). A `DEVIATION` entry may explain a finding; it never clears one. Report every finding with
 its owner; the completion contract's `workflows` rung (step 12) re-reads the same answer.
 
+Three more classes are about routing rather than the skill itself, and none of them is a scan
+record, so step 4 never classifies them — report each one as it stands:
+
+- `stale-pointer` — a prose line of `CLAUDE.md`, `AGENTS.md` or `GEMINI.md` invoking `/<name>` or
+  `$<name>` for a legacy name or one of the project's own skills. The path is `<doc>:<line>`;
+  fenced blocks and comments are not prose. The line's text is never repeated.
+- `mirror` — a **tracked** `*/SKILL.md` outside every skill root, named like a legacy, baseline or
+  project skill (a copy some installer spreads, e.g. `codex-skills/implement/SKILL.md`).
+  `.ai-dev-baseline/retired/` is excluded. Not a git repository: the trailer says
+  `mirrors=not evaluated`.
+- `user-global` — a non-baseline entry in an agent's user skill root (`~/.claude/skills`,
+  `${CODEX_HOME:-~/.codex}/skills`, `~/.agents/skills`, `~/.gemini/config/skills`) named like a
+  legacy workflow or a baseline skill. It is offered in every repository on the machine. Under
+  `--scope project` it is not walked, and the trailer says so.
+
 An `other` record is a file under an agent directory that none of the modelled kinds recognise.
 It classifies to `escalate` on purpose: an artifact the baseline does not model must reach
 `handling-the-unknown.md`'s protocol rather than being silently left out of the inventory.
@@ -218,6 +233,11 @@ decide the verdict yourself** — that decision has one home and it is tested.
 ```bash
 # ADB-SNIPPET: classify
 TABC="$(printf '\t')"
+# THE WORKFLOWS ANSWER IS VALIDATED WHOLE before any skill is judged by it: exactly one `summary`
+# record, and it is the last. A missing, unreadable or truncated file judges no skill (`unjudged`).
+WF_OK=0
+awk -F'\t' '$1=="summary" {n++; last=NR} END {exit !(n==1 && last==NR)}' \
+    ".gemini/state/adopt-workflows.tsv" 2>/dev/null && WF_OK=1
 while IFS="$TABC" read -r kind rel name agent; do
   [ "$kind" = warning ] && continue
   # THE JOIN IS ON <kind, name, AGENT> — all three. Matching on kind and name alone takes the FIRST
@@ -237,14 +257,17 @@ while IFS="$TABC" read -r kind rel name agent; do
     src="$(awk -F'\t' -v k="$kind" -v n="$name" -v g="$agent" \
              '$1==k && $2==n && $3==g {print $4; exit}' ".gemini/state/adopt-shipped.tsv")"
   fi
-  # The record's `workflows` class (step 3) — `competes` carries its target — and `-` when it has
-  # none. A skill `workflows` did not judge (it exited 11) is `unjudged`, which escalates: an
-  # unread map must never let a legacy skill fall back to the old "project-specific, keep".
-  wclass="$(awk -F'\t' -v r="$rel" -v g="$agent" '$2==r && $3==g {print ($1=="competes" ? $1 ":" $4 : $1); exit}' \
-              ".gemini/state/adopt-workflows.tsv")"
+  # The record's `workflows` class (step 3) — `competes` carries its target. `workflows` writes one
+  # record for every skill it judged, so a skill with NO record, or a lookup that failed, is
+  # `unjudged`, which escalates: it must never fall back to the old "project-specific, keep".
+  wclass=unjudged
+  if [ "$WF_OK" -eq 1 ]; then
+    wclass="$(awk -F'\t' -v r="$rel" -v g="$agent" '$2==r && $3==g {print ($1=="competes" ? $1 ":" $4 : $1); exit}' \
+                ".gemini/state/adopt-workflows.tsv")" || wclass=unjudged
+  fi
   case "$kind:$wclass" in
     skill:competes:*|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;;
-    skill:*) if [ "$WF_RC" -eq 11 ]; then wclass=unjudged; else wclass=-; fi ;;
+    skill:*) wclass=unjudged ;;
     other:competes:*|other:shadows|other:duplicates|other:project-specific|other:exempt) ;;   # a legacy command, a pinned skill's extra file
     override:project-specific) ;;
     *) wclass=- ;;
@@ -732,7 +755,8 @@ steps are the operator's to execute, and that this run did not perform them.
   `.ai-dev-baseline/retired/<date>/` in a normal PR (`policy:one-baseline`). That order is not
   negotiable.
 - **`workflows` exits 11** → something was not judged: no installed baseline, an unreadable shipped
-  set or map, or a path it could not represent. The rung is `unknown`, never `ok`; fix the cause
+  set or map, a root doc or skill root it could not read, a tracked-file list git could not give,
+  or a path it could not represent. The rung is `unknown`, never `ok`; fix the cause
   and re-run rather than reading the partial records as the whole answer.
 - **`stack` says `unknown`** → an answer, not an error. Record it; do not invent a label the pin
   would reject.

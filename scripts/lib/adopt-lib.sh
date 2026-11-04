@@ -953,6 +953,23 @@ cmd_classify() {
 # `src/`, and #29's first axis is why: support-workstation's `src/lib/cli/` IS product code that  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # orchestrates agent CLIs, and a scan that classified it would be recommending changes to the
 # product. `hygiene` reports on that boundary; `scan` simply does not cross it.
+
+# _ad_parents_searchable <root> <relpath> — false when an EXISTING ancestor of <relpath> below
+# <root> is not a searchable directory, so nothing beneath it can be proven absent.
+_ad_parents_searchable() {
+  local p="$1" rest="$2" comp
+  while :; do
+    case "$rest" in */*) ;; *) return 0 ;; esac
+    comp="${rest%%/*}"; rest="${rest#*/}"
+    p="$p/$comp"
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      [ -d "$p" ] && [ -x "$p" ] || return 1
+    else
+      return 0
+    fi
+  done
+}
+
 cmd_scan() {
   local root="" agents="" a f d n rel
   local -a _ad_others=()
@@ -1028,6 +1045,12 @@ cmd_scan() {
     for sroot in $sroots; do
       # AN UNREADABLE ROOT IS NOT AN EMPTY ONE: the glob below cannot tell them apart, so a root (or
       # a skill directory) the scan cannot list is a `warning`, which `workflows` reads as unjudged.
+      # Its PARENT is asked first: under an unsearchable `.agents`, `-e .agents/skills` is false and
+      # the root would read as absent.
+      if ! _ad_parents_searchable "$root" "$sroot"; then
+        printf 'warning%sthe skill root %s could not be listed — its skills were not inventoried\n' "$TAB" "$sroot"
+        continue
+      fi
       if [ -e "$root/$sroot" ] || [ -L "$root/$sroot" ]; then
         if [ ! -d "$root/$sroot" ] || [ ! -r "$root/$sroot" ] || [ ! -x "$root/$sroot" ]; then
           printf 'warning%sthe skill root %s could not be listed — its skills were not inventoried\n' "$TAB" "$sroot"
@@ -1094,7 +1117,8 @@ cmd_scan() {
     # it as one last NUL-delimited field: the status of `cd`, `find` and `sort` together.
     mapfile -d '' -t _ad_others < <(
       cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
-      find ".$a" -type f -print0 2>/dev/null | LC_ALL=C sort -z
+      # Symlinks too: a link a project added inside a receipt-owned pinned skill is project content.
+      find ".$a" \( -type f -o -type l \) -print0 2>/dev/null | LC_ALL=C sort -z
       _ad_ps=("${PIPESTATUS[@]}")
       printf '\0%s' "$(( _ad_ps[0] | _ad_ps[1] ))")
     if [ "${#_ad_others[@]}" -eq 0 ] || [ "${_ad_others[-1]}" != 0 ]; then
@@ -1115,6 +1139,8 @@ cmd_scan() {
         # "it looked like noise to me" is how the silent omission this whole arm exists to fix
         # comes back. Observed on a real scan, which reported `.DS_Store` as an artifact to keep.
         */.DS_Store|*/Thumbs.db) continue ;;
+        # A symlinked skill DIRECTORY is the skill arm's record, not a file of its own.
+        ".$a/skills/"*) [ -L "$root/$rel" ] && [ "${rel#".$a/skills/"}" = "${rel##*/}" ] && continue ;;
       esac
       # A skill directory's OTHER members are covered by the whole-directory `delta` comparison of
       # the skill itself — EXCEPT when that skill record was suppressed as a pinned payload. There is
@@ -2077,7 +2103,7 @@ cmd_plan() {
 # disagree: a map that cannot be read whole must never read as "nothing is superseded".
 cmd_supersedes() {
   [ "$#" -eq 1 ] || die "supersedes: needs <baseline-root>"
-  local root="$1" shipped kind name agent src line tok out=""
+  local root="$1" shipped kind name agent src line tok fmrule out=""
   local -A claim=() marker=() markerfrom=()
   shipped="$( (cmd_shipped "$root") )" || die "supersedes: could not read what the baseline ships under $(adb_display_value "$root")"
   # EVERY BASELINE AGENT CONTRIBUTES TO THE ONE MAP, so each must have a listable skills directory
@@ -2106,6 +2132,15 @@ cmd_supersedes() {
     case "$name" in ''|-*|*[!a-z0-9-]*) die "supersedes: a shipped skill name is outside [a-z0-9-] — the map would carry it" ;; esac
     [ -f "$src/SKILL.md" ] && [ -r "$src/SKILL.md" ] \
       || die "supersedes: $(adb_display_value "$src/SKILL.md") is missing or unreadable — the map cannot be read whole"
+    # THE SHARED FRONTMATTER RULE FIRST (scripts/skill-description.awk, build.sh's own): a header
+    # an agent's loader would not parse ships a skill whose marker nobody can trust.
+    fmrule="$(set -o pipefail; LC_ALL=C tr '\000' '\001' < "$src/SKILL.md" | LC_ALL=C awk -f "$root/scripts/skill-description.awk" 2>/dev/null)" \
+      || die "supersedes: the skill frontmatter rule could not run on $name ($agent)"
+    case "$fmrule" in
+      ok"$TAB"*) ;;
+      bad"$TAB"*) die "supersedes: $name ($agent) fails the skill frontmatter rule — the map cannot be read whole" ;;
+      *) die "supersedes: the skill frontmatter rule gave no verdict on $name ($agent)" ;;
+    esac
     # THE READ SIDE HOLDS THE BUILD'S RULES: a frontmatter opened on line 1 and closed, exactly one
     # marker line inside it and none after it, its grammar, no `release`, no shipped skill name.
     line="$(awk '
@@ -2156,8 +2191,11 @@ cmd_supersedes() {
 #   <class>TAB<path>TAB<agent|->TAB<target-workflow|->TAB<owner>TAB<remedy>
 # classes: competes · shadows (this agent loads both same-named copies) · duplicates (Claude: the
 # installed personal baseline skill runs instead, so the project copy never does) ·
-# project-specific · foreign-pin · exempt (not a finding) · unknown (not judged); then ONE
-# `summary` record, always, so a zero is visible rather than looking like a clean pass.
+# project-specific · foreign-pin · exempt (not a finding) · unknown (not judged); and three routing
+# classes — stale-pointer (<doc>:<line> of a root doc invoking a legacy or project skill),
+# mirror (a tracked */SKILL.md outside every skill root), user-global (a non-baseline entry in an
+# agent's user skill root; not walked under --scope project). Then ONE `summary` record, always, so
+# a zero is visible rather than looking like a clean pass.
 # Exit: 0 no finding · 10 findings · 11 something could not be judged (wins over 10) · 2 usage.
 # Pinned-payload skills are never reported: the scan's receipt check (adb_pinned_owned) skips them.
 _ad_wf_rec() {  # <class> <path> <agent> <target> <owner> <remedy>
@@ -2180,7 +2218,7 @@ cmd_workflows() {
   [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" workflows
 
-  local ug="user-global=not evaluated (not yet modelled)"
+  local ug="user-global=not judged"
   [ "$scope" = project ] && ug="user-global=not evaluated (scope project)"
   local roots="" sroot
   for a in ${agents//,/ }; do
@@ -2212,15 +2250,16 @@ cmd_workflows() {
     return 11
   }
 
-  local -A target=() ships=()
+  local -A target=() ships=() shipn=() wfs=() found=()
   local legacy wf kind name agent src rel nmap=0 nwf
   while IFS="$TAB" read -r legacy wf; do
     [ -n "$legacy" ] || continue
-    target["$legacy"]="$wf"; nmap=$((nmap + 1))
+    target["$legacy"]="$wf"; wfs["$wf"]=1; nmap=$((nmap + 1))
   done <<< "$map"
-  nwf="$(printf '%s\n' "$map" | cut -f2 | LC_ALL=C sort -u | grep -c . || true)"
+  nwf="${#wfs[@]}"
   while IFS="$TAB" read -r kind name agent src; do
-    [ "$kind" = skill ] && ships["$agent/$name"]="$src"
+    [ "$kind" = skill ] || continue
+    ships["$agent/$name"]="$src"; shipn["$name"]=1
   done <<< "$shipped"
   local ver
   ver="$(git -C "$broot" describe --tags --always 2>/dev/null)" || ver=""
@@ -2231,7 +2270,7 @@ cmd_workflows() {
   # so the trailer says so rather than letting a zero read as coverage.
   local nested="nested=not evaluated (not yet modelled)"
 
-  local nsk=0 nmapped=0 nsame=0 nex=0 nun=0 nunk=0 npin=0 cls tgt
+  local nsk=0 nmapped=0 nsame=0 nex=0 nun=0 nunk=0 npin=0 cls tgt r_ nsub
   local retire="then retire it to .ai-dev-baseline/retired/<date>/ in a normal PR"
   while IFS="$TAB" read -r kind rel name agent; do
     case "$kind" in
@@ -2256,7 +2295,8 @@ cmd_workflows() {
         continue ;;
       skill) ;;
       other)
-        case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
+        # RELEVANCE FIRST, THEN THE CHARSET: an unrelated file under an agent directory whose name
+        # this output cannot carry is not this subcommand's business, and must not make it exit 11.
         # A LEGACY CLAUDE COMMAND (`.claude/commands/<name>.md`) still runs as `/<name>`, so it is
         # judged by its name exactly as a skill is; one in a subdirectory runs under a qualified
         # name no map entry names, so it is project-specific.
@@ -2264,6 +2304,7 @@ cmd_workflows() {
           .claude/commands/*)
             nsub="${rel#*.claude/commands/}"
             case "$nsub" in *.md) ;; *) continue ;; esac   # only a Markdown file is a command
+            case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
             case "$nsub" in
               */*) nsk=$((nsk + 1)); nun=$((nun + 1))
                    _ad_wf_rec project-specific "$rel" claude - owner "a legacy command in a subdirectory — the baseline carries no project skills; capture what it does as a baseline issue, $retire"
@@ -2277,6 +2318,7 @@ cmd_workflows() {
             local inroot="" r_
             for r_ in ${roots//,/ }; do case "$rel" in "$r_"/*/*) inroot=1 ;; esac; done
             [ -n "$inroot" ] || continue
+            case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a path outside the closed charset was not judged"; continue ;; esac
             nun=$((nun + 1))
             _ad_wf_rec project-specific "$rel" "$agent" - owner "a project file inside a pinned baseline skill — the skill is customised; capture the change as a baseline issue, $retire"
             continue ;;
@@ -2288,6 +2330,7 @@ cmd_workflows() {
       *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a skill path outside the closed charset was not judged"; continue ;;
     esac
     tgt="${target[$name]:-}"
+    [ "$name" = release ] && [ -z "$tgt" ] && [ -z "${ships[$agent/$name]:-}" ] || found["$name"]=1
     if [ -n "$tgt" ]; then
       nmapped=$((nmapped + 1))
       _ad_wf_rec competes "$rel" "$agent" "$tgt" owner "superseded by the baseline's $tgt — capture what it does that $tgt does not as a baseline issue, $retire"
@@ -2312,9 +2355,129 @@ cmd_workflows() {
       _ad_wf_rec project-specific "$rel" "$agent" - owner "the baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), $retire"
     fi
   done <<< "$scan"
-  _ad_wf_rec summary - - - - "roots=$roots skills=$nsk mapped=$nmapped same-name=$nsame exempt=$nex unmapped=$nun pins=$npin unknown=$nunk; map=$nmap names from $nwf workflows ($ver); $nested; $ug"
+
+  # --- stale-pointer: a root-doc PROSE line that routes work to a superseded or project skill -----
+  # Names: every legacy name the map supersedes, plus every project skill found above (its class is
+  # a finding). A baseline name with no project copy routes to the baseline, so it is not one.
+  # Fenced blocks and HTML comments are not prose (adb_md_prose); inline code is, because "run
+  # `/implement 12`" is still an instruction. Only <doc>:<line> and the name are emitted.
+  local -A pnames=() mnames=()
+  local n_ doc_ prose_ hits_ pl_ pn_ npt=0 nmir=0 nug=0 mirror="" pt_list=""
+  for n_ in "${!target[@]}" "${!found[@]}"; do pnames["$n_"]=1; mnames["$n_"]=1; done
+  for n_ in "${!shipn[@]}"; do mnames["$n_"]=1; done
+  pt_list="${!pnames[*]}"
+  for doc_ in CLAUDE.md AGENTS.md GEMINI.md; do
+    [ -e "$root/$doc_" ] || [ -L "$root/$doc_" ] || continue
+    [ -n "$pt_list" ] || continue
+    if [ ! -f "$root/$doc_" ] || [ ! -r "$root/$doc_" ] \
+       || ! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"; then
+      nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be read as prose — its pointers were not judged"
+      continue
+    fi
+    hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
+      BEGIN { k = split(names, N, " ")
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "[^A-Za-z0-9_/-]" } }
+      { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
+      nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
+      continue
+    }
+    while IFS="$TAB" read -r pl_ pn_; do
+      [ -n "$pl_" ] || continue
+      case "$pn_" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+      npt=$((npt + 1))
+      _ad_wf_rec stale-pointer "$doc_:$pl_" - "${target[$pn_]:-$pn_}" owner "a root-doc line routes work to $pn_ — point it at the baseline workflow instead"
+    done <<< "$hits_"
+  done
+
+  # --- mirror: a TRACKED */SKILL.md outside every discovery root, named like a finding -----------
+  # Tracked only (git ls-files), so a local run and CI agree. Excluded: every agent's project skill
+  # roots (the scan's business), nested roots (not evaluated yet), the retirement folder the remedy
+  # points at, and — when the project IS the baseline — the baseline's own rendered skills.
+  local gitok=""
+  if ! command -v git >/dev/null 2>&1; then
+    mirror="mirrors=not judged (git not found)"; nunk=$((nunk + 1))
+    _ad_wf_rec unknown - - - agent "git was not found — tracked mirrors were not judged"
+  elif [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+    gitok=1
+  elif [ -e "$root/.git" ] || [ -L "$root/.git" ]; then
+    mirror="mirrors=not judged (git could not read the repository)"; nunk=$((nunk + 1))
+    _ad_wf_rec unknown - - - agent "git could not read the repository — tracked mirrors were not judged"
+  else
+    mirror="mirrors=not evaluated (not a git repository)"
+  fi
+  if [ -n "$gitok" ]; then
+    local -a tracked_=()
+    local self_="" t_ d_ mn_ allroots_=""
+    [ -n "$broot" ] && [ "$root" -ef "$broot" ] && self_=1
+    for a in claude codex gemini; do allroots_="$allroots_ .$a/skills $(adb_agent_project_skill_dirs "$a")"; done
+    mapfile -d '' -t tracked_ < <(
+      cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
+      git ls-files -z 2>/dev/null
+      printf '\0%s' "$?")
+    if [ "${#tracked_[@]}" -eq 0 ] || [ "${tracked_[-1]}" != 0 ]; then
+      mirror="mirrors=not judged (git ls-files failed)"; nunk=$((nunk + 1))
+      _ad_wf_rec unknown - - - agent "the tracked-file list could not be read — tracked mirrors were not judged"
+    else
+      unset 'tracked_[-1]'
+      for t_ in "${tracked_[@]}"; do
+        case "$t_" in */SKILL.md) ;; *) continue ;; esac
+        d_="${t_%/SKILL.md}"; mn_="${d_##*/}"
+        [ -n "$mn_" ] && [ -n "${mnames[$mn_]:-}" ] || continue
+        case "$t_" in
+          .ai-dev-baseline/retired/*) continue ;;
+          */.claude/skills/*|*/.codex/skills/*|*/.agents/skills/*|*/.gemini/skills/*) continue ;;
+        esac
+        [ -n "$self_" ] && case "$t_" in agents/*/skills/*) continue ;; esac
+        local inr_=""
+        for r_ in $allroots_; do case "$t_" in "$r_"/*) inr_=1 ;; esac; done
+        [ -z "$inr_" ] || continue
+        case "$t_" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a tracked mirror path outside the closed charset was not judged"; continue ;; esac
+        nmir=$((nmir + 1))
+        _ad_wf_rec mirror "$t_" - "${target[$mn_]:-$mn_}" owner "a tracked copy of a competing, same-name or project skill outside every skill root — whatever installs it from here reintroduces it; $retire"
+      done
+      mirror="mirrors=$nmir"
+    fi
+  fi
+
+  # --- user-global: a non-baseline entry in an agent's USER skill root, named like a legacy
+  # workflow or a baseline skill. It is offered in every repository on this machine. Not walked at
+  # all under --scope project (the CI form). A dangling link loads nothing and is not reported.
+  if [ "$scope" = all ]; then
+    local -A uroots_=()
+    local ur_ ue_ un_ disp_ tilde_="~"
+    for a in ${agents//,/ }; do
+      while IFS= read -r ur_; do
+        [ -n "$ur_" ] && [ -z "${uroots_[$ur_]:-}" ] || continue
+        uroots_["$ur_"]=1
+        if ! _ad_parents_searchable "" "${ur_#/}"; then
+          nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a user skill root of $a could not be listed — user-global not judged there"; continue
+        fi
+        [ -e "$ur_" ] || [ -L "$ur_" ] || continue
+        if [ ! -d "$ur_" ] || [ ! -r "$ur_" ] || [ ! -x "$ur_" ]; then
+          nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a user skill root of $a could not be listed — user-global not judged there"; continue
+        fi
+        for ue_ in "$ur_"/*; do
+          [ -e "$ue_" ] || [ -L "$ue_" ] || continue
+          un_="${ue_##*/}"
+          [ -n "${target[$un_]:-}" ] || [ -n "${shipn[$un_]:-}" ] || continue
+          [ -L "$ue_" ] && [ ! -e "$ue_" ] && continue
+          adb_link_into "$ue_" "$broot" && continue
+          case "$ur_" in
+            "$HOME"/*) disp_="$tilde_/${ur_#"$HOME"/}/$un_" ;;   # displayed, never expanded
+            *) disp_="CODEX_HOME/skills/$un_" ;;
+          esac
+          case "$disp_" in *[!A-Za-z0-9._/~-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a user skill path outside the closed charset was not judged"; continue ;; esac
+          nug=$((nug + 1))
+          _ad_wf_rec user-global "$disp_" "$a" "${target[$un_]:-$un_}" owner "a user-level skill that is not the baseline's, offered in every repository on this machine — move it out of the user skill root"
+        done
+      done <<< "$(adb_agent_user_skill_roots "$a")"
+    done
+    ug="user-global=$nug"
+  fi
+
+  _ad_wf_rec summary - - - - "roots=$roots skills=$nsk mapped=$nmapped same-name=$nsame exempt=$nex unmapped=$nun pins=$npin pointers=$npt ${mirror} unknown=$nunk; map=$nmap names from $nwf workflows ($ver); $nested; $ug"
   [ "$nunk" -eq 0 ] || return 11
-  [ $((nmapped + nsame + nun + npin)) -eq 0 ] || return 10
+  [ $((nmapped + nsame + nun + npin + npt + nmir + nug)) -eq 0 ] || return 10
   return 0
 }
 
