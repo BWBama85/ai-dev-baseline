@@ -936,6 +936,17 @@ printf 'Then run /implement...\n' > "$DTX/CLAUDE.md"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 10 \
    "workflows: '/implement...' ending a sentence is a pointer"
 
+# A SECOND CLONE of the baseline (a development checkout beside the install) ships its rendered
+# skills too: they are not mirrors.
+DVX="$WORK/wf-devclone"; mkdir -p "$DVX/agents/claude/skills/cleanup" "$DVX/base/workflows"; : > "$DVX/install.sh"
+printf 'x\n' > "$DVX/agents/claude/skills/cleanup/SKILL.md"; printf 'x\n' > "$DVX/base/workflows/cleanup.md"
+if git -C "$DVX" init -q >/dev/null 2>&1 && git -C "$DVX" add -A >/dev/null 2>&1; then
+  hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DVX" --agents claude --baseline "$ROOT" --scope project)" "mirror${TAB}" \
+        "workflows: another clone of the baseline is not a mirror of its own rendered skills"
+else
+  bad "workflows: could not build the second-clone fixture"
+fi
+
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2425,6 +2436,11 @@ shmutant_mut pointer-ellipsis-not-a-terminator \
     '"([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '"([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
     "'/implement...' ending a sentence is a pointer"
+
+shmutant_mut mirror-only-installed-clone-is-self \
+    '       || { [ -f "$root/install.sh" ] && [ -d "$root/agents" ] && [ -d "$root/base/workflows" ]; }; then self_=1; fi' \
+    '       ; then self_=1; fi' \
+    'another clone of the baseline is not a mirror'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \

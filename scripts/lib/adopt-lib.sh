@@ -2500,7 +2500,10 @@ cmd_workflows() {
     local -a tracked_=()
     local self_="" t_ d_ mn_ allroots_="" ag_
     local -A mseen_=()
-    [ -n "$broot" ] && [ "$root" -ef "$broot" ] && self_=1
+    # The project IS a baseline checkout — the installed clone, or another clone of it (a
+    # development checkout beside the install): its rendered agents/*/skills are the product.
+    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } \
+       || { [ -f "$root/install.sh" ] && [ -d "$root/agents" ] && [ -d "$root/base/workflows" ]; }; then self_=1; fi
     # Every skill root ANY agent loads — the selected agents and every agent the baseline ships —
     # read from the one table, so a root is never also reported as a mirror of itself.
     for ag_ in ${agents//,/ } $(_ad_agents_from_baseline "$broot"); do
