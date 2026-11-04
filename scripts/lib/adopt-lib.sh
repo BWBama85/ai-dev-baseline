@@ -971,6 +971,27 @@ _ad_parents_searchable() {
   done
 }
 
+# _ad_size_ok <file> <max-bytes> — true only for a size that was READ and is within the bound; a
+# failed read is not small.
+_ad_size_ok() {
+  local sz
+  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 1
+  case "$sz" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$sz" -le "$2" ]
+}
+
+# _ad_has_link <root> <relpath> — true when any component of <relpath> below <root> is a symlink.
+_ad_has_link() {
+  local p="$1" rest="$2" comp
+  while [ -n "$rest" ]; do
+    comp="${rest%%/*}"
+    case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
+    p="$p/$comp"
+    [ -L "$p" ] && return 0
+  done
+  return 1
+}
+
 cmd_scan() {
   local root="" agents="" a f d n rel
   local -a _ad_others=()
@@ -1069,9 +1090,10 @@ cmd_scan() {
         # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
         # one, so its presence is the project's own — and in pinned mode it is a delta with no
         # working home, which is precisely what the operator needs told.
-        # A receipt-owned skill reached through a SYMLINKED directory: the walk below does not follow
-        # links, so files a project added inside it would go unseen. Not judged, never clean.
-        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && [ -L "${d%/}" ]; then
+        # A receipt-owned skill reached through a SYMLINKED directory — the skill's own, or any
+        # ancestor's: the walk below does not follow links, so files a project added inside it would
+        # go unseen. Not judged, never clean.
+        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then
           _ad_emit warning "a skill directory under $sroot is a symlink the scan does not walk — its files were not inventoried"
           continue
         fi
@@ -1080,6 +1102,12 @@ cmd_scan() {
       done
     done
     [ -d "$root/.$a" ] || continue
+    # A SYMLINKED agent directory is not walked below (find does not follow a link it starts on),
+    # so nothing under it would be inventoried. Not judged, never clean.
+    if [ -L "$root/.$a" ]; then
+      printf 'warning%sthe agent directory .%s is a symlink the scan does not walk — its files were not inventoried\n' "$TAB" "$a"
+      continue
+    fi
     [ -f "$root/.$a/settings.json" ] && _ad_emit settings ".$a/settings.json" settings.json "$a"
     # THE VENDORED SHARED LIBRARY IS ONE ARTIFACT, emitted before the flat file loop. `shipped`
     # reports `lib` as a single identity (install.sh links the whole `scripts/lib` DIRECTORY), so a
@@ -2209,7 +2237,9 @@ cmd_supersedes() {
 # answer has failed, which is not the same as a directory outside every repository.
 _ad_in_git_tree() {
   local d
-  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 0   # unresolvable: never claim "not a repository"
+  # SENTINEL CAPTURE: `$(…)` strips a trailing newline, a legal byte of a directory name.
+  d="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 0   # unresolvable: never claim "not a repository"
+  d="${d%x}"; d="${d%?}"
   while :; do
     [ -e "$d/.git" ] || [ -L "$d/.git" ] && return 0
     [ "$d" = / ] || [ -z "$d" ] && return 1
@@ -2407,9 +2437,9 @@ cmd_workflows() {
   for doc_ in CLAUDE.md AGENTS.md GEMINI.md; do
     [ -e "$root/$doc_" ] || [ -L "$root/$doc_" ] || continue
     [ -n "$pt_list" ] || continue
-    if [ ! -f "$root/$doc_" ] || [ ! -r "$root/$doc_" ] \
+    if [ ! -f "$root/$doc_" ] || [ ! -r "$root/$doc_" ] || ! _ad_size_ok "$root/$doc_" 1048576 \
        || ! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"; then
-      nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be read as prose — its pointers were not judged"
+      nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be read as prose (unreadable, or over 1 MiB) — its pointers were not judged"
       continue
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
@@ -2511,10 +2541,14 @@ cmd_workflows() {
           fi
           [ -f "$ue_/SKILL.md" ] || continue
           _ad_baseline_link "$ue_" "$broot" && continue
-          case "$ur_" in
-            "$HOME"/*) disp_="$tilde_/${ur_#"$HOME"/}/$un_" ;;   # displayed, never expanded
-            *) disp_="CODEX_HOME/skills/$un_" ;;
-          esac
+          if [ "$a" = codex ] && [ -n "${CODEX_HOME:-}" ] && [ "$ur_" = "$CODEX_HOME/skills" ]; then
+            disp_="CODEX_HOME/skills/$un_"
+          else
+            case "$ur_" in
+              "$HOME"/*) disp_="$tilde_/${ur_#"$HOME"/}/$un_" ;;   # displayed, never expanded
+              *) disp_="CODEX_HOME/skills/$un_" ;;
+            esac
+          fi
           case "$disp_" in *[!A-Za-z0-9._/~-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a user skill path outside the closed charset was not judged"; continue ;; esac
           nug=$((nug + 1))
           _ad_wf_rec user-global "$disp_" "$a" "${target[$un_]:-$un_}" owner "a user-level skill that is not the baseline's, offered in every repository on this machine — move it out of the user skill root"
@@ -2543,11 +2577,25 @@ cmd_wclass() {
   local f="$1" rel="$2" agent="$3" out
   if ! adb_bytes_whole "$f" 8388608; then printf 'unjudged\n'; return 0; fi
   out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" '
-    BEGIN { split("competes shadows duplicates project-specific exempt foreign-pin stale-pointer mirror user-global unknown summary", K, " ")
-            for (i in K) known[K[i]] = 1
-            split("competes shadows duplicates project-specific exempt", J, " ")
+    BEGIN { split("competes shadows duplicates project-specific exempt", J, " ")
             for (i in J) judged[J[i]] = 1 }
-    NF != 6 || !($1 in known) { bad = 1 }
+    # ONE RULE PER RECORD, the record grammar `workflows` writes: six fields, a known class, and each
+    # field in its closed charset for that class.
+    function rowok(  p, a, t) {
+      if (NF != 6 || $6 == "") return 0
+      p = ($2 ~ /^[A-Za-z0-9._\/~:-]+$/); a = ($3 ~ /^[a-z0-9-]+$/); t = ($4 ~ /^[a-z0-9-]+$/)
+      if ($1 == "summary") return ($2 == "-" && $3 == "-" && $4 == "-" && $5 == "-")
+      if ($1 == "unknown") return ($2 == "-" && $3 == "-" && $4 == "-" && $5 == "agent")
+      if ($1 == "competes") return (p && a && t && $5 == "owner")
+      if ($1 == "shadows" || $1 == "duplicates") return (p && a && $4 ~ /^[A-Za-z0-9._-]+$/ && $5 == "owner")
+      if ($1 == "project-specific") return (p && a && $4 == "-" && $5 == "owner")
+      if ($1 == "exempt") return (p && a && $4 == "-" && $5 == "-")
+      if ($1 == "foreign-pin") return (p && $3 == "-" && $4 == "-" && $5 == "agent")
+      if ($1 == "stale-pointer" || $1 == "mirror") return (p && $3 == "-" && $4 ~ /^[A-Za-z0-9._-]+$/ && $5 == "owner")
+      if ($1 == "user-global") return (p && a && t && $5 == "owner")
+      return 0
+    }
+    !rowok() { bad = 1 }
     $1 == "summary" { n++; last = NR }
     ($1 in judged) { k = $2 "\t" $3; if (k in seen) bad = 1; seen[k] = 1
                      if ($2 == r && $3 == g) hit = ($1 == "competes" ? $1 ":" $4 : $1) }

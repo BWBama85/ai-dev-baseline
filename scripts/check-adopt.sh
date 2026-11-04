@@ -814,7 +814,7 @@ eq "$(wcl)" competes:implement-issue "wclass: a whole file judges the path"
 eq "$(bash "$AD" wclass "$WCF" .claude/skills/other claude)" none "wclass: a whole file with no record for the path says none"
 printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a file without its final newline is not whole"
-printf 'competes\t.claude/skills/implement\tclaude\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a record missing fields is not whole"
 printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nexempt\t.claude/skills/implement\tclaude\t-\t-\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a path judged twice for one agent is not whole"
@@ -822,6 +822,38 @@ printf 'bogus\t.claude/skills/implement\tclaude\t-\t-\tr\nsummary\t-\t-\t-\t-\ts
 eq "$(wcl)" unjudged "wclass: an unknown class is not whole"
 printf 'summary\t-\t-\t-\t-\ts\ncompetes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\n' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a summary that is not last is not whole"
+# Review pass 1 of the local loop (#535).
+# A receipt-owned pinned skill under a SYMLINKED skill root (an ancestor, not the skill itself).
+SAX="$WORK/wf-symroot"; mkdir -p "$SAX/.ai-dev-baseline" "$SAX/.claude" "$SAX/realskills/cleanup"
+cp "$ROOT/agents/claude/skills/cleanup/SKILL.md" "$SAX/realskills/cleanup/SKILL.md"; printf '#!/bin/sh\n' > "$SAX/realskills/cleanup/added.sh"
+ln -s ../realskills "$SAX/.claude/skills"
+printf '[upstream]\nmode = "pinned"\n' > "$SAX/.ai-dev-baseline/upstream.toml"
+printf '%s  %s\n' "$(adb_sha256 "$SAX/realskills/cleanup/SKILL.md")" .claude/skills/cleanup/SKILL.md > "$SAX/.ai-dev-baseline/pinned-files.sha256"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$SAX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a pinned skill under a symlinked .claude/skills is unjudged (11), never clean"
+# A SYMLINKED agent directory is not walked at all.
+SDX="$WORK/wf-symagent"; mkdir -p "$SDX/realclaude/commands"; printf 'x\n' > "$SDX/realclaude/commands/pr.md"; ln -s realclaude "$SDX/.claude"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$SDX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a symlinked .claude directory is unjudged (11), never clean"
+# A directory whose name ends in a newline: an unreadable repository inside it is still unjudged.
+NLR="$WORK/nl-repo"$'\n'; mkdir -p "$NLR"; printf 'gitdir: %s/nowhere\n' "$WORK" > "$NLR/.git"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NLR" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a repository git cannot read, in a directory ending in a newline, is unjudged (11)"
+# A CODEX_HOME under HOME is shown as CODEX_HOME, so a space in it is no reason not to judge.
+SPC="$WORK/pt-home/codex home"; mkdir -p "$SPC/skills/implement"; printf 'x\n' > "$SPC/skills/implement/SKILL.md"
+has "$(HOME="$WORK/pt-home" CODEX_HOME="$SPC" bash "$AD" workflows "$WORK/wf-clean" --agents codex --baseline "$ROOT")" \
+    "user-global${TAB}CODEX_HOME/skills/implement${TAB}codex" "workflows: a CODEX_HOME under HOME holding a space is judged, shown as CODEX_HOME"
+rm -rf "$SPC"
+# A root doc past its bound is not judged rather than buffered whole.
+BGX="$WORK/wf-bigdoc"; mkdir -p "$BGX"; awk 'BEGIN { for (i = 0; i < 40000; i++) print "filler line of prose for the size bound" }' > "$BGX/CLAUDE.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$BGX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a root doc over 1 MiB is unjudged (11)"
+# wclass: six fields are not enough — each field is in its grammar.
+printf 'exempt\t.claude/skills/implement\tclaude\t\t\t\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a record with empty required fields is not whole"
+printf 'competes\t.claude/skills/implement\tclaude\t<script>\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(wcl)" unjudged "wclass: a target outside its grammar is not whole"
+
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2202,7 +2234,7 @@ shmutant_mut wclass-final-byte-unchecked \
     '  :' \
     'wclass: a file without its final newline is not whole'
 shmutant_mut wclass-grammar-unchecked \
-    '    NF != 6 || !($1 in known) { bad = 1 }' \
+    '    !rowok() { bad = 1 }' \
     '    0 { bad = 1 }' \
     'wclass: a record missing fields is not whole'
 shmutant_mut wclass-duplicates-unchecked \
@@ -2226,13 +2258,34 @@ shmutant_mut workflows-symlinked-commands-trusted \
     '            if false; then' \
     'a symlinked .claude/commands is unjudged'
 shmutant_mut scan-symlinked-pinned-skill-trusted \
-    '        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && [ -L "${d%/}" ]; then' \
+    '        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then' \
     '        if false; then' \
     'a symlinked receipt-owned pinned skill is unjudged'
 shmutant_mut baseline-link-compared-as-text \
     '  case "$t" in "$b"/*) return 0 ;; esac' \
     '  case "$(readlink "$1")" in "$2"/*) return 0 ;; esac' \
     'a user link naming the baseline but resolving outside it is a finding'
+
+shmutant_mut scan-linked-ancestor-unchecked \
+    '&& _ad_has_link "$root" "$sroot/$n"; then' \
+    '&& [ -L "${d%/}" ]; then' \
+    'a pinned skill under a symlinked .claude/skills is unjudged'
+shmutant_mut scan-symlinked-agent-dir-trusted \
+    '    if [ -L "$root/.$a" ]; then' \
+    '    if false; then' \
+    'a symlinked .claude directory is unjudged'
+shmutant_mut git-tree-capture-strips-newline \
+    'd="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 0' \
+    'd="$(cd "$1" 2>/dev/null && pwd -P)" || return 0' \
+    'in a directory ending in a newline, is unjudged'
+shmutant_mut codex-home-shown-by-location \
+    '          if [ "$a" = codex ] && [ -n "${CODEX_HOME:-}" ] && [ "$ur_" = "$CODEX_HOME/skills" ]; then' \
+    '          if false; then' \
+    'a CODEX_HOME under HOME holding a space is judged'
+shmutant_mut root-doc-unbounded \
+    ' || ! _ad_size_ok "$root/$doc_" 1048576' \
+    '' \
+    'a root doc over 1 MiB is unjudged'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut user-roots-drop-agents-skills \
