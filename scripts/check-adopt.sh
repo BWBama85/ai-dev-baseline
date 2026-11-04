@@ -2375,10 +2375,8 @@ shmutant_mut workflows-dangling-command-counted \
     '            :' \
     'a dangling .claude/commands/pr.md link supplies no command'
 shmutant_mut baseline-ownership-needs-leaf-link \
-    '  local t b
-  t="$(cd' \
-    '  local t b; [ -L "$1" ] || return 1
-  t="$(cd' \
+    '  t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"' \
+    '  [ -L "$1" ] || return 1; t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"' \
     'a user skill root linked into the baseline is not a finding'
 shmutant_mut root-doc-nul-unchecked \
     '       || ! adb_nul_free "$root/$doc_" \' \
