@@ -1022,7 +1022,7 @@ cmd_scan() {
   [ -d "$root" ] || die "scan: not a directory: $root"
   [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" scan
-  agents="$(_ad_unique_agents "$agents")"
+  agents="$(_ad_unique_agents "$agents")"   # workflows judges what scan emits: a repeat here is a repeat there
 
   # THE AGENT IS THE FOURTH FIELD on every record, and `-` where the artifact is agent-neutral.
   # Without it the collision lookup could only match on <kind, name> and took the FIRST match,
@@ -2291,7 +2291,6 @@ cmd_workflows() {
   [ -d "$root" ] || die "workflows: not a directory: $(adb_display_value "$root")"
   [ -n "$agents" ] || agents="$(_ad_default_agents)"
   _ad_check_agents "$agents" workflows
-  agents="$(_ad_unique_agents "$agents")"   # repeats would judge every path twice; wclass refuses that
 
   local ug="user-global=not judged"
   [ "$scope" = project ] && ug="user-global=not evaluated (scope project)"

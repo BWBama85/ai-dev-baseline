@@ -2413,7 +2413,7 @@ shmutant_mut wclass-bound-below-writer \
     '  if ! adb_bytes_whole "$f" 8388608; then' \
     "the reader's bound covers the writer's output"
 shmutant_mut workflows-agents-not-deduplicated \
-    '  agents="$(_ad_unique_agents "$agents")"   # repeats would judge every path twice; wclass refuses that' \
+    '  agents="$(_ad_unique_agents "$agents")"   # workflows judges what scan emits: a repeat here is a repeat there' \
     '  :' \
     'a repeated --agents token still yields a file wclass judges'
 
