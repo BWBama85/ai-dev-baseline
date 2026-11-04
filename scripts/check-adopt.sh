@@ -854,6 +854,26 @@ eq "$(wcl)" unjudged "wclass: a record with empty required fields is not whole"
 printf 'competes\t.claude/skills/implement\tclaude\t<script>\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a target outside its grammar is not whole"
 
+# Review pass 2 of the local loop (#535). Any agent's skill root is not a mirror of itself...
+PIX="$WORK/wf-pi"; mkdir -p "$PIX/.pi/skills/implement"; printf 'x\n' > "$PIX/.pi/skills/implement/SKILL.md"
+if git -C "$PIX" init -q >/dev/null 2>&1 && git -C "$PIX" add .pi >/dev/null 2>&1; then
+  hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$PIX" --agents pi --baseline "$ROOT" --scope project)" "mirror${TAB}" \
+        "workflows: another agent's skill root is not a mirror of itself"
+else
+  bad "workflows: could not build the other-agent mirror fixture"
+fi
+# ...and an UNMERGED index (one entry per conflict stage) is one path, so one mirror.
+UMX="$WORK/wf-unmerged"; mkdir -p "$UMX/codex-skills/implement"; printf 'x\n' > "$UMX/codex-skills/implement/SKILL.md"
+if git -C "$UMX" init -q >/dev/null 2>&1 && blob_="$(git -C "$UMX" hash-object -w codex-skills/implement/SKILL.md)" \
+   && printf '100644 %s 1\tcodex-skills/implement/SKILL.md\n100644 %s 2\tcodex-skills/implement/SKILL.md\n100644 %s 3\tcodex-skills/implement/SKILL.md\n' "$blob_" "$blob_" "$blob_" \
+      | git -C "$UMX" update-index --index-info >/dev/null 2>&1; then
+  umo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$UMX" --agents claude --baseline "$ROOT" --scope project)"
+  eq "$(printf '%s\n' "$umo" | grep -c "^mirror${TAB}")" 1 "workflows: an unmerged path is one mirror, not one per conflict stage"
+  has "$umo" "mirrors=1" "workflows: ...and is counted once"
+else
+  bad "workflows: could not build the unmerged-index fixture"
+fi
+
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2286,6 +2306,15 @@ shmutant_mut root-doc-unbounded \
     ' || ! _ad_size_ok "$root/$doc_" 1048576' \
     '' \
     'a root doc over 1 MiB is unjudged'
+
+shmutant_mut mirror-stages-counted-twice \
+    '        [ -z "${mseen_[$t_]:-}" ] || continue' \
+    '        :' \
+    'an unmerged path is one mirror'
+shmutant_mut mirror-roots-fixed-agent-set \
+    '    for ag_ in ${agents//,/ } $(_ad_agents_from_baseline "$broot"); do' \
+    '    for ag_ in claude codex gemini; do' \
+    "another agent's skill root is not a mirror of itself"
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut user-roots-drop-agents-skills \

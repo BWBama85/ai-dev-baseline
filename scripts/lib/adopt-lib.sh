@@ -2477,9 +2477,14 @@ cmd_workflows() {
   fi
   if [ -n "$gitok" ]; then
     local -a tracked_=()
-    local self_="" t_ d_ mn_ allroots_=""
+    local self_="" t_ d_ mn_ allroots_="" ag_
+    local -A mseen_=()
     [ -n "$broot" ] && [ "$root" -ef "$broot" ] && self_=1
-    for a in claude codex gemini; do allroots_="$allroots_ .$a/skills $(adb_agent_project_skill_dirs "$a")"; done
+    # Every skill root ANY agent loads — the selected agents and every agent the baseline ships —
+    # read from the one table, so a root is never also reported as a mirror of itself.
+    for ag_ in ${agents//,/ } $(_ad_agents_from_baseline "$broot"); do
+      allroots_="$allroots_ .$ag_/skills $(adb_agent_project_skill_dirs "$ag_")"
+    done
     mapfile -d '' -t tracked_ < <(
       cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
       git ls-files -z -- '*SKILL.md' 2>/dev/null
@@ -2495,12 +2500,15 @@ cmd_workflows() {
         [ -n "$mn_" ] && [ -n "${mnames[$mn_]:-}" ] || continue
         case "$t_" in
           .ai-dev-baseline/retired/*) continue ;;
-          */.claude/skills/*|*/.codex/skills/*|*/.agents/skills/*|*/.gemini/skills/*) continue ;;
         esac
         [ -n "$self_" ] && case "$t_" in agents/*/skills/*) continue ;; esac
         local inr_=""
-        for r_ in $allroots_; do case "$t_" in "$r_"/*) inr_=1 ;; esac; done
+        # A root at the top, or NESTED below it (not evaluated yet): either way not a mirror.
+        for r_ in $allroots_; do case "$t_" in "$r_"/*|*/"$r_"/*) inr_=1 ;; esac; done
         [ -z "$inr_" ] || continue
+        # An unmerged index lists a path once per conflict stage: one path, one finding.
+        [ -z "${mseen_[$t_]:-}" ] || continue
+        mseen_["$t_"]=1
         case "$t_" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a tracked mirror path outside the closed charset was not judged"; continue ;; esac
         nmir=$((nmir + 1))
         _ad_wf_rec mirror "$t_" - "${target[$mn_]:-$mn_}" owner "a tracked copy of a competing, same-name or project skill outside every skill root — whatever installs it from here reintroduces it; $retire"
