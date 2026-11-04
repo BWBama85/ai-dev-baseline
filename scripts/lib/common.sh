@@ -7668,7 +7668,9 @@ adb_bytes_whole() {
   local f="$1" max="$2" sz last
   [ -n "$f" ] && [ ! -L "$f" ] && [ -f "$f" ] && [ -r "$f" ] || return 20
   case "$max" in ''|*[!0-9]*) return 20 ;; esac
-  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null | tr -d ' ')" || return 20
+  # `wc` alone in the substitution, so ITS status is the one tested (no pipefail is assumed).
+  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || return 20
+  sz="${sz//[!0-9]/}"
   case "$sz" in ''|*[!0-9]*) return 20 ;; esac
   [ "$sz" -gt 0 ] && [ "$sz" -le "$max" ] || return 18
   adb_nul_free "$f" || { [ "$?" -eq 1 ] && return 18; return 20; }

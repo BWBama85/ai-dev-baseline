@@ -975,7 +975,10 @@ _ad_parents_searchable() {
 # failed read is not small.
 _ad_size_ok() {
   local sz
-  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 1
+  # `wc` alone in the substitution, so ITS status is the one tested: piped, a failing `wc` would be
+  # answered for by whatever followed it.
+  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || return 1
+  sz="${sz//[!0-9]/}"
   case "$sz" in ''|*[!0-9]*) return 1 ;; esac
   [ "$sz" -le "$2" ]
 }

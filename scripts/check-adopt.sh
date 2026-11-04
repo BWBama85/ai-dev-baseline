@@ -746,7 +746,7 @@ else
 fi
 chmod 755 "$UGH/.agents"
 
-# Carried from #603's review. An unsearchable PARENT of a project skill root is not an absent root.
+# An unsearchable PARENT of a project skill root is not an absent root.
 AGX="$WORK/wf-agents-locked"; mkdir -p "$AGX/.agents/skills/implement"; printf 'x\n' > "$AGX/.agents/skills/implement/SKILL.md"
 chmod 000 "$AGX/.agents"
 if [ -x "$AGX/.agents" ]; then
@@ -769,7 +769,7 @@ ln -s custom.sh "$PNX/.claude/skills/cleanup/linked.sh"
 has "$(HOME="$WFX/home" bash "$AD" workflows "$PNX" --agents claude --baseline "$ROOT")" \
     "project-specific${TAB}.claude/skills/cleanup/linked.sh" "workflows: a symlink added inside a pinned skill is a finding"
 
-# Review of the second slice (#535). A name ends at a `.` that does not continue it.
+# A name ends at a `.` that does not continue it.
 printf 'Run /implement.foo here, then /implement.\n' > "$WORK/wf-dot.md"
 DTX="$WORK/wf-dot"; mkdir -p "$DTX"; cp "$WORK/wf-dot.md" "$DTX/CLAUDE.md"
 dto="$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project)"
@@ -827,7 +827,6 @@ printf 'bogus\t.claude/skills/implement\tclaude\t-\t-\tr\nsummary\t-\t-\t-\t-\ts
 eq "$(wcl)" unjudged "wclass: an unknown class is not whole"
 printf 'summary\t-\t-\t-\t-\ts\ncompetes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\n' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a summary that is not last is not whole"
-# Review pass 1 of the local loop (#535).
 # A receipt-owned pinned skill under a SYMLINKED skill root (an ancestor, not the skill itself).
 SAX="$WORK/wf-symroot"; mkdir -p "$SAX/.ai-dev-baseline" "$SAX/.claude" "$SAX/realskills/cleanup"
 cp "$ROOT/agents/claude/skills/cleanup/SKILL.md" "$SAX/realskills/cleanup/SKILL.md"; printf '#!/bin/sh\n' > "$SAX/realskills/cleanup/added.sh"
@@ -859,7 +858,7 @@ eq "$(wcl)" unjudged "wclass: a record with empty required fields is not whole"
 printf 'competes\t.claude/skills/implement\tclaude\t<script>\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
 eq "$(wcl)" unjudged "wclass: a target outside its grammar is not whole"
 
-# Review pass 2 of the local loop (#535). Any agent's skill root is not a mirror of itself...
+# Any agent's skill root is not a mirror of itself...
 PIX="$WORK/wf-pi"; mkdir -p "$PIX/.pi/skills/implement"; printf 'x\n' > "$PIX/.pi/skills/implement/SKILL.md"
 if git -C "$PIX" init -q >/dev/null 2>&1 && git -C "$PIX" add .pi >/dev/null 2>&1; then
   hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$PIX" --agents pi --baseline "$ROOT" --scope project)" "mirror${TAB}" \
@@ -893,7 +892,7 @@ else
      "workflows: a user link into an unsearchable folder is unjudged (11), never dangling"
 fi
 chmod 755 "$WORK/lk-locked"
-# CI-fix round of #604. A dangling command link supplies no command.
+# A dangling command link supplies no command.
 DCX="$WORK/wf-dangcmd"; mkdir -p "$DCX/.claude/commands"; ln -s missing-command.md "$DCX/.claude/commands/pr.md"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DCX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
    "workflows: a dangling .claude/commands/pr.md link supplies no command (exit 0)"
@@ -906,6 +905,16 @@ hasnt "$blo" "user-global${TAB}" "workflows: ...and none of the baseline's skill
 NUX="$WORK/wf-nul"; mkdir -p "$NUX"; printf 'prefix\000 Run /implement 12.\n' > "$NUX/CLAUDE.md"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NUX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a root doc holding a NUL byte is unjudged (11), never clean"
+
+# A size read that FAILED is not a small size. The stub fails only when reading a regular file (the
+# size reads); a pipe (the NUL count) still gets the real `wc`, so each case isolates its guard.
+WCSTUB="$WORK/wc-stub"; mkdir -p "$WCSTUB"; REALWC="$(command -v wc)"
+printf '#!/bin/sh\nif [ -p /dev/stdin ]; then exec "%s" "$@"; fi\nprintf '"'"'10\\n'"'"'; exit 1\n' "$REALWC" > "$WCSTUB/wc"; chmod +x "$WCSTUB/wc"
+eq "$(PATH="$WCSTUB:$PATH" HOME="$WORK/pt-home" bash "$AD" workflows "$BGX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a root doc whose size read failed is unjudged (11), whatever wc printed"
+printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
+eq "$(PATH="$WCSTUB:$PATH" bash "$AD" wclass "$WCF" .claude/skills/implement claude)" unjudged \
+   "wclass: a file whose size read failed is not whole, whatever wc printed"
 
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
@@ -2376,7 +2385,16 @@ shmutant_mut root-doc-nul-unchecked \
     '       \' \
     'a root doc holding a NUL byte is unjudged'
 
+shmutant_mut size-read-status-ignored \
+    '  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || return 1' \
+    '  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || :' \
+    'a root doc whose size read failed is unjudged'
+
 shmutant_target scripts/lib/common.sh
+shmutant_mut bytes-whole-size-status-ignored \
+    '  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || return 20' \
+    '  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || :' \
+    'a file whose size read failed is not whole'
 shmutant_mut user-roots-drop-agents-skills \
     "    codex)  printf '%s\\n' 'codex skills' 'home .agents/skills' ;;" \
     "    codex)  printf '%s\\n' 'codex skills' ;;" \
