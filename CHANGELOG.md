@@ -24,7 +24,8 @@ only by a release it upgrades to. These entries are the notes for both.
   `adopt-lib.sh workflows` adds three classes. `stale-pointer` is a prose line of `CLAUDE.md`,
   `AGENTS.md` or `GEMINI.md` invoking `/<name>` or `$<name>` for a legacy name or one of the
   project's own skills, reported as `<doc>:<line>`. `mirror` is a tracked `*/SKILL.md` outside every
-  skill root, such as `codex-skills/implement/SKILL.md`, never under `.ai-dev-baseline/retired/`.
+  skill root whose directory is named like a legacy, baseline or project skill, such as
+  `codex-skills/implement/SKILL.md`, never under `.ai-dev-baseline/retired/`.
   `user-global` is a non-baseline entry named like a legacy workflow or a baseline skill in an
   agent's user skill root, including Codex's `~/.agents/skills`. `--scope project` skips user roots
   and says so. Nested skill roots and reading the map from a pinned install are still to come.

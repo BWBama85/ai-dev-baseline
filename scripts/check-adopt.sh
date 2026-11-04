@@ -28,8 +28,8 @@
 # BROAD case fires, the EXPLICIT case stays silent, and the ABSENT case fires differently — three
 # distinguishable answers, because two of them would let a stuck predicate pass.
 #
-# OFFLINE and HERMETIC. The library never calls gh; the only git it runs is `check-ignore`, which
-# needs a repo but no remote. Every fixture is a `mktemp -d` tree. THE TRACKED WORKING TREE IS
+# OFFLINE and HERMETIC. The library never calls gh, and its git calls are local and read-only —
+# they need a repo but no remote. Every fixture is a `mktemp -d` tree. THE TRACKED WORKING TREE IS
 # NEVER MUTATED — not to build a fixture, not to negative-test a lint (self-review.md's copy
 # rule: editing a tracked file to watch a check reject it is what ends in `git checkout --` and
 # ~40 minutes of lost work).

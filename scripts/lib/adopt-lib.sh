@@ -24,11 +24,12 @@
 # reading the plan needs to be right, and to say when it is not sure. This file is the second
 # kind, deliberately (#20's v1 boundary; see the decision log).
 #
-# NETWORK PURITY. No subcommand here ever calls `gh`. `git` is called for two things, both local
-# and read-only: `check-ignore` and `ls-files` in `hygiene`, where asking git itself is the whole
+# NETWORK PURITY. No subcommand here ever calls `gh`. Every `git` call is local and read-only:
+# `hygiene` asks git about ignore rules and tracked files, where asking git itself is the whole
 # point — reimplementing .gitignore precedence is how you get a confidently wrong answer about
-# negations — and `pin-describe`, which asks the BASELINE clone what it is (#464). `scan`,
-# `hygiene` and `pin-describe` read the filesystem: deterministic and offline, not pure. `answers`
+# negations — `workflows` asks which files are tracked (its `mirror` class), and `pin-describe`
+# asks the BASELINE clone what it is (#464). `scan`, `hygiene`, `workflows` and `pin-describe`
+# read the filesystem: deterministic and offline, not pure. `answers`
 # writes the file it is given, and the record readers copy their input into a private temp before
 # parsing it. Everything else is a pure function of its arguments, its stdin and the files it is
 # handed. The workflow
