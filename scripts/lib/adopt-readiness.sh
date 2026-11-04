@@ -664,7 +664,7 @@ cmd_probe() {
   case "$wrc" in
     0)  _ar_emit workflows ok "no competing, same-name or project skill, no prior framework's pin, and nothing routing work to one — $wsum" ;;
     10) _ar_emit workflows todo "the project carries or routes work to skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each skill and mirror to .ai-dev-baseline/retired/<date>/ in a normal PR, re-point each root-doc line at the baseline workflow, and move each user-level skill out of its user root; $wsum" ;;
-    11) _ar_emit workflows unknown "workflows not judged in full$( [ -n "$wfind" ] && printf ' (found so far:%s)' "$wfind") — ${wsum:-no summary}; $(printf '%s\n' "$wout" | awk -F'\t' '$1=="unknown" {print $6; exit}')" ;;
+    11) _ar_emit workflows unknown "workflows not judged in full$( [ -n "$wfind" ] && printf ' (found so far:%s)' "$wfind") — ${wsum:-no summary}; $(printf '%s\n' "$wout" | awk -F'\t' '$1=="unknown" {printf "%s%s", (n++ ? "; " : ""), $6}')" ;;
     *)  _ar_emit workflows unknown "adopt-lib.sh workflows failed (exit $wrc) — workflows not judged" ;;
   esac
 }

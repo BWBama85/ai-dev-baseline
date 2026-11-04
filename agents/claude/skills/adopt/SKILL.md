@@ -263,7 +263,12 @@ while IFS="$TABC" read -r kind rel name agent; do
   # which judges nothing from a file that is not whole. `workflows` writes one record for every
   # skill it judged, so a skill with NO record (`none`), or a lookup that failed, is `unjudged`,
   # which escalates: it must never fall back to the old "project-specific, keep".
-  wclass="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" wclass ".claude/state/adopt-workflows.tsv" "$rel" "$agent")" || wclass=unjudged
+  # Asked only for the kinds that carry a class: each lookup reads the whole file.
+  wclass=-
+  case "$kind" in
+    skill|other|override)
+      wclass="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" wclass ".claude/state/adopt-workflows.tsv" "$rel" "$agent")" || wclass=unjudged ;;
+  esac
   case "$kind:$wclass" in
     skill:competes:*|skill:shadows|skill:duplicates|skill:project-specific|skill:exempt) ;;
     skill:*) wclass=unjudged ;;

@@ -506,6 +506,12 @@ has "$out" "workflows${TAB}todo" "probe: a root-doc pointer alone makes the work
 has "$out" "stale-pointer CLAUDE.md:1 -> implement-issue (owner)" "probe: ...naming the pointer's line, its target and its owner"
 { cat "$WORK/wf-green.tsv"; printf '%s\n' "$out" | grep "^workflows$TAB"; } | ar verdict >/dev/null 2>&1; rc=$?
 eq "$rc" 10 "verdict: a pointer-only workflows rung beside an otherwise green contract is exactly 10"
+# EVERY cause of a partial answer is named, not just the first.
+d="$WORK/p-two-unknown"; mkrepo "$d"
+awk 'BEGIN { for (i = 0; i < 40000; i++) print "filler line of prose for the size bound" }' > "$d/CLAUDE.md"; cp "$d/CLAUDE.md" "$d/AGENTS.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "the root doc CLAUDE.md could not be read" "probe: an unjudged workflows rung names the first cause..."
+has "$out" "the root doc AGENTS.md could not be read" "probe: ...and every other one"
 # probe's `claude` default belongs to the harness rung: with no --agents, every agent's skill roots
 # are judged, so Codex's .agents/skills is not missed.
 d="$WORK/p-workflows-codex"; mkrepo "$d"; mkdir -p "$d/.agents/skills/implement"; printf 'x\n' > "$d/.agents/skills/implement/SKILL.md"
@@ -1519,6 +1525,10 @@ shmutant_mut workflows-agents-default-claude \
     '${agents_given:+--agents "$agents"}' \
     '--agents "$agents"' \
     "probe: with no --agents, the workflows rung judges Codex's .agents/skills too"
+shmutant_mut workflows-unknown-first-cause-only \
+    '{printf "%s%s", (n++ ? "; " : ""), $6}' \
+    '{print $6; exit}' \
+    'probe: ...and every other one'
 shmutant_mut workflows-findings-read-ok \
     '    10) _ar_emit workflows todo' \
     '    10) _ar_emit workflows ok' \

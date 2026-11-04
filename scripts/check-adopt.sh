@@ -926,6 +926,16 @@ awk 'BEGIN { for (i = 0; i < 60000; i++) printf "stale-pointer\tCLAUDE.md:%d\t-\
              printf "competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n" }' > "$WCF"
 eq "$(wcl)" competes:implement-issue "wclass: a whole file past 8 MiB is still judged — the reader's bound covers the writer's output"
 
+# A git that answers "true" but FAILS has not answered: inside a repository, mirrors are unjudged.
+GSTUB="$WORK/git-stub"; mkdir -p "$GSTUB"; REALGIT="$(command -v git)"
+printf '#!/bin/sh\ncase " $* " in *" --is-inside-work-tree "*) echo true; exit 128 ;; esac\nexec "%s" "$@"\n' "$REALGIT" > "$GSTUB/git"; chmod +x "$GSTUB/git"
+eq "$(PATH="$GSTUB:$PATH" HOME="$WORK/pt-home" bash "$AD" workflows "$MRX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a repository whose rev-parse failed is unjudged (11), whatever it printed"
+# An ellipsis ends a pointer as a single period does.
+printf 'Then run /implement...\n' > "$DTX/CLAUDE.md"
+eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 10 \
+   "workflows: '/implement...' ending a sentence is a pointer"
+
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
 
@@ -2249,7 +2259,7 @@ shmutant_mut classify-project-skill-kept \
 
 # #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
 shmutant_mut pointer-word-boundary-dropped \
-    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
+    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     'R[i] = "[/$]" re' \
     'are not pointers (word boundary)'
 shmutant_mut pointer-reads-fenced-text \
@@ -2314,11 +2324,11 @@ shmutant_mut wclass-duplicates-unchecked \
     'seen[k] = 1' \
     'wclass: a path judged twice for one agent is not whole'
 shmutant_mut pointer-dotted-prefix-matches \
-    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
+    '([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '[^A-Za-z0-9_/-]"' \
     'a dotted name that merely starts with a legacy name is not a pointer'
 shmutant_mut pointer-dot-terminator-loose \
-    '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
+    '([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
     '/implement..foo and /implement./file are another name and a path'
 shmutant_mut user-link-unsearchable-is-dangling \
@@ -2406,6 +2416,15 @@ shmutant_mut workflows-agents-not-deduplicated \
     '  agents="$(_ad_unique_agents "$agents")"   # repeats would judge every path twice; wclass refuses that' \
     '  :' \
     'a repeated --agents token still yields a file wclass judges'
+
+shmutant_mut git-status-ignored \
+    '  elif gout_="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" && [ "$gout_" = true ]; then' \
+    '  elif gout_="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)"; [ "$gout_" = true ]; then' \
+    'a repository whose rev-parse failed is unjudged'
+shmutant_mut pointer-ellipsis-not-a-terminator \
+    '"([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
+    '"([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
+    "'/implement...' ending a sentence is a pointer"
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \

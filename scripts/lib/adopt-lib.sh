@@ -2445,7 +2445,8 @@ cmd_workflows() {
   # Names: every legacy name the map supersedes, plus every project skill found above (its class is
   # a finding). A baseline name with no project copy routes to the baseline, so it is not one. A
   # name ends at a character no skill name carries, or at a `.` that does not continue one
-  # (`/implement.` ends a sentence; `/implement.foo`, `/implement..x` and `/implement./f` do not).
+  # (`/implement.` and `/implement...` end a sentence; `/implement.foo`, `/implement..x` and
+  # `/implement./f` do not).
   # Fenced blocks and HTML comments are not prose (adb_md_prose); inline code is, because "run
   # `/implement 12`" is still an instruction. Only <doc>:<line> and the name are emitted.
   local -A pnames=() mnames=()
@@ -2464,7 +2465,7 @@ cmd_workflows() {
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
       BEGIN { k = split(names, N, " ")
-              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])" } }
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
       { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
       nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
       continue
@@ -2483,11 +2484,11 @@ cmd_workflows() {
   # points at, and — when the project IS the baseline — the baseline's own rendered skills. The INDEX
   # is the authority, not the working tree: a staged file whose working copy was deleted still ships.
   # Only `*SKILL.md` paths are listed, so memory follows the candidates, not the repository.
-  local gitok=""
+  local gitok="" gout_=""
   if ! command -v git >/dev/null 2>&1; then
     mirror="mirrors=not judged (git not found)"; nunk=$((nunk + 1))
     _ad_wf_rec unknown - - - agent "git was not found — tracked mirrors were not judged"
-  elif [ "$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+  elif gout_="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" && [ "$gout_" = true ]; then
     gitok=1
   elif _ad_in_git_tree "$root"; then
     mirror="mirrors=not judged (git could not read the repository)"; nunk=$((nunk + 1))
@@ -2606,8 +2607,8 @@ cmd_workflows() {
 # stdout: `competes:<target>`, `shadows`, `duplicates`, `project-specific`, `exempt` · `none` (the
 # file is whole and holds no judgment of this path) · `unjudged` (the file is not whole, so no path
 # is judged by it). Whole means: adb_bytes_whole (regular, non-link, NUL-free, newline-terminated,
-# at most 1 GiB — sized to cover anything `workflows` can write, whose largest output is pointer
-# records from three root docs it caps at 1 MiB each); every line six tab-separated fields with a known class, each field in its grammar
+# at most 1 GiB — far past what pointer records from three root docs capped at 1 MiB can add; a
+# larger file, from an inventory of that size, is not judged); every line six tab-separated fields with a known class, each field in its grammar
 # (a target is a workflow name as `classify` accepts it); exactly one `summary`,
 # and it is last; and no path judged twice for one agent. Exit 0, or 2 on usage.
 cmd_wclass() {
