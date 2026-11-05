@@ -85,6 +85,10 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -u
+# An exported CDPATH makes `cd` print its destination, which lands inside every `$(cd … && pwd)`
+# capture, and can resolve a relative path against the wrong directory (#535). Every path here is
+# meant literally.
+unset CDPATH
 
 usage() { adb_usage "$0"; }
 die() { printf 'adopt-readiness: %s\n' "$*" >&2; exit 2; }

@@ -586,8 +586,8 @@ OVX="$WORK/wf-override"; mkdir -p "$OVX/.claude/skills/cleanup"; printf 'x\n' > 
 ovo="$(HOME="$WFX/home" bash "$AD" workflows "$OVX" --agents claude --baseline "$ROOT")"; ovrc=$?
 has "$ovo" "project-specific${TAB}.claude/skills/cleanup/overrides.md" "workflows: a lone overrides.md is a finding"
 eq "$ovrc" 10 "workflows: ...so the project is not clean"
-# NESTED ROOTS are not walked yet (#535's second PR), and the trailer says so.
-has "$wfo" "nested=not evaluated" "workflows: the trailer says nested roots were not evaluated"
+# NESTED ROOTS: this fixture has none, and the trailer counts that zero.
+has "$wfo" "nested=0" "workflows: the trailer counts the nested skills (none here)"
 # A failure anywhere in the inventory walk — here only `sort -z` — is unjudged, never clean.
 SZSTUB="$WORK/sortz-stub"; mkdir -p "$SZSTUB"; REALSORT="$(command -v sort)"
 # The stub DRAINS its input before failing: one that exits unread kills `find` with SIGPIPE, and the
@@ -690,7 +690,9 @@ if git -C "$MRX" init -q >/dev/null 2>&1 && git -C "$MRX" add codex-skills .ai-d
   hasnt "$mro" "loose/swarm" "workflows: an untracked copy is not a mirror"
   hasnt "$mro" "mirror${TAB}.ai-dev-baseline/retired/" "workflows: the retirement folder is never a mirror"
   hasnt "$mro" "docs/widget" "workflows: a tracked SKILL.md with an unrelated name is not a mirror"
-  hasnt "$mro" "sub/.claude/skills" "workflows: a nested skill root is not a mirror (nested is not evaluated yet)"
+  hasnt "$mro" "mirror${TAB}sub/.claude/skills" "workflows: a nested skill root is not a mirror"
+  has "$mro" "competes${TAB}sub/.claude/skills/implement${TAB}claude${TAB}implement-issue" \
+      "workflows: a nested skill root is walked by the scan instead"
   has "$mro" "mirrors=2" "workflows: the trailer counts the mirrors"
 else
   bad "workflows: could not build the git fixture for mirrors"
@@ -756,6 +758,140 @@ else
      "workflows: an unsearchable .agents makes .agents/skills unjudged (11), never absent"
 fi
 chmod 755 "$AGX/.agents"
+
+# --- 4e. workflows (#535, third slice): nested roots, the pinned map, CDPATH, Antigravity roots ---
+# NESTED PROJECT ROOTS: every `<subdir>/.claude/skills` (Claude) and `<subdir>/.agents/skills`
+# (Codex) below the top level, read from the filesystem. `.git`, the retirement folder and the
+# top-level agent directories are pruned.
+NSX="$WORK/wf-nested"
+mkdir -p "$NSX/pkg/web/.claude/skills/implement" "$NSX/pkg/web/.claude/skills/cleanup" "$NSX/tools/.agents/skills/review-feedback" \
+         "$NSX/.ai-dev-baseline/retired/2026-11-01/.claude/skills/swarm" "$NSX/vendor/.git/x/.claude/skills/pr" \
+         "$NSX/.claude/worktrees/w/.claude/skills/review" "$NSX/lib/.claude/skills/theme-issue"
+for d_ in pkg/web/.claude/skills/implement tools/.agents/skills/review-feedback .ai-dev-baseline/retired/2026-11-01/.claude/skills/swarm \
+          vendor/.git/x/.claude/skills/pr .claude/worktrees/w/.claude/skills/review lib/.claude/skills/theme-issue; do
+  printf 'x\n' > "$NSX/$d_/SKILL.md"
+done
+printf 'x\n' > "$NSX/pkg/web/.claude/skills/cleanup/overrides.md"
+nso="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude,codex --baseline "$ROOT" --scope project)"; nsrc=$?
+eq "$nsrc" 10 "workflows: a nested competing skill is a finding (exit 10)"
+has "$nso" "competes${TAB}pkg/web/.claude/skills/implement${TAB}claude${TAB}implement-issue" "workflows: a nested <subdir>/.claude/skills is walked"
+has "$nso" "competes${TAB}tools/.agents/skills/review-feedback${TAB}codex${TAB}resolve-pr-threads" "workflows: a nested <subdir>/.agents/skills is walked, as Codex's"
+has "$nso" "project-specific${TAB}lib/.claude/skills/theme-issue${TAB}claude" "workflows: a nested project skill is a finding"
+has "$nso" "project-specific${TAB}pkg/web/.claude/skills/cleanup/overrides.md" "workflows: a nested overrides.md is a finding"
+hasnt "$nso" "retired/2026-11-01" "workflows: the retirement folder is never walked for nested roots"
+hasnt "$nso" "vendor/.git" "workflows: nothing under a .git directory is walked"
+hasnt "$nso" "worktrees/w/.claude/skills/review${TAB}" "workflows: the top-level agent directories are not walked for nested roots"
+has "$nso" "nested=3" "workflows: the trailer counts the nested skills"
+# ...and the nested record survives the whole chain: scan -> workflows -> wclass -> classify.
+nss="$(bash "$AD" scan "$NSX" --agents claude,codex)"
+has "$nss" "skill${TAB}pkg/web/.claude/skills/implement${TAB}implement${TAB}claude" "scan: a nested skill is a scan record, so /adopt's plan sees it"
+printf '%s\n' "$nso" > "$WORK/nested-workflows.tsv"
+nswc="$(bash "$AD" wclass "$WORK/nested-workflows.tsv" pkg/web/.claude/skills/implement claude)"
+eq "$nswc" competes:implement-issue "wclass: a nested skill's class is read back by path and agent"
+eq "$(verdict skill no unknown no "$nswc")" move "classify: a nested competing skill is move"
+# A NESTED same-name Claude skill runs beside the personal one (Claude lists it as `<dir>:<name>`), so
+# with the baseline's personal cleanup installed it shadows, never duplicates.
+mkdir -p "$WORK/nested-home/.claude/skills" "$NSX/pkg/web/.claude/skills/cleanup"; printf 'x\n' > "$NSX/pkg/web/.claude/skills/cleanup/SKILL.md"
+ln -s "$ROOT/agents/claude/skills/cleanup" "$WORK/nested-home/.claude/skills/cleanup"
+nsd="$(HOME="$WORK/nested-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)"
+has "$nsd" "shadows${TAB}pkg/web/.claude/skills/cleanup${TAB}claude${TAB}cleanup" \
+    "workflows: a nested same-name Claude skill shadows, even with the personal baseline copy installed"
+rm -f "$NSX/pkg/web/.claude/skills/cleanup/SKILL.md"
+# Only the agents asked about: a claude-only run does not walk Codex's nested roots.
+hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "tools/.agents" \
+      "workflows: a claude-only run does not report Codex's nested roots"
+# A TREE WALK THAT FAILED PART-WAY is not "no nested roots": 11, and the trailer says so.
+mkdir -p "$NSX/locked/deeper"; chmod 000 "$NSX/locked"
+if [ -x "$NSX/locked" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the failed tree walk is unexercised"
+else
+  nsl="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)"; nslrc=$?
+  eq "$nslrc" 11 "workflows: a project tree that could not be walked in full is unjudged (11)"
+  has "$nsl" "nested=not judged" "workflows: ...and the trailer says nested roots were not judged"
+fi
+chmod 755 "$NSX/locked"
+# A NESTED ROOT IS NOT A MIRROR, but a nested root of an agent nobody loads nested is.
+NMX="$WORK/wf-nested-mirror"; mkdir -p "$NMX/sub/.agents/skills/implement" "$NMX/sub/.codex/skills/pr"
+printf 'x\n' > "$NMX/sub/.agents/skills/implement/SKILL.md"; printf 'x\n' > "$NMX/sub/.codex/skills/pr/SKILL.md"
+if git -C "$NMX" init -q >/dev/null 2>&1 && git -C "$NMX" add sub >/dev/null 2>&1; then
+  nmo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NMX" --agents claude --baseline "$ROOT" --scope project)"
+  hasnt "$nmo" "mirror${TAB}sub/.agents/skills" "workflows: a nested .agents/skills is a skill root, never a mirror, whoever is asked about"
+  has "$nmo" "mirror${TAB}sub/.codex/skills/pr/SKILL.md" "workflows: a nested .codex/skills is no agent's nested root, so a tracked copy there is a mirror"
+else
+  bad "workflows: could not build the nested-mirror fixture"
+fi
+
+# THE PINNED MAP: a pinned project's own payload supplies the map and the shipped set, with no global
+# install, and beside one (owner decision 2026-11-03). Its digests are the proof.
+PMX="$WORK/wf-pinmap"; mkdir -p "$PMX/.ai-dev-baseline" "$PMX/.claude/skills/implement" "$WORK/pm-home"
+printf 'x\n' > "$PMX/.claude/skills/implement/SKILL.md"
+: > "$PMX/.ai-dev-baseline/pinned-files.sha256"
+for a_ in claude codex; do
+  for sk_ in "$ROOT/agents/$a_/skills"/*/; do
+    n_="${sk_%/}"; n_="${n_##*/}"; mkdir -p "$PMX/.$a_/skills/$n_"
+    cp "$sk_/SKILL.md" "$PMX/.$a_/skills/$n_/SKILL.md"
+    printf '%s  %s\n' "$(adb_sha256 "$PMX/.$a_/skills/$n_/SKILL.md")" ".$a_/skills/$n_/SKILL.md" >> "$PMX/.ai-dev-baseline/pinned-files.sha256"
+  done
+done
+printf '[upstream]\nmode = "pinned"\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+pmo="$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude,codex --scope project)"; pmrc=$?
+eq "$pmrc" 10 "workflows: a pinned-only project is judged from its pin (10, not 11)"
+has "$pmo" "competes${TAB}.claude/skills/implement${TAB}claude${TAB}implement-issue" "workflows: the pin's map names implement-issue"
+has "$pmo" "(v9.8.7, from the project's pin)" "workflows: the trailer names the pin's version as the map's source"
+hasnt "$pmo" "${TAB}.claude/skills/cleanup${TAB}" "workflows: the pinned payload's own skills are not findings"
+# The pin wins over an explicit --baseline: a different release's map is never used.
+PBX="$WORK/wf-pin-baseline"; mkdir -p "$PBX"
+if check_copy_subtrees "$ROOT" "$PBX" scripts agents >/dev/null 2>&1; then
+  for f_ in "$PBX"/agents/*/skills/implement-issue/SKILL.md; do
+    awk '/adb:supersedes/ {sub(/ implement /, " ")} {print}' "$f_" > "$f_.tmp" && mv "$f_.tmp" "$f_"
+  done
+  eq "$(bash "$AD" supersedes "$PBX" | awk -F"$TAB" '$1=="implement"' | wc -l | tr -d ' ')" 0 \
+     "the other-release fixture's map does not supersede implement (so the next case can tell the maps apart)"
+  has "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$PBX" --scope project)" \
+      "competes${TAB}.claude/skills/implement${TAB}claude${TAB}implement-issue" \
+      "workflows: the project's pin supplies the map even when --baseline names another release"
+else
+  bad "workflows: could not build the other-release fixture"
+fi
+# A PIN THAT IS NOT INTACT is unjudged (11) — never read through, never replaced by a global map.
+cp "$PMX/.codex/skills/cleanup/SKILL.md" "$WORK/pm-cleanup.orig"; printf 'edited\n' >> "$PMX/.codex/skills/cleanup/SKILL.md"
+pme="$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude,codex --baseline "$ROOT" --scope project)"; pmerc=$?
+eq "$pmerc" 11 "workflows: a pinned skill whose digest no longer matches makes the map unjudged (11)"
+has "$pme" "pinned payload is not intact" "workflows: ...and says the pin is not intact, rather than using the global map"
+cp "$WORK/pm-cleanup.orig" "$PMX/.codex/skills/cleanup/SKILL.md"
+mv "$PMX/.ai-dev-baseline/pinned-files.sha256" "$WORK/pm-receipt"
+eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a pinned project with no receipt is unjudged (11)"
+mv "$WORK/pm-receipt" "$PMX/.ai-dev-baseline/pinned-files.sha256"
+# ...and a global-mode pin is not a pinned payload: the global map is used as before.
+printf '[upstream]\nmode = "global"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+hasnt "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project)" "from the project's pin" \
+      "workflows: a global-mode pin does not supply the map"
+printf '[upstream]\nmode = "pinned"\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+# With no global install, a user-root entry named like a baseline skill cannot be the baseline's link.
+mkdir -p "$WORK/pm-home/.claude/skills/cleanup"; printf 'x\n' > "$WORK/pm-home/.claude/skills/cleanup/SKILL.md"
+has "$(cd "$WORK" && HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude)" \
+    "user-global${TAB}~/.claude/skills/cleanup${TAB}claude${TAB}cleanup" \
+    "workflows: with no global install, a user skill named like a baseline skill is reported, never matched against the working directory"
+
+# AN EXPORTED CDPATH must not move a relative root or leak into a path capture.
+CPX="$WORK/cdpath"; mkdir -p "$CPX/decoy/proj" "$CPX/real/proj/.claude/skills/implement"
+printf 'x\n' > "$CPX/real/proj/.claude/skills/implement/SKILL.md"
+cpo="$(cd "$CPX/real" && CDPATH="$CPX/decoy" HOME="$WORK/pt-home" bash "$AD" workflows proj --agents claude --baseline "$ROOT" --scope project)"; cprc=$?
+eq "$cprc" 10 "workflows: with an exported CDPATH, a relative root is still the directory named"
+has "$cpo" "competes${TAB}.claude/skills/implement" "workflows: ...and its skills are the ones judged"
+eq "$(cd "$CPX/real" && CDPATH="$CPX/decoy" HOME="$WORK/pt-home" bash "$AD" workflows proj --agents claude --baseline "$ROOT" --scope project 2>&1 | grep -c "$CPX/decoy")" 0 \
+   "workflows: no CDPATH destination leaks into the output"
+
+# ANTIGRAVITY'S CLI USER ROOTS: ~/.gemini/antigravity-cli/skills and ~/.gemini/skills, beside
+# ~/.gemini/config/skills.
+AGH="$WORK/ag-home"; mkdir -p "$AGH/.gemini/antigravity-cli/skills/implement" "$AGH/.gemini/skills/swarm" "$AGH/.gemini/config/skills/pr"
+for d_ in antigravity-cli/skills/implement skills/swarm config/skills/pr; do printf 'x\n' > "$AGH/.gemini/$d_/SKILL.md"; done
+ago="$(HOME="$AGH" bash "$AD" workflows "$WORK/wf-clean" --agents gemini --baseline "$ROOT")"
+has "$ago" "user-global${TAB}~/.gemini/antigravity-cli/skills/implement${TAB}gemini${TAB}implement-issue" "workflows: ~/.gemini/antigravity-cli/skills is walked"
+has "$ago" "user-global${TAB}~/.gemini/skills/swarm${TAB}gemini${TAB}implement-issue" "workflows: ~/.gemini/skills is walked"
+has "$ago" "user-global${TAB}~/.gemini/config/skills/pr${TAB}gemini" "workflows: ~/.gemini/config/skills is still walked"
+eq "$(adb_agent_user_skill_root_literal gemini)" '"$HOME/.gemini/config/skills"' "the rendered Gemini user root is still the one the baseline installs into"
 # An UNRELATED file whose name the output cannot carry does not make the answer unjudged...
 OCX="$WORK/wf-oddname"; mkdir -p "$OCX/.claude"; printf 'x\n' > "$OCX/.claude/notes with space.md"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$OCX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
@@ -937,12 +1073,23 @@ eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baselin
    "workflows: '/implement...' ending a sentence is a pointer"
 
 # A SECOND CLONE of the baseline (a development checkout beside the install) ships its rendered
-# skills too: they are not mirrors.
-DVX="$WORK/wf-devclone"; mkdir -p "$DVX/agents/claude/skills/cleanup" "$DVX/base/workflows"; : > "$DVX/install.sh"
-printf 'x\n' > "$DVX/agents/claude/skills/cleanup/SKILL.md"; printf 'x\n' > "$DVX/base/workflows/cleanup.md"
-if git -C "$DVX" init -q >/dev/null 2>&1 && git -C "$DVX" add -A >/dev/null 2>&1; then
-  hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DVX" --agents claude --baseline "$ROOT" --scope project)" "mirror${TAB}" \
+# skills too: they are not mirrors. It is proved by SHARED HISTORY with the installed baseline,
+# never by layout: an unrelated repository that copies `install.sh`, `agents/` and `base/workflows/`
+# is reported like any other (#535).
+BLX="$WORK/wf-baseline-clone"; DVX="$WORK/wf-devclone"; LKX="$WORK/wf-lookalike"
+if check_copy_subtrees "$ROOT" "$BLX" scripts agents base >/dev/null 2>&1 && : > "$BLX/install.sh" \
+   && git init -q "$BLX" >/dev/null 2>&1 && check_git "$BLX" add -A && check_git "$BLX" commit -q -m baseline \
+   && git clone -q "$BLX" "$DVX" >/dev/null 2>&1 \
+   && check_copy_subtrees "$BLX" "$LKX" scripts agents base >/dev/null 2>&1 && : > "$LKX/install.sh" \
+   && git init -q "$LKX" >/dev/null 2>&1 && check_git "$LKX" add -A && check_git "$LKX" commit -q -m lookalike; then
+  hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DVX" --agents claude --baseline "$BLX" --scope project)" "mirror${TAB}" \
         "workflows: another clone of the baseline is not a mirror of its own rendered skills"
+  has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$LKX" --agents claude --baseline "$BLX" --scope project)" \
+      "mirror${TAB}agents/claude/skills/cleanup/SKILL.md" \
+      "workflows: a repository that copies the baseline's layout but not its history is reported"
+  has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DVX" --agents claude --scope project --baseline "$LKX")" \
+      "mirror${TAB}agents/claude/skills/cleanup/SKILL.md" \
+      "workflows: a clone is only exempt against the baseline it shares history with"
 else
   bad "workflows: could not build the second-clone fixture"
 fi
@@ -2363,8 +2510,8 @@ shmutant_mut workflows-symlinked-commands-trusted \
     '            if false; then' \
     'a symlinked .claude/commands is unjudged'
 shmutant_mut scan-symlinked-pinned-skill-trusted \
-    '        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then' \
-    '        if false; then' \
+    '    if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then' \
+    '    if false; then' \
     'a symlinked receipt-owned pinned skill is unjudged'
 shmutant_mut baseline-link-compared-as-text \
     '  case "$t" in "$b"/*) return 0 ;; esac' \
@@ -2397,7 +2544,7 @@ shmutant_mut mirror-stages-counted-twice \
     '        :' \
     'an unmerged path is one mirror'
 shmutant_mut mirror-roots-fixed-agent-set \
-    '    for ag_ in ${agents//,/ } $(_ad_agents_from_baseline "$broot"); do' \
+    '    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot"); do' \
     '    for ag_ in claude codex gemini; do' \
     "another agent's skill root is not a mirror of itself"
 
@@ -2438,15 +2585,73 @@ shmutant_mut pointer-ellipsis-not-a-terminator \
     "'/implement...' ending a sentence is a pointer"
 
 shmutant_mut mirror-only-installed-clone-is-self \
-    '       || { [ -f "$root/install.sh" ] && [ -d "$root/agents" ] && [ -d "$root/base/workflows" ]; }; then self_=1; fi' \
-    '       ; then self_=1; fi' \
+    '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || _ad_same_history "$root" "$broot"; then self_=1; fi' \
+    '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; }; then self_=1; fi' \
     'another clone of the baseline is not a mirror'
+shmutant_mut mirror-self-by-layout \
+    '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || _ad_same_history "$root" "$broot"; then self_=1; fi' \
+    '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || [ -f "$root/install.sh" ]; then self_=1; fi' \
+    'copies the baseline'"'"'s layout but not its history'
+shmutant_mut same-history-any-repo \
+    '    case "$nl_$theirs$nl_" in *"$nl_$c$nl_"*) return 0 ;; esac' \
+    '    return 0' \
+    'only exempt against the baseline it shares history with'
+
+# #535, third slice: nested roots, the pinned map, CDPATH, the empty-baseline guard.
+shmutant_mut nested-walk-disabled \
+    '  if [ "${#_ad_npat[@]}" -gt 0 ]; then' \
+    '  if false; then' \
+    'a nested <subdir>/.claude/skills is walked'
+shmutant_mut nested-retired-not-pruned \
+    '      find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
+    '      find . \( -name .git "${_ad_nprune[@]}" \) -prune \' \
+    'the retirement folder is never walked for nested roots'
+shmutant_mut nested-agent-dirs-not-pruned \
+    '      find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
+    '      find . \( -name .git -o -path ./.ai-dev-baseline/retired \) -prune \' \
+    'the top-level agent directories are not walked for nested roots'
+shmutant_mut nested-walk-status-ignored \
+    '      printf '"'"'\0%s'"'"' "$(( _ad_nps[0] | _ad_nps[1] ))")' \
+    '      printf '"'"'\0%s'"'"' 0)' \
+    'a project tree that could not be walked in full is unjudged'
+shmutant_mut nested-root-reported-as-mirror \
+    '        for r_ in $nestroots_; do case "$t_" in */"$r_"/*) inr_=1 ;; esac; done' \
+    '        :' \
+    'a nested .agents/skills is a skill root, never a mirror'
+shmutant_mut pin-map-ignored \
+    '  shipped="$( (_ad_pin_shipped "$root") 2>/dev/null )" || pinrc=$?' \
+    '  pinrc=1' \
+    'the project'"'"'s pin supplies the map even when --baseline names another release'
+shmutant_mut pin-edited-skill-trusted \
+    '    _ad_owns "$owned" "$rel" || return 3' \
+    '    :' \
+    'a pinned skill whose digest no longer matches makes the map unjudged'
+shmutant_mut cdpath-not-unset \
+    'unset CDPATH' \
+    ':' \
+    'with an exported CDPATH, a relative root is still the directory named'
+shmutant_mut nested-claude-same-name-duplicates \
+    '      if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
+    '      if [ "$agent" = claude ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
+    'a nested same-name Claude skill shadows'
+shmutant_mut baseline-link-empty-baseline \
+    '  [ -n "$2" ] || return 1   # no baseline: `cd ""` succeeds and would resolve to the working directory' \
+    '  :' \
+    'never matched against the working directory'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \
     '  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || return 20' \
     '  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || :' \
     'a file whose size read failed is not whole'
+shmutant_mut user-roots-drop-antigravity \
+    "    gemini) printf '%s\\n' 'home .gemini/config/skills' 'home .gemini/antigravity-cli/skills' 'home .gemini/skills' ;;" \
+    "    gemini) printf '%s\\n' 'home .gemini/config/skills' ;;" \
+    "gemini/antigravity-cli/skills is walked"
+shmutant_mut nested-claude-root-dropped \
+    "    claude) printf '%s' '.claude/skills' ;;" \
+    "    claude) printf '' ;;" \
+    "a nested <subdir>/.claude/skills is walked"
 shmutant_mut user-roots-drop-agents-skills \
     "    codex)  printf '%s\\n' 'codex skills' 'home .agents/skills' ;;" \
     "    codex)  printf '%s\\n' 'codex skills' ;;" \
