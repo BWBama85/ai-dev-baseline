@@ -1106,7 +1106,8 @@ cmd_scan() {
   # the repository root, so every such root BELOW the top level is one an agent may load (owner
   # decision 2026-11-05: the whole tree). Read from the filesystem, never the git index, so an
   # untracked skill is seen and an index entry with no file is not. `.git`, the retirement folder
-  # and the top-level agent directories are pruned; links are not followed. One walk for every agent, NUL-delimited, with its
+  # and the top-level agent directories are pruned. A root that is itself a link is walked; a linked
+  # directory ABOVE a root is not descended (the walk does not follow links). One walk for every agent, NUL-delimited, with its
   # status as the last field: a walk that failed part-way is a warning, never "no nested roots".
   local -a _ad_nested=() _ad_npat=() _ad_keep=() _ad_nprune=()
   local _ad_nd _ad_np
@@ -1132,7 +1133,7 @@ NESTED
     mapfile -d '' -t _ad_nested < <(
       cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
       find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \
-           -o -type d \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z
+           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z
       _ad_nps=("${PIPESTATUS[@]}")
       printf '\0%s' "$(( _ad_nps[0] | _ad_nps[1] ))")
     if [ "${#_ad_nested[@]}" -eq 0 ] || [ "${_ad_nested[-1]}" != 0 ]; then
@@ -1183,6 +1184,9 @@ NESTED
     if [ -n "$_ad_nd" ]; then
       for sroot in "${_ad_nested[@]}"; do
         case "$sroot" in */"$_ad_nd") ;; *) continue ;; esac
+        # A LINKED root is walked as the top-level ones are (an agent follows it); one that resolves
+        # to no directory loads nothing.
+        [ -d "$root/$sroot" ] || continue
         if [ ! -r "$root/$sroot" ] || [ ! -x "$root/$sroot" ]; then
           printf 'warning%sa nested skill root could not be listed — its skills were not inventoried\n' "$TAB"
           continue
@@ -2244,14 +2248,17 @@ cmd_supersedes() {
 
 # _ad_map_from_shipped <shipped-records> <frontmatter-awk|""> — the map from the `skill` records of
 # a shipped set (`skill TAB name TAB agent TAB skill-dir`), with every read-side rule. An empty awk
-# path skips the shared frontmatter rule: only for SKILL.md files a pinned receipt's digest has
-# already proved to be the release's own bytes, which build.sh validated. Dies (2) as supersedes does.
+# path skips the shared frontmatter rule: only for SKILL.md files whose bytes a pinned receipt's
+# digest proves unchanged since the pinned install wrote them from the release build.sh validated.
+# Dies (2) as supersedes does.
 _ad_map_from_shipped() {
   local shipped="$1" fmawk="$2" kind name agent src line tok fmrule out=""
   local -A claim=() marker=() markerfrom=()
   # EVERY AGENT SHIPS THE SAME SKILL SET: a workflow one agent's render lacks would otherwise be
   # offered there as the replacement for a legacy name.
-  local first_set="" this_set
+  local first_set="" this_set sagents
+  sagents="$(printf '%s\n' "$shipped" | awk -F'\t' '$1=="skill" && !s[$3]++ {print $3}')" && [ -n "$sagents" ] \
+    || die "supersedes: could not list the agents of the shipped set"
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
     this_set="$(printf '%s\n' "$shipped" | awk -F'\t' -v g="$agent" '$1=="skill" && $3==g {print $2}' | LC_ALL=C sort)" \
@@ -2259,7 +2266,7 @@ _ad_map_from_shipped() {
     if [ -z "$first_set" ]; then first_set="$this_set"
     elif [ "$this_set" != "$first_set" ]; then die "supersedes: the baseline agents ship different skill sets — rebuild the baseline"
     fi
-  done <<< "$(printf '%s\n' "$shipped" | awk -F'\t' '$1=="skill" && !s[$3]++ {print $3}')"
+  done <<< "$sagents"
   while IFS="$TAB" read -r kind name agent src; do
     [ "$kind" = skill ] || continue
     case "$name" in ''|-*|*[!a-z0-9-]*) die "supersedes: a shipped skill name is outside [a-z0-9-] — the map would carry it" ;; esac
@@ -2369,10 +2376,17 @@ _ad_pin_shipped() {
   pin="$root/.ai-dev-baseline/upstream.toml"; receipt="$root/.ai-dev-baseline/pinned-files.sha256"
   [ -f "$pin" ] || return 1
   # A pin that cannot be read is not "not pinned": that would hand the project another release's map.
+  # adb_toml_get: 1 is an absent key (a global-mode pin), 2 or more is a read it could not perform.
   [ -r "$pin" ] || return 3
-  mode="$(adb_toml_unquote "$(adb_toml_get "$pin" upstream mode 2>/dev/null)" 2>/dev/null)"
+  local raw rc=0
+  raw="$(adb_toml_get "$pin" upstream mode 2>/dev/null)" || rc=$?
+  [ "$rc" -lt 2 ] || return 3
+  [ "$rc" -eq 0 ] || return 1
+  mode="$(adb_toml_unquote "$raw" 2>/dev/null)" || return 3
   [ "$mode" = pinned ] || return 1
-  [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ -r "$receipt" ] || return 3
+  # The receipt is read WHOLE or not at all: `read` drops a last line with no newline, and the
+  # skill it names would leave the map unnoticed.
+  [ ! -L "$receipt" ] && adb_bytes_whole "$receipt" 8388608 || return 3
   owned="$(adb_pinned_owned "$root")"
   while read -r hash rel; do
     case "$hash" in ''|'#'*) continue ;; esac
@@ -2446,8 +2460,9 @@ cmd_workflows() {
   if [ -z "$broot" ]; then broot="$(adb_install_source 2>/dev/null)" || broot=""; fi
   local shipped="" map=""
   # THE PROJECT'S OWN PIN SUPPLIES THE MAP when it has one (owner decision 2026-11-03), even beside
-  # a global install or an explicit --baseline: the pin is the release this project runs. Its
-  # SKILL.md files are proved to be that release's bytes by the receipt's digests. A pin that is
+  # a global install or an explicit --baseline: the pin is the release this project runs. The
+  # receipt's digests prove its SKILL.md files are the bytes the pinned install recorded (integrity,
+  # not provenance: the install checksummed the release artifact, nothing here re-proves it). A pin that is
   # not intact is not judged, never replaced by another release's map. `broot` (the global
   # install) still answers which user-root entries and personal skills are the baseline's links.
   shipped="$( (_ad_pin_shipped "$root") 2>/dev/null )" || pinrc=$?
@@ -2661,7 +2676,10 @@ cmd_workflows() {
   fi
   if [ -n "$gitok" ]; then
     local -a tracked_=()
-    local self_="" t_ d_ mn_ allroots_="" ag_
+    local self_="" t_ d_ mn_ allroots_="" ag_ shipags_="" k_
+    # The agents of the shipped set the map came from: with a pin and no global install, those are
+    # the only record of which agents the baseline ships.
+    for k_ in "${!ships[@]}"; do case " $shipags_ " in *" ${k_%%/*} "*) ;; *) shipags_="$shipags_ ${k_%%/*}" ;; esac; done
     local -A mseen_=()
     # The project IS a baseline checkout — the installed clone, or another clone of it (a
     # development checkout beside the install), proved by shared history, never by a layout an
@@ -2670,7 +2688,7 @@ cmd_workflows() {
     # Every skill root ANY agent loads — the selected agents and every agent the baseline ships —
     # read from the one table, so a root is never also reported as a mirror of itself.
     local nestroots_=""
-    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot"); do
+    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot") ${shipags_}; do
       allroots_="$allroots_ .$ag_/skills $(adb_agent_project_skill_dirs "$ag_")"
       nestroots_="$nestroots_ $(adb_agent_nested_skill_dirs "$ag_")"
     done

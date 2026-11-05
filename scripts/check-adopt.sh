@@ -800,6 +800,14 @@ rm -f "$NSX/pkg/web/.claude/skills/cleanup/SKILL.md"
 # Only the agents asked about: a claude-only run does not walk Codex's nested roots.
 hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "tools/.agents" \
       "workflows: a claude-only run does not report Codex's nested roots"
+# A nested root that is itself a LINK is walked, as Codex follows it; one that resolves nowhere is not.
+mkdir -p "$WORK/linked-skills/implement" "$NSX/linked"; printf 'x\n' > "$WORK/linked-skills/implement/SKILL.md"
+mkdir -p "$NSX/linked/.agents"; ln -s "$WORK/linked-skills" "$NSX/linked/.agents/skills"
+mkdir -p "$NSX/dangling/.claude"; ln -s "$WORK/no-such-skills" "$NSX/dangling/.claude/skills"
+nsk="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude,codex --baseline "$ROOT" --scope project)"
+has "$nsk" "competes${TAB}linked/.agents/skills/implement${TAB}codex" "workflows: a nested skill root that is a symlink is walked"
+hasnt "$nsk" "dangling/" "workflows: a dangling nested root link loads nothing and is not reported"
+rm -rf "$NSX/linked" "$NSX/dangling"
 # A TREE WALK THAT FAILED PART-WAY is not "no nested roots": 11, and the trailer says so.
 mkdir -p "$NSX/locked/deeper"; chmod 000 "$NSX/locked"
 if [ -x "$NSX/locked" ]; then
@@ -863,6 +871,31 @@ mv "$PMX/.ai-dev-baseline/pinned-files.sha256" "$WORK/pm-receipt"
 eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a pinned project with no receipt is unjudged (11)"
 mv "$WORK/pm-receipt" "$PMX/.ai-dev-baseline/pinned-files.sha256"
+# ...nor one that ends without its final newline: `read` would drop the last recorded skill. A
+# Claude-only pin whose LAST row names an edited skill: dropped, that skill would read as intact.
+PMY="$WORK/wf-pin-unterminated"; mkdir -p "$PMY/.ai-dev-baseline"
+cp -R "$PMX/.claude" "$PMY/.claude"; cp "$PMX/.ai-dev-baseline/upstream.toml" "$PMY/.ai-dev-baseline/"
+grep '^[0-9a-f]*  \.claude/skills/' "$PMX/.ai-dev-baseline/pinned-files.sha256" | grep -v '/cleanup/' > "$WORK/pmy-receipt"
+grep '^[0-9a-f]*  \.claude/skills/cleanup/' "$PMX/.ai-dev-baseline/pinned-files.sha256" >> "$WORK/pmy-receipt"
+printf '%s' "$(cat "$WORK/pmy-receipt")" > "$PMY/.ai-dev-baseline/pinned-files.sha256"
+printf 'edited\n' >> "$PMY/.claude/skills/cleanup/SKILL.md"
+eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMY" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a pinned receipt with no final newline is unjudged (11)"
+# ...nor a pin whose mode cannot be read (a NUL in it): never read as a global-mode pin.
+printf '[upstream]\nmode = "pin\000ned"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a pin whose mode cannot be read is unjudged (11), never the global map"
+printf '[upstream]\nmode = "pinned"\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+# With a pin and no global install, the pin's agents still decide which roots are not mirrors.
+mkdir -p "$PMX/sub/.agents/skills/implement"; printf 'x\n' > "$PMX/sub/.agents/skills/implement/SKILL.md"
+mkdir -p "$PMX/top/.agents/skills"
+if git -C "$PMX" init -q >/dev/null 2>&1 && git -C "$PMX" add sub >/dev/null 2>&1; then
+  hasnt "$(cd "$WORK" && HOME="$WORK/no-such-home" bash "$AD" workflows "$PMX" --agents claude --scope project)" "mirror${TAB}sub/.agents" \
+        "workflows: with only a pin, a nested root of an agent the pin ships is not a mirror"
+else
+  bad "workflows: could not build the pinned-mirror fixture"
+fi
+rm -rf "$PMX/.git" "$PMX/sub" "$PMX/top"
 chmod 000 "$PMX/.ai-dev-baseline/upstream.toml"
 if [ -r "$PMX/.ai-dev-baseline/upstream.toml" ]; then
   check_note "SKIP: this user can read a mode-000 file (root?); the unreadable pin is unexercised"
@@ -2367,8 +2400,8 @@ shmutant_mut scan-double-emits-foreign-pin \
     '      :' \
     'scan emits .claude/UPSTREAM_VERSION exactly once'
 shmutant_mut workflows-claude-precedence-ignored \
-    'if [ "$agent" = claude ] && _ad_baseline_link' \
-    'if false && _ad_baseline_link' \
+    'if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link' \
+    'if false && [ -n "$top_" ] && _ad_baseline_link' \
     'the Claude copy duplicates (never runs)'
 shmutant_mut workflows-every-skill-exempt \
     'elif [ "$name" = release ]; then' \
@@ -2552,7 +2585,7 @@ shmutant_mut mirror-stages-counted-twice \
     '        :' \
     'an unmerged path is one mirror'
 shmutant_mut mirror-roots-fixed-agent-set \
-    '    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot"); do' \
+    '    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot") ${shipags_}; do' \
     '    for ag_ in claude codex gemini; do' \
     "another agent's skill root is not a mirror of itself"
 
@@ -2642,6 +2675,26 @@ shmutant_mut nested-claude-same-name-duplicates \
     '      if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
     '      if [ "$agent" = claude ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
     'a nested same-name Claude skill shadows'
+shmutant_mut pin-mode-read-failure-unpinned \
+    '  [ "$rc" -lt 2 ] || return 3' \
+    '  [ "$rc" -lt 2 ] || return 1' \
+    'a pin whose mode cannot be read is unjudged'
+shmutant_mut pin-receipt-not-whole \
+    '  [ ! -L "$receipt" ] && adb_bytes_whole "$receipt" 8388608 || return 3' \
+    '  [ -f "$receipt" ] || return 3' \
+    'a pinned receipt with no final newline is unjudged'
+shmutant_mut pin-mirror-roots-ignore-shipped \
+    '    for k_ in "${!ships[@]}"; do case " $shipags_ " in *" ${k_%%/*} "*) ;; *) shipags_="$shipags_ ${k_%%/*}" ;; esac; done' \
+    '    :' \
+    'with only a pin, a nested root of an agent the pin ships is not a mirror'
+shmutant_mut nested-linked-root-skipped \
+    '           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z' \
+    '           -o -type d \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z' \
+    'a nested skill root that is a symlink is walked'
+shmutant_mut map-agent-enumeration-unchecked \
+    '  sagents="$(printf '"'"'%s\n'"'"' "$shipped" | awk -F'"'"'\t'"'"' '"'"'$1=="skill" && !s[$3]++ {print $3}'"'"')" && [ -n "$sagents" ] \' \
+    '  sagents="" \' \
+    'supersedes refuses agents that ship different skill sets'
 shmutant_mut pin-unreadable-read-as-unpinned \
     '  [ -r "$pin" ] || return 3' \
     '  :' \

@@ -202,7 +202,7 @@ A tree the walk could not read in full is `nested=not judged`, and the run exits
 When the project is **pinned** (`mode = "pinned"` in `upstream.toml`), `workflows` reads the
 superseded-name map and the shipped skill set from the project's own pinned payload, never from a
 global install or `--baseline`: the pin is the release this project runs, and the receipt's
-digests prove its skills are that release's bytes. A pinned skill that was edited or is missing, or
+digests prove its skills are unchanged since the pinned install wrote them. A pinned skill that was edited or is missing, or
 an unreadable pin or receipt, is not judged (exit 11), and no other release's map is used instead.
 
 An `other` record is a file under an agent directory that none of the modelled kinds recognise.
@@ -228,10 +228,12 @@ Two consequences that are easy to miss. Do not **execute** anything you find —
 ("this hook is identical to the baseline's"), verify it yourself: `delta` answers that from the
 bytes, and the file's own opinion of itself is not evidence.
 
-**The scan stops at config and never enters product code.** A project's `src/` may legitimately
-reference `codex exec` — `support-workstation`'s `src/lib/cli/` *is* CLI-orchestration product
-code — and classifying it would be recommending changes to the product. Step 6 reports that
-boundary; the scan simply does not cross it.
+**The scan stops at config and never classifies product code.** A project's `src/` may
+legitimately reference `codex exec` — `support-workstation`'s `src/lib/cli/` *is*
+CLI-orchestration product code — and classifying it would be recommending changes to the product.
+The nested-root walk does pass through product directories, but only to find skill roots by name
+(`<subdir>/.claude/skills`, `<subdir>/.agents/skills`); it reads no product file. Step 6 reports
+that boundary; the scan does not cross it.
 
 ### 4. Classify each artifact
 

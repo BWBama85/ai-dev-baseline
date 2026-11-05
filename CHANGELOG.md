@@ -29,6 +29,15 @@ only by a release it upgrades to. These entries are the notes for both.
   `user-global` is a non-baseline entry named like a legacy workflow or a baseline skill in an
   agent's user skill root, including Codex's `~/.agents/skills`. `--scope project` skips user roots
   and says so. Nested skill roots and reading the map from a pinned install are still to come.
+- **`/adopt` walks nested skill roots and reads a pinned project's own map (#535, third slice).**
+  The scan finds every `<subdir>/.claude/skills` (Claude) and `<subdir>/.agents/skills` (Codex)
+  below the top level, so a competing skill in a package directory is a finding and reaches the
+  plan; the trailer counts them (`nested=<N>`). A pinned project's payload supplies the
+  superseded-name map and the shipped set, even beside a global install, so the `workflows` rung
+  works on a CI runner with no install; a pin that is edited or unreadable is "not judged", never
+  replaced by another release's map. Also: an exported `CDPATH` no longer corrupts paths,
+  Antigravity's `~/.gemini/antigravity-cli/skills` and `~/.gemini/skills` are walked, and a second
+  baseline checkout is recognised by shared history rather than by its layout.
 
 ### Changed
 
