@@ -203,7 +203,7 @@ When the project is **pinned** (`mode = "pinned"` in `upstream.toml`), `workflow
 superseded-name map and the shipped skill set from the project's own pinned payload, never from a
 global install or `--baseline`: the pin is the release this project runs, and the receipt's
 digests prove its skills are that release's bytes. A pinned skill that was edited or is missing, or
-an unreadable receipt, is not judged (exit 11), and no other release's map is used instead.
+an unreadable pin or receipt, is not judged (exit 11), and no other release's map is used instead.
 
 An `other` record is a file under an agent directory that none of the modelled kinds recognise.
 It classifies to `escalate` on purpose: an artifact the baseline does not model must reach

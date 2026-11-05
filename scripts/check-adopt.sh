@@ -863,6 +863,14 @@ mv "$PMX/.ai-dev-baseline/pinned-files.sha256" "$WORK/pm-receipt"
 eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a pinned project with no receipt is unjudged (11)"
 mv "$WORK/pm-receipt" "$PMX/.ai-dev-baseline/pinned-files.sha256"
+chmod 000 "$PMX/.ai-dev-baseline/upstream.toml"
+if [ -r "$PMX/.ai-dev-baseline/upstream.toml" ]; then
+  check_note "SKIP: this user can read a mode-000 file (root?); the unreadable pin is unexercised"
+else
+  eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: a pinned project whose upstream.toml cannot be read is unjudged (11), never read as unpinned"
+fi
+chmod 644 "$PMX/.ai-dev-baseline/upstream.toml"
 # ...and a global-mode pin is not a pinned payload: the global map is used as before.
 printf '[upstream]\nmode = "global"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
 hasnt "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project)" "from the project's pin" \
@@ -2634,10 +2642,10 @@ shmutant_mut nested-claude-same-name-duplicates \
     '      if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
     '      if [ "$agent" = claude ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
     'a nested same-name Claude skill shadows'
-shmutant_mut baseline-link-empty-baseline \
-    '  [ -n "$2" ] || return 1   # no baseline: `cd ""` succeeds and would resolve to the working directory' \
+shmutant_mut pin-unreadable-read-as-unpinned \
+    '  [ -r "$pin" ] || return 3' \
     '  :' \
-    'never matched against the working directory'
+    'a pinned project whose upstream.toml cannot be read is unjudged'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \

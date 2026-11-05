@@ -2353,7 +2353,6 @@ _ad_in_git_tree() {
 # in a user root resolves to itself, so a copy is never the baseline's.
 _ad_baseline_link() {
   local t b
-  [ -n "$2" ] || return 1   # no baseline: `cd ""` succeeds and would resolve to the working directory
   t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"
   b="$(cd "$2" 2>/dev/null && pwd -P && printf x)" || return 1; b="${b%x}"; b="${b%?}"
   case "$t" in "$b"/*) return 0 ;; esac
@@ -2369,6 +2368,8 @@ _ad_pin_shipped() {
   local root="$1" pin receipt mode owned hash rel ag nm out="" n=0
   pin="$root/.ai-dev-baseline/upstream.toml"; receipt="$root/.ai-dev-baseline/pinned-files.sha256"
   [ -f "$pin" ] || return 1
+  # A pin that cannot be read is not "not pinned": that would hand the project another release's map.
+  [ -r "$pin" ] || return 3
   mode="$(adb_toml_unquote "$(adb_toml_get "$pin" upstream mode 2>/dev/null)" 2>/dev/null)"
   [ "$mode" = pinned ] || return 1
   [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ -r "$receipt" ] || return 3
@@ -2461,7 +2462,7 @@ cmd_workflows() {
        elif ! map="$( (cmd_supersedes "$broot") 2>/dev/null )"; then
          why="the superseded-name map is unreadable"
        fi ;;
-    *) why="the project's pinned payload is not intact: a recorded skill is missing or edited, or the receipt is unreadable" ;;
+    *) why="the project's pinned payload is not intact: a recorded skill is missing or edited, or the pin or its receipt is unreadable" ;;
   esac
   if [ -n "$why" ]; then
     _ad_wf_rec unknown - - - agent "could not read what the baseline ships ($why) — workflows not judged"
