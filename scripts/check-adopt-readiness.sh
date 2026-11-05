@@ -65,6 +65,9 @@ adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
+# The workflows rung walks Codex's user skill root, which follows CODEX_HOME: a fixture HOME decides
+# it, never the caller's.
+unset CODEX_HOME
 AR="$ROOT/scripts/lib/adopt-readiness.sh"
 WF="$ROOT/base/workflows/adopt.md"
 
@@ -128,10 +131,12 @@ SUITE_INSTALL="$WORK/suite-install"
 mkinstall() {
   local src="$1" home="$2" a s d; shift 2
   mkdir -p "$src/scripts/lib" "$home"; : > "$src/install.sh"; : > "$src/scripts/lib/common.sh"
+  # The shared skill frontmatter rule ships in every install source; the map reader runs it.
+  cp "$ROOT/scripts/skill-description.awk" "$src/scripts/skill-description.awk"
   for a in "$@"; do
-    # A minimal frontmatter, as every rendered skill has: the workflows rung's map reader refuses an
-    # empty SKILL.md.
-    mkdir -p "$src/agents/$a/skills/adopt"; printf -- '---\nname: adopt\n---\n' > "$src/agents/$a/skills/adopt/SKILL.md"
+    # A minimal frontmatter that passes that rule, as every rendered skill does: the workflows
+    # rung's map reader refuses an empty SKILL.md or one the rule refuses.
+    mkdir -p "$src/agents/$a/skills/adopt"; printf -- '---\nname: adopt\ndescription: x\n---\n' > "$src/agents/$a/skills/adopt/SKILL.md"
     while IFS="$TAB" read -r s d; do
       [ -n "$s" ] && [ -n "$d" ] || continue
       [ -e "$s" ] || { mkdir -p "$(dirname "$s")"; : > "$s"; }
@@ -493,6 +498,20 @@ ar verdict < "$WORK/wf-rung.tsv" >/dev/null 2>&1; rc=$?
 eq "$rc" 10 "verdict: a todo workflows rung beside an otherwise green contract is exactly 10"
 { cat "$WORK/wf-green.tsv"; printf 'workflows\tok\tfixture\n'; } | ar verdict >/dev/null 2>&1; rc=$?
 eq "$rc" 0 "verdict: ...and the same contract with workflows ok is green (0)"
+# A ROUTING finding alone (#535's second slice): a root-doc pointer, with no project skill at all,
+# makes the rung todo and keeps its <doc>:<line>, its target and its owner.
+d="$WORK/p-pointer"; mkrepo "$d"; printf 'Run /implement 12.\n' > "$d/CLAUDE.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}todo" "probe: a root-doc pointer alone makes the workflows rung todo"
+has "$out" "stale-pointer CLAUDE.md:1 -> implement-issue (owner)" "probe: ...naming the pointer's line, its target and its owner"
+{ cat "$WORK/wf-green.tsv"; printf '%s\n' "$out" | grep "^workflows$TAB"; } | ar verdict >/dev/null 2>&1; rc=$?
+eq "$rc" 10 "verdict: a pointer-only workflows rung beside an otherwise green contract is exactly 10"
+# EVERY cause of a partial answer is named, not just the first.
+d="$WORK/p-two-unknown"; mkrepo "$d"
+awk 'BEGIN { for (i = 0; i < 40000; i++) print "filler line of prose for the size bound" }' > "$d/CLAUDE.md"; cp "$d/CLAUDE.md" "$d/AGENTS.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "the root doc CLAUDE.md could not be read" "probe: an unjudged workflows rung names the first cause..."
+has "$out" "the root doc AGENTS.md could not be read" "probe: ...and every other one"
 # probe's `claude` default belongs to the harness rung: with no --agents, every agent's skill roots
 # are judged, so Codex's .agents/skills is not missed.
 d="$WORK/p-workflows-codex"; mkrepo "$d"; mkdir -p "$d/.agents/skills/implement"; printf 'x\n' > "$d/.agents/skills/implement/SKILL.md"
@@ -1506,6 +1525,10 @@ shmutant_mut workflows-agents-default-claude \
     '${agents_given:+--agents "$agents"}' \
     '--agents "$agents"' \
     "probe: with no --agents, the workflows rung judges Codex's .agents/skills too"
+shmutant_mut workflows-unknown-first-cause-only \
+    '{printf "%s%s", (n++ ? "; " : ""), $6}' \
+    '{print $6; exit}' \
+    'probe: ...and every other one'
 shmutant_mut workflows-findings-read-ok \
     '    10) _ar_emit workflows todo' \
     '    10) _ar_emit workflows ok' \

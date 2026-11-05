@@ -20,6 +20,15 @@ only by a release it upgrades to. These entries are the notes for both.
   status` is red on a project that routes its work through a legacy chain. The scan now walks
   Codex's `.agents/skills` and judges legacy `.claude/commands/<name>.md`. Root-doc pointers,
   tracked mirrors and user-root entries are the second slice.
+- **`/adopt` reports what still routes work to a legacy workflow (#535, second slice).**
+  `adopt-lib.sh workflows` adds three classes. `stale-pointer` is a prose line of `CLAUDE.md`,
+  `AGENTS.md` or `GEMINI.md` invoking `/<name>` or `$<name>` for a legacy name or one of the
+  project's own skills, reported as `<doc>:<line>`. `mirror` is a tracked `*/SKILL.md` outside every
+  skill root whose directory is named like a legacy, baseline or project skill, such as
+  `codex-skills/implement/SKILL.md`, never under `.ai-dev-baseline/retired/`.
+  `user-global` is a non-baseline entry named like a legacy workflow or a baseline skill in an
+  agent's user skill root, including Codex's `~/.agents/skills`. `--scope project` skips user roots
+  and says so. Nested skill roots and reading the map from a pinned install are still to come.
 
 ### Changed
 
@@ -97,6 +106,13 @@ only by a release it upgrades to. These entries are the notes for both.
   selfcheck with `--stop`; the nested pools that `TERM` does not reach (#547) remain the reason.
 
 ### Fixed
+
+- **`/adopt`'s workflow check no longer reads a partial answer as clean (#535).** An unsearchable
+  `.agents` folder made `.agents/skills` look absent; a project-added symlink inside a pinned skill
+  was not inventoried; the classify step let a skill with no `workflows` record, or a missing or
+  truncated record file, fall back to `keep`; and the map reader trusted a shipped skill whose
+  frontmatter the shared rule refuses. Each is now judged or reported as not judged. An unrelated
+  file whose name the output cannot carry no longer makes the whole check exit 11.
 
 - **A pinned Codex install no longer writes practices Codex will never read (#506).** Codex reads a
   root `AGENTS.override.md` instead of the root `AGENTS.md`, so a region spliced into `AGENTS.md`
