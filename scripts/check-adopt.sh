@@ -825,7 +825,7 @@ if [ -r "$NSX/pkg/hr-IGNORE-PREVIOUS/.claude/skills/locked" ]; then
   check_note "SKIP: this user can read a mode-000 directory (root?); the nested-warning text is unexercised"
 else
   nwo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)"
-  has "$nwo" "a skill directory under a nested skill root could not be read" "workflows: an unreadable nested skill directory is reported"
+  has "$nwo" "the project tree could not be walked in full" "workflows: an unreadable directory under a nested root makes the walk not judged"
   hasnt "$nwo" "IGNORE-PREVIOUS" "workflows: a nested root's path never reaches a warning"
   has "$nwo" "nested=not judged" "workflows: ...and the trailer does not count nested roots as fully read"
 fi
@@ -869,12 +869,44 @@ else
      "workflows: an unreadable skill directory of an agent not asked about makes nested roots unjudged (11)"
 fi
 chmod 755 "$NSX/.claude/skills/locked"; rm -rf "$NSX/.claude/skills/locked"
+# ...and the same for a TOP-LEVEL root of an agent not asked about that cannot be listed at all.
+mkdir -p "$WORK/wf-locked-top/.claude/skills/host"; chmod 000 "$WORK/wf-locked-top/.claude/skills"
+if [ -x "$WORK/wf-locked-top/.claude/skills" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unreadable top-level root is unexercised"
+else
+  eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-locked-top" --agents codex --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unlistable top-level root of an agent not asked about makes nested roots unjudged (11)"
+fi
+chmod 755 "$WORK/wf-locked-top/.claude/skills"
+# An unreadable HIDDEN directory under a found nested root is not skipped: the walk is not judged.
+mkdir -p "$NSX/pkg3/.claude/skills/.hidden/deeper/.agents/skills/implement"
+printf 'x\n' > "$NSX/pkg3/.claude/skills/.hidden/deeper/.agents/skills/implement/SKILL.md"
+chmod 000 "$NSX/pkg3/.claude/skills/.hidden"
+if [ -x "$NSX/pkg3/.claude/skills/.hidden" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unreadable hidden directory is unexercised"
+else
+  eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude,codex --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unreadable hidden directory under a nested root makes the walk unjudged (11)"
+fi
+chmod 755 "$NSX/pkg3/.claude/skills/.hidden"
+# Nothing inside a .git directory is a root, even when .git sits inside a skill root.
+mkdir -p "$NSX/.claude/skills/.git/x/.agents/skills/implement" "$NSX/pkg3/.claude/skills/.git/y/.agents/skills/swarm"
+printf 'x\n' > "$NSX/.claude/skills/.git/x/.agents/skills/implement/SKILL.md"; printf 'x\n' > "$NSX/pkg3/.claude/skills/.git/y/.agents/skills/swarm/SKILL.md"
+ngo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude,codex --baseline "$ROOT" --scope project)"
+hasnt "$ngo" ".git/" "workflows: a root inside .git under a skill root is never reported"
+rm -rf "$NSX/pkg3" "$NSX/.claude/skills/.git"
 # A top-level root that is a LINK is not walked for nested roots (links are not followed).
 mkdir -p "$WORK/outside-skills/host/sub/.agents/skills/implement" "$WORK/wf-linked-top"
 printf 'x\n' > "$WORK/outside-skills/host/sub/.agents/skills/implement/SKILL.md"
 mkdir -p "$WORK/wf-linked-top/.claude"; ln -s "$WORK/outside-skills" "$WORK/wf-linked-top/.claude/skills"
 hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-linked-top" --agents codex --baseline "$ROOT" --scope project)" "sub/.agents/skills/implement" \
-      "workflows: a linked top-level skill root is not walked for nested roots"
+      "workflows: a top-level skill root that is itself a link is not walked for nested roots"
+# ...nor one reached through a linked ANCESTOR (`.claude` itself a link): find would follow that path.
+mkdir -p "$WORK/outside-agentdir/skills/host/sub/.agents/skills/implement" "$WORK/wf-linked-agentdir"
+printf 'x\n' > "$WORK/outside-agentdir/skills/host/sub/.agents/skills/implement/SKILL.md"
+ln -s "$WORK/outside-agentdir" "$WORK/wf-linked-agentdir/.claude"
+hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-linked-agentdir" --agents codex --baseline "$ROOT" --scope project)" "sub/.agents/skills/implement" \
+      "workflows: a top-level skill root under a linked agent directory is not walked for nested roots"
 # A directory-qualified pointer whose directory is not ASCII still routes.
 printf 'Run /apps/caf\303\251:implement 3.\n' > "$NSX/CLAUDE.md"
 has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "stale-pointer${TAB}CLAUDE.md:1${TAB}-${TAB}implement-issue" \
@@ -2748,12 +2780,16 @@ shmutant_mut nested-walk-disabled \
     '  if false; then' \
     'a nested <subdir>/.claude/skills is walked'
 shmutant_mut nested-retired-not-pruned \
-    '      find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
-    '      find . \( -name .git "${_ad_nprune[@]}" \) -prune \' \
+    '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
+    '        find "${_ad_starts[@]}" \( -name .git "${_ad_nprune[@]}" \) -prune \' \
     'the retirement folder is never walked for nested roots'
+shmutant_mut nested-git-not-pruned \
+    '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
+    '        find "${_ad_starts[@]}" \( -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
+    'a root inside .git under a skill root is never reported'
 shmutant_mut nested-agent-dirs-not-pruned \
-    '      find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
-    '      find . \( -name .git -o -path ./.ai-dev-baseline/retired \) -prune \' \
+    '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
+    '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired \) -prune \' \
     'the top-level agent directories are not walked for nested roots'
 shmutant_mut nested-walk-status-ignored \
     '      printf '"'"'\0%s'"'"' "$(( _ad_nps[0] | _ad_nps[1] ))")' \
@@ -2792,8 +2828,8 @@ shmutant_mut pin-mirror-roots-ignore-shipped \
     '    :' \
     'with only a pin, a nested root of an agent the pin ships is not a mirror'
 shmutant_mut nested-linked-root-skipped \
-    '    local -a _ad_match=(\( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune)' \
-    '    local -a _ad_match=(-type d \( "${_ad_npat[@]}" \) -print0 -prune)' \
+    '             -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -zu' \
+    '             -o -type d \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -zu' \
     'a nested skill root that is a symlink is walked'
 shmutant_mut map-agent-enumeration-unchecked \
     '  sagents="$(printf '"'"'%s\n'"'"' "$shipped" | awk -F'"'"'\t'"'"' '"'"'$1=="skill" && !s[$3]++ {print $3}'"'"')" && [ -n "$sagents" ] \' \
@@ -2803,30 +2839,10 @@ shmutant_mut pin-parent-unsearchable-unpinned \
     '  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3' \
     '  :' \
     'an unsearchable .ai-dev-baseline is unjudged'
-shmutant_mut nested-roots-in-skill-dirs-unwalked \
-    '          _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")   # a top-level root'"'"'s skill' \
-    '          :' \
-    'a root inside a top-level skill directory is found'
-shmutant_mut nested-found-roots-unwalked \
-    '        [ -L "$root/$rel" ] && continue                # a linked root'"'"'s skills are read, never walked' \
-    '        continue' \
-    'a root inside a nested skill directory is found'
-shmutant_mut nested-hidden-dirs-skipped \
-    '        for _ad_sd in "$root/$rel"/*/ "$root/$rel"/.[!.]*/ "$root/$rel"/..?*/; do' \
-    '        for _ad_sd in "$root/$rel"/*/; do' \
-    'a root inside a hidden directory of a skill root is found'
-shmutant_mut nested-hidden-seed-dirs-skipped \
-    '        for _ad_sd in "$root/$_ad_r"/*/ "$root/$_ad_r"/.[!.]*/ "$root/$_ad_r"/..?*/; do' \
-    '        for _ad_sd in "$root/$_ad_r"/*/; do' \
-    'a root inside a hidden directory of a top-level skill root is found'
-shmutant_mut nested-trailer-ignores-unread-root \
-    '              "a nested skill root "*|*"under a nested skill root "*) [ -n "$nested" ] || nested="nested=not judged (a nested skill root could not be read)" ;;' \
-    '              "a nested skill root "*) : ;;' \
-    'the trailer does not count nested roots as fully read'
 shmutant_mut nested-unselected-unreadable-skipped \
-    '          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi' \
-    '          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then continue; fi' \
-    'an unreadable skill directory of an agent not asked about makes nested roots unjudged'
+    '          [ -n "$_ad_sel" ] || _ad_fail=1; continue' \
+    '          continue' \
+    'an unlistable top-level root of an agent not asked about makes nested roots unjudged'
 shmutant_mut pointer-qualified-ascii-only \
     '[/])*[^[:space:]:/]+:|[/$])"' \
     '[/])*[A-Za-z0-9._-]+:|[/$])"' \
@@ -2834,7 +2850,7 @@ shmutant_mut pointer-qualified-ascii-only \
 shmutant_mut nested-linked-seed-root-walked \
     '        _ad_has_link "$root" "$_ad_r" && continue' \
     '        :' \
-    'a linked top-level skill root is not walked for nested roots'
+    'a top-level skill root under a linked agent directory'
 shmutant_mut pin-not-a-file-unpinned \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \
@@ -2843,10 +2859,6 @@ shmutant_mut same-history-any-directory \
     '  [ -n "$top" ] && [ "$top" -ef "$1" ] || return 1' \
     '  :' \
     'a directory inside a baseline checkout is not itself one'
-shmutant_mut nested-warning-repeats-path \
-    '        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned" "a nested skill root"' \
-    '        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned"' \
-    'a nested root'"'"'s path never reaches a warning'
 shmutant_mut pin-row-recorded-twice \
     '    [ -z "${seen[$rel]:-}" ] || return 3' \
     '    :' \

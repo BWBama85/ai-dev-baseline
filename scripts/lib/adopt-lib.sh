@@ -1108,8 +1108,8 @@ cmd_scan() {
   # the repository root, so every such root BELOW the top level is one an agent may load (owner
   # decision 2026-11-05: the whole tree). Read from the filesystem, never the git index, so an
   # untracked skill is seen and an index entry with no file is not. `.git`, the retirement folder
-  # and the top-level agent directories are pruned, and so is each root found; its skill
-  # directories are then walked in turn (below). A root that is itself a link is walked; a linked
+  # and the top-level agent directories are pruned (their skill roots are walked from as start
+  # points, below). A root that is itself a link is walked; a linked
   # directory ABOVE a root is not descended (the walk does not follow links). One walk for every agent, NUL-delimited, with its
   # status as the last field: a walk that failed part-way is a warning, never "no nested roots".
   local -a _ad_nested=() _ad_npat=() _ad_keep=() _ad_nprune=()
@@ -1133,20 +1133,15 @@ cmd_scan() {
 $(printf '%s\n' "$agents" | tr ',' '\n')
 NESTED
   if [ "${#_ad_npat[@]}" -gt 0 ]; then
-    # A WORKLIST, NOT ONE WALK. Each walk prunes at the roots it finds, and then each readable skill
-    # directory under a found root (and under every top-level root) is walked in turn: a discovery
-    # root can sit inside another agent's skill directory, and pruning there alone would hide it.
-    # A skill directory reached through a link is not walked, so no link can make this loop.
-    local -a _ad_queue=(.) _ad_found=()
+    # ONE WALK THAT NEVER STOPS AT A ROOT (owner decision 2026-11-06): a root inside another root's
+    # skill directory, hidden or not, is found by the same walk as any other, and ANY directory it
+    # cannot read makes the nested result not judged. Its start points are the tree, minus the
+    # top-level agent directories, plus each of their skill roots that is a readable directory
+    # reached through no link. A top-level root that cannot be listed is its own arm's to report
+    # when that agent is asked about; otherwise nothing else would, so the walk is incomplete.
+    local -a _ad_starts=(.)
     local -A _ad_qseen=()
-    local _ad_base _ad_fail="" _ad_sd _ad_r
-    local -a _ad_match=(\( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune)
-    # EVERY agent's top-level roots seed it, not only the agents asked about: a Codex root inside a
-    # Claude skill directory is loaded by Codex whatever this run was asked to judge.
-    # A root reached through a link, at any component, is not walked (the walk does not follow links).
-    # One that cannot be listed is the agent's own arm's to report when that agent is asked about;
-    # otherwise nothing else would, so the walk is incomplete.
-    local _ad_sel
+    local _ad_r _ad_sel _ad_fail=""
     for a in claude codex gemini ${agents//,/ }; do
       _ad_sel=""; case ",$agents," in *",$a,"*) _ad_sel=1 ;; esac
       for _ad_r in ".$a/skills" $(adb_agent_project_skill_dirs "$a"); do
@@ -1158,45 +1153,28 @@ NESTED
         if [ ! -d "$root/$_ad_r" ] || [ ! -r "$root/$_ad_r" ] || [ ! -x "$root/$_ad_r" ]; then
           [ -n "$_ad_sel" ] || _ad_fail=1; continue
         fi
-        # Hidden directories too: a dot-directory is no skill, but a root can sit inside one.
-        for _ad_sd in "$root/$_ad_r"/*/ "$root/$_ad_r"/.[!.]*/ "$root/$_ad_r"/..?*/; do
-          [ -d "$_ad_sd" ] && [ ! -L "${_ad_sd%/}" ] || continue
-          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi
-          _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")   # a top-level root's skill
-        done
+        _ad_starts+=("./$_ad_r")
       done
     done
-    while [ "${#_ad_queue[@]}" -gt 0 ] && [ -z "$_ad_fail" ]; do
-      _ad_base="${_ad_queue[0]}"; _ad_queue=("${_ad_queue[@]:1}")
-      _ad_found=()
-      mapfile -d '' -t _ad_found < <(
+    if [ -z "$_ad_fail" ]; then
+      mapfile -d '' -t _ad_nested < <(
         cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
-        if [ "$_ad_base" = . ]; then
-          find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \
-               -o "${_ad_match[@]}" 2>/dev/null | LC_ALL=C sort -z
-        else
-          find "$_ad_base" -mindepth 1 -name .git -prune \
-               -o "${_ad_match[@]}" 2>/dev/null | LC_ALL=C sort -z
-        fi
+        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \
+             -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -zu
         _ad_nps=("${PIPESTATUS[@]}")
         printf '\0%s' "$(( _ad_nps[0] | _ad_nps[1] ))")
-      if [ "${#_ad_found[@]}" -eq 0 ] || [ "${_ad_found[-1]}" != 0 ]; then _ad_fail=1; break; fi
-      unset '_ad_found[-1]'
-      for rel in "${_ad_found[@]}"; do
-        rel="${rel#./}"
-        case "$rel" in */*/*) ;; *) continue ;; esac   # `.claude/skills` itself: the top-level root
-        _ad_keep+=("$rel")
-        [ -L "$root/$rel" ] && continue                # a linked root's skills are read, never walked
-        for _ad_sd in "$root/$rel"/*/ "$root/$rel"/.[!.]*/ "$root/$rel"/..?*/; do
-          [ -d "$_ad_sd" ] && [ ! -L "${_ad_sd%/}" ] && [ -r "$_ad_sd" ] && [ -x "$_ad_sd" ] || continue
-          _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")
-        done
-      done
-    done
+      if [ "${#_ad_nested[@]}" -eq 0 ] || [ "${_ad_nested[-1]}" != 0 ]; then _ad_fail=1; fi
+    fi
     if [ -n "$_ad_fail" ]; then
       printf 'warning%sthe project tree could not be walked in full — nested skill roots were not inventoried\n' "$TAB"
       _ad_nested=()
     else
+      unset '_ad_nested[-1]'
+      for rel in "${_ad_nested[@]}"; do
+        rel="${rel#./}"
+        case "$rel" in */*/*) ;; *) continue ;; esac   # `.claude/skills` itself: the top-level root
+        _ad_keep+=("$rel")
+      done
       _ad_nested=("${_ad_keep[@]}")
     fi
   fi
@@ -2593,10 +2571,7 @@ cmd_workflows() {
         # evidence; any other warning may carry scanned text and is not repeated.
         case "$rel" in
           "the skill root "*|"a skill directory under "*|"the agent directory "*|"the project tree "*|"a nested skill root "*)
-            case "$rel" in
-              "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;;
-              "a nested skill root "*|*"under a nested skill root "*) [ -n "$nested" ] || nested="nested=not judged (a nested skill root could not be read)" ;;
-            esac
+            case "$rel" in "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;; esac
             _ad_wf_rec unknown - - - agent "$rel — not judged" ;;
           *) _ad_wf_rec unknown - - - agent "a scanned path could not be represented and was not judged" ;;
         esac
