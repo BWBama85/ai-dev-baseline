@@ -2374,20 +2374,26 @@ _ad_baseline_link() {
 _ad_pin_shipped() {
   local root="$1" pin receipt mode owned hash rel ag nm out="" n=0
   pin="$root/.ai-dev-baseline/upstream.toml"; receipt="$root/.ai-dev-baseline/pinned-files.sha256"
-  [ -f "$pin" ] || return 1
   # A pin that cannot be read is not "not pinned": that would hand the project another release's map.
-  # adb_toml_get: 1 is an absent key (a global-mode pin), 2 or more is a read it could not perform.
+  # So an unsearchable `.ai-dev-baseline` is asked about before the pin's absence is believed.
+  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3
+  [ -f "$pin" ] || return 1
   [ -r "$pin" ] || return 3
-  local raw rc=0
-  raw="$(adb_toml_get "$pin" upstream mode 2>/dev/null)" || rc=$?
+  # adb_toml_get: 1 is an absent key (a global-mode pin), 2 or more is a read it could not perform.
+  # The RAW line is checked against the whole grammar (as adb_update_channel does): the lenient
+  # reader re-closes an unterminated quote and drops trailing junk, which is not a stated mode.
+  local raw rc=0 re='^[ '$'\t'']*mode[ '$'\t'']*=[ '$'\t'']*("([a-z]+)"|'"'"'([a-z]+)'"'"')[ '$'\t'']*(#([^[:cntrl:]]|'$'\t'')*)?$'
+  raw="$(adb_toml_get "$pin" upstream mode --raw 2>/dev/null)" || rc=$?
   [ "$rc" -lt 2 ] || return 3
   [ "$rc" -eq 0 ] || return 1
-  mode="$(adb_toml_unquote "$raw" 2>/dev/null)" || return 3
+  [[ $raw =~ $re ]] || return 3
+  mode="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
   [ "$mode" = pinned ] || return 1
   # The receipt is read WHOLE or not at all: `read` drops a last line with no newline, and the
   # skill it names would leave the map unnoticed.
   [ ! -L "$receipt" ] && adb_bytes_whole "$receipt" 8388608 || return 3
   owned="$(adb_pinned_owned "$root")"
+  local -A seen=()
   while read -r hash rel; do
     case "$hash" in ''|'#'*) continue ;; esac
     case "$rel" in .*/skills/*/SKILL.md) ;; *) continue ;; esac
@@ -2396,6 +2402,10 @@ _ad_pin_shipped() {
     case "$rel" in ".$ag/skills/"*) ;; *) continue ;; esac   # a pinned skill sits at the agent's own root
     nm="${rel#".$ag/skills/"}"; nm="${nm%/SKILL.md}"
     case "$nm" in ''|-*|*[!a-z0-9-]*) return 3 ;; esac   # a recorded skill this map cannot carry
+    # EACH SKILL ONCE: membership in the owned set says only that SOME row for this path matched,
+    # so a second row (with any digest) is a receipt this reader cannot read as one answer.
+    [ -z "${seen[$rel]:-}" ] || return 3
+    seen["$rel"]=1
     _ad_owns "$owned" "$rel" || return 3
     out="$out$(printf 'skill\t%s\t%s\t%s' "$nm" "$ag" "$root/.$ag/skills/$nm")"$'\n'
     n=$((n + 1))
@@ -2585,9 +2595,11 @@ cmd_workflows() {
       *) continue ;;
     esac
     nsk=$((nsk + 1))
-    local top_=""
-    for r_ in ${roots//,/ }; do case "$rel" in "$r_"/*) top_=1 ;; esac; done
-    [ -n "$top_" ] || nnest=$((nnest + 1))
+    # NESTED means under one of this agent's nested roots below the top level; a top-level skill or
+    # a legacy `.claude/commands` file is not.
+    local top_=1 nd_
+    nd_="$(adb_agent_nested_skill_dirs "$agent")"
+    if [ -n "$nd_" ]; then case "$rel" in */"$nd_"/*) top_=""; nnest=$((nnest + 1)) ;; esac; fi
     case "$rel$name$agent" in
       *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a skill path outside the closed charset was not judged"; continue ;;
     esac
@@ -2624,7 +2636,8 @@ cmd_workflows() {
   # a finding). A baseline name with no project copy routes to the baseline, so it is not one. A
   # name ends at a character no skill name carries, or at a `.` that does not continue one
   # (`/implement.` and `/implement...` end a sentence; `/implement.foo`, `/implement..x` and
-  # `/implement./f` do not).
+  # `/implement./f` do not). Claude's directory-qualified form for a nested skill,
+  # `/<subdir path>:<name>` (`/apps/web:deploy`, code.claude.com/docs/en/skills), routes too.
   # Fenced blocks and HTML comments are not prose (adb_md_prose); inline code is, because "run
   # `/implement 12`" is still an instruction. Only <doc>:<line> and the name are emitted.
   local -A pnames=() mnames=()
@@ -2643,7 +2656,7 @@ cmd_workflows() {
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
       BEGIN { k = split(names, N, " ")
-              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-]([/]([A-Za-z0-9._-]+[/])*[A-Za-z0-9._-]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
       { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
       nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
       continue

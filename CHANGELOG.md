@@ -28,7 +28,7 @@ only by a release it upgrades to. These entries are the notes for both.
   `codex-skills/implement/SKILL.md`, never under `.ai-dev-baseline/retired/`.
   `user-global` is a non-baseline entry named like a legacy workflow or a baseline skill in an
   agent's user skill root, including Codex's `~/.agents/skills`. `--scope project` skips user roots
-  and says so. Nested skill roots and reading the map from a pinned install are still to come.
+  and says so.
 - **`/adopt` walks nested skill roots and reads a pinned project's own map (#535, third slice).**
   The scan finds every `<subdir>/.claude/skills` (Claude) and `<subdir>/.agents/skills` (Codex)
   below the top level, so a competing skill in a package directory is a finding and reaches the
@@ -37,7 +37,8 @@ only by a release it upgrades to. These entries are the notes for both.
   works on a CI runner with no install; a pin that is edited or unreadable is "not judged", never
   replaced by another release's map. Also: an exported `CDPATH` no longer corrupts paths,
   Antigravity's `~/.gemini/antigravity-cli/skills` and `~/.gemini/skills` are walked, and a second
-  baseline checkout is recognised by shared history rather than by its layout.
+  baseline checkout is recognised by shared history rather than by its layout. A root-doc pointer
+  in Claude's directory-qualified form (`/apps/web:implement`) is a `stale-pointer` too.
 
 ### Changed
 

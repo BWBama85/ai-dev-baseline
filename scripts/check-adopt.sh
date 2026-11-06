@@ -797,6 +797,17 @@ nsd="$(HOME="$WORK/nested-home" bash "$AD" workflows "$NSX" --agents claude --ba
 has "$nsd" "shadows${TAB}pkg/web/.claude/skills/cleanup${TAB}claude${TAB}cleanup" \
     "workflows: a nested same-name Claude skill shadows, even with the personal baseline copy installed"
 rm -f "$NSX/pkg/web/.claude/skills/cleanup/SKILL.md"
+# A top-level LEGACY COMMAND is not nested: with the personal cleanup installed it still duplicates.
+mkdir -p "$WORK/wf-cmd-dup/.claude/commands"; printf 'x\n' > "$WORK/wf-cmd-dup/.claude/commands/cleanup.md"
+cdo="$(HOME="$WORK/nested-home" bash "$AD" workflows "$WORK/wf-cmd-dup" --agents claude --baseline "$ROOT" --scope project)"
+has "$cdo" "duplicates${TAB}.claude/commands/cleanup.md${TAB}claude" "workflows: a top-level legacy command is not nested, so the personal skill still runs instead"
+has "$cdo" "nested=0" "workflows: ...and the trailer does not count it as nested"
+# Claude's DIRECTORY-QUALIFIED form for a nested skill routes too: /<subdir path>:<name>.
+printf 'Run /pkg/web:implement 3 or /web:theme-issue.\nNot /pkg/web:implement-issue.\n' > "$NSX/CLAUDE.md"
+nqo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)"
+has "$nqo" "stale-pointer${TAB}CLAUDE.md:1${TAB}-${TAB}implement-issue" "workflows: a directory-qualified /pkg/web:implement is a stale-pointer"
+hasnt "$nqo" "CLAUDE.md:2${TAB}" "workflows: /pkg/web:implement-issue is not a pointer to implement (word boundary)"
+rm -f "$NSX/CLAUDE.md"
 # Only the agents asked about: a claude-only run does not walk Codex's nested roots.
 hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "tools/.agents" \
       "workflows: a claude-only run does not report Codex's nested roots"
@@ -886,6 +897,34 @@ printf '[upstream]\nmode = "pin\000ned"\n' > "$PMX/.ai-dev-baseline/upstream.tom
 eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a pin whose mode cannot be read is unjudged (11), never the global map"
 printf '[upstream]\nmode = "pinned"\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+# ...nor a `mode` line outside the TOML grammar, which the lenient reader would repair.
+for bad_ in 'mode = "pinned' 'mode = "pinned" INVALID'; do
+  printf '[upstream]\n%s\n' "$bad_" > "$PMX/.ai-dev-baseline/upstream.toml"
+  eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: a pin whose mode line is malformed is unjudged (11) [$bad_]"
+done
+printf '[upstream]\nmode = "pinned"  # vendored\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+has "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project)" "from the project's pin" \
+    "workflows: a well-formed mode line with a trailing comment is still the pin"
+printf '[upstream]\nmode = "pinned"\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
+# ...nor a receipt that records one skill twice, the second time with a wrong digest (a Claude-only
+# pin, so no cross-agent comparison stands in for the check).
+PMD="$WORK/wf-pin-duplicate"; mkdir -p "$PMD/.ai-dev-baseline"
+cp -R "$PMX/.claude" "$PMD/.claude"; cp "$PMX/.ai-dev-baseline/upstream.toml" "$PMD/.ai-dev-baseline/"
+grep '^[0-9a-f]*  \.claude/skills/' "$PMX/.ai-dev-baseline/pinned-files.sha256" > "$PMD/.ai-dev-baseline/pinned-files.sha256"
+printf '%s  %s\n' 0000000000000000000000000000000000000000000000000000000000000000 .claude/skills/implement-issue/SKILL.md \
+  >> "$PMD/.ai-dev-baseline/pinned-files.sha256"
+eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMD" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a receipt that records a skill twice is unjudged (11), even if one row matches"
+# ...nor an unsearchable .ai-dev-baseline: the pin may be there, so the global map is never used.
+chmod 000 "$PMX/.ai-dev-baseline"
+if [ -x "$PMX/.ai-dev-baseline" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unsearchable pin parent is unexercised"
+else
+  eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents gemini --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unsearchable .ai-dev-baseline is unjudged (11), never read as unpinned"
+fi
+chmod 755 "$PMX/.ai-dev-baseline"
 # With a pin and no global install, the pin's agents still decide which roots are not mirrors.
 mkdir -p "$PMX/sub/.agents/skills/implement"; printf 'x\n' > "$PMX/sub/.agents/skills/implement/SKILL.md"
 mkdir -p "$PMX/top/.agents/skills"
@@ -2458,8 +2497,8 @@ shmutant_mut classify-project-skill-kept \
 
 # #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
 shmutant_mut pointer-word-boundary-dropped \
-    'R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
-    'R[i] = "[/$]" re' \
+    '[A-Za-z0-9._-]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
+    '[A-Za-z0-9._-]+:|[/$])" re' \
     'are not pointers (word boundary)'
 shmutant_mut pointer-reads-fenced-text \
     '! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"' \
@@ -2695,6 +2734,26 @@ shmutant_mut map-agent-enumeration-unchecked \
     '  sagents="$(printf '"'"'%s\n'"'"' "$shipped" | awk -F'"'"'\t'"'"' '"'"'$1=="skill" && !s[$3]++ {print $3}'"'"')" && [ -n "$sagents" ] \' \
     '  sagents="" \' \
     'supersedes refuses agents that ship different skill sets'
+shmutant_mut pin-parent-unsearchable-unpinned \
+    '  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3' \
+    '  :' \
+    'an unsearchable .ai-dev-baseline is unjudged'
+shmutant_mut pin-mode-grammar-lenient \
+    '  [[ $raw =~ $re ]] || return 3' \
+    '  re="mode.*\"(([a-z]+))()"; [[ $raw =~ $re ]] || return 3' \
+    'a pin whose mode line is malformed is unjudged'
+shmutant_mut pin-row-recorded-twice \
+    '    [ -z "${seen[$rel]:-}" ] || return 3' \
+    '    :' \
+    'a receipt that records a skill twice is unjudged'
+shmutant_mut nested-count-includes-commands \
+    '    if [ -n "$nd_" ]; then case "$rel" in */"$nd_"/*) top_=""; nnest=$((nnest + 1)) ;; esac; fi' \
+    '    top_=""; for r_ in ${roots//,/ }; do case "$rel" in "$r_"/*) top_=1 ;; esac; done; [ -n "$top_" ] || nnest=$((nnest + 1))' \
+    'a top-level legacy command is not nested'
+shmutant_mut pointer-qualified-form-dropped \
+    '"[^A-Za-z0-9_.~/$-]([/]([A-Za-z0-9._-]+[/])*[A-Za-z0-9._-]+:|[/$])" re' \
+    '"[^A-Za-z0-9_.~/$-][/$]" re' \
+    'a directory-qualified /pkg/web:implement is a stale-pointer'
 shmutant_mut pin-unreadable-read-as-unpinned \
     '  [ -r "$pin" ] || return 3' \
     '  :' \
