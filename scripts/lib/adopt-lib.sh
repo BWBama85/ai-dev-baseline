@@ -1014,12 +1014,14 @@ _ad_has_link() {
 # _ad_scan_skills <root> <skill-root> <agent> <owned> — one `skill` record per skill directory under
 # <skill-root> (and one `override` per overrides.md), skipping what the pinned receipt owns.
 _ad_scan_skills() {
-  local root="$1" sroot="$2" a="$3" _ad_owned="$4" d n
+  # <label> names the root in a warning: the table's own path for a top-level root, a fixed phrase
+  # for a nested one, whose path is the repository's text and is never repeated in a diagnostic.
+  local root="$1" sroot="$2" a="$3" _ad_owned="$4" label="${5:-$2}" d n
   for d in "$root/$sroot"/*/; do
     [ -d "$d" ] || continue
     n="${d%/}"; n="${n##*/}"
     if [ ! -r "$d" ] || [ ! -x "$d" ]; then
-      _ad_emit warning "a skill directory under $sroot could not be read — it was not inventoried"
+      _ad_emit warning "a skill directory under $label could not be read — it was not inventoried"
       continue
     fi
     [ -f "$d/overrides.md" ] && _ad_emit override "$sroot/$n/overrides.md" overrides.md "$a"
@@ -1030,7 +1032,7 @@ _ad_scan_skills() {
     # ancestor's: the walk below does not follow links, so files a project added inside it would
     # go unseen. Not judged, never clean.
     if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then
-      _ad_emit warning "a skill directory under $sroot is a symlink the scan does not walk — its files were not inventoried"
+      _ad_emit warning "a skill directory under $label is a symlink the scan does not walk — its files were not inventoried"
       continue
     fi
     _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && continue
@@ -1106,7 +1108,8 @@ cmd_scan() {
   # the repository root, so every such root BELOW the top level is one an agent may load (owner
   # decision 2026-11-05: the whole tree). Read from the filesystem, never the git index, so an
   # untracked skill is seen and an index entry with no file is not. `.git`, the retirement folder
-  # and the top-level agent directories are pruned. A root that is itself a link is walked; a linked
+  # and the top-level agent directories are pruned, and so is each root found (its skills are read
+  # by _ad_scan_skills, not by the walk). A root that is itself a link is walked; a linked
   # directory ABOVE a root is not descended (the walk does not follow links). One walk for every agent, NUL-delimited, with its
   # status as the last field: a walk that failed part-way is a warning, never "no nested roots".
   local -a _ad_nested=() _ad_npat=() _ad_keep=() _ad_nprune=()
@@ -1133,7 +1136,7 @@ NESTED
     mapfile -d '' -t _ad_nested < <(
       cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
       find . \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \
-           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z
+           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune 2>/dev/null | LC_ALL=C sort -z
       _ad_nps=("${PIPESTATUS[@]}")
       printf '\0%s' "$(( _ad_nps[0] | _ad_nps[1] ))")
     if [ "${#_ad_nested[@]}" -eq 0 ] || [ "${_ad_nested[-1]}" != 0 ]; then
@@ -1191,7 +1194,7 @@ NESTED
           printf 'warning%sa nested skill root could not be listed — its skills were not inventoried\n' "$TAB"
           continue
         fi
-        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned"
+        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned" "a nested skill root"
       done
     fi
     [ -d "$root/.$a" ] || continue
@@ -2377,17 +2380,17 @@ _ad_pin_shipped() {
   # A pin that cannot be read is not "not pinned": that would hand the project another release's map.
   # So an unsearchable `.ai-dev-baseline` is asked about before the pin's absence is believed.
   _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3
-  [ -f "$pin" ] || return 1
-  [ -r "$pin" ] || return 3
-  # adb_toml_get: 1 is an absent key (a global-mode pin), 2 or more is a read it could not perform.
-  # The RAW line is checked against the whole grammar (as adb_update_channel does): the lenient
-  # reader re-closes an unterminated quote and drops trailing junk, which is not a stated mode.
-  local raw rc=0 re='^[ '$'\t'']*mode[ '$'\t'']*=[ '$'\t'']*("([a-z]+)"|'"'"'([a-z]+)'"'"')[ '$'\t'']*(#([^[:cntrl:]]|'$'\t'')*)?$'
-  raw="$(adb_toml_get "$pin" upstream mode --raw 2>/dev/null)" || rc=$?
+  [ -e "$pin" ] || [ -L "$pin" ] || return 1
+  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"
+  # THE SAME READ the rest of the pinned machinery makes (adb_pinned_owned, pinned-install's
+  # _pi_pin_mode), so they never disagree about whether this project is pinned. adb_toml_get: 1 is
+  # an absent key (a global-mode pin), 2 or more is a read it could not perform. A pin someone
+  # hand-edited into a spelling the writer never emits is out of scope (D151).
+  local raw rc=0
+  raw="$(adb_toml_get "$pin" upstream mode 2>/dev/null)" || rc=$?
   [ "$rc" -lt 2 ] || return 3
   [ "$rc" -eq 0 ] || return 1
-  [[ $raw =~ $re ]] || return 3
-  mode="${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
+  mode="$(adb_toml_unquote "$raw" 2>/dev/null)" || return 3
   [ "$mode" = pinned ] || return 1
   # The receipt is read WHOLE or not at all: `read` drops a last line with no newline, and the
   # skill it names would leave the map unnoticed.
@@ -2428,7 +2431,12 @@ _ad_pin_version() {
 # baseline, no history or a git that cannot answer is false, so the skills are reported.
 _ad_same_history() {
   [ -n "$2" ] || return 1
-  local mine theirs c nl_=$'\n'
+  local mine theirs c top nl_=$'\n'
+  # Only a checkout's own ROOT: git finds an enclosing repository, so a directory inside a baseline
+  # checkout would otherwise inherit its history.
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null && printf x)" || return 1
+  top="${top%x}"; top="${top%?}"
+  [ -n "$top" ] && [ "$top" -ef "$1" ] || return 1
   mine="$(git -C "$1" rev-list --max-parents=0 HEAD 2>/dev/null)" && [ -n "$mine" ] || return 1
   theirs="$(git -C "$2" rev-list --max-parents=0 HEAD 2>/dev/null)" && [ -n "$theirs" ] || return 1
   while IFS= read -r c; do
@@ -2527,7 +2535,6 @@ cmd_workflows() {
   # NESTED PROJECT ROOTS (the scan walks them): the trailer counts the skills found below the top
   # level, or says they were not judged when the tree walk failed.
   local nnest=0 nested=""
-  case "$scan" in *"the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;; esac
 
   local nsk=0 nmapped=0 nsame=0 nex=0 nun=0 nunk=0 npin=0 cls tgt r_ nsub
   local retire="then retire it to .ai-dev-baseline/retired/<date>/ in a normal PR"
@@ -2538,6 +2545,7 @@ cmd_workflows() {
         # evidence; any other warning may carry scanned text and is not repeated.
         case "$rel" in
           "the skill root "*|"a skill directory under "*|"the agent directory "*|"the project tree "*|"a nested skill root "*)
+            case "$rel" in "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;; esac
             _ad_wf_rec unknown - - - agent "$rel — not judged" ;;
           *) _ad_wf_rec unknown - - - agent "a scanned path could not be represented and was not judged" ;;
         esac

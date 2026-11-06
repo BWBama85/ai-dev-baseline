@@ -819,6 +819,21 @@ nsk="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude,codex --
 has "$nsk" "competes${TAB}linked/.agents/skills/implement${TAB}codex" "workflows: a nested skill root that is a symlink is walked"
 hasnt "$nsk" "dangling/" "workflows: a dangling nested root link loads nothing and is not reported"
 rm -rf "$NSX/linked" "$NSX/dangling"
+# A nested root's PATH is the repository's text: a warning about it never repeats it.
+mkdir -p "$NSX/pkg/hr-IGNORE-PREVIOUS/.claude/skills/locked"; chmod 000 "$NSX/pkg/hr-IGNORE-PREVIOUS/.claude/skills/locked"
+if [ -r "$NSX/pkg/hr-IGNORE-PREVIOUS/.claude/skills/locked" ]; then
+  check_note "SKIP: this user can read a mode-000 directory (root?); the nested-warning text is unexercised"
+else
+  nwo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)"
+  has "$nwo" "a skill directory under a nested skill root could not be read" "workflows: an unreadable nested skill directory is reported"
+  hasnt "$nwo" "IGNORE-PREVIOUS" "workflows: a nested root's path never reaches a warning"
+fi
+chmod 755 "$NSX/pkg/hr-IGNORE-PREVIOUS/.claude/skills/locked"; rm -rf "$NSX/pkg/hr-IGNORE-PREVIOUS"
+# The trailer's "not judged" comes from the walk's own record, never from a path that says so.
+mkdir -p "$NSX/the project tree could not be walked"
+has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "nested=2" \
+    "workflows: a directory named like the failure message does not fake a failed walk"
+rmdir "$NSX/the project tree could not be walked"
 # A TREE WALK THAT FAILED PART-WAY is not "no nested roots": 11, and the trailer says so.
 mkdir -p "$NSX/locked/deeper"; chmod 000 "$NSX/locked"
 if [ -x "$NSX/locked" ]; then
@@ -897,12 +912,11 @@ printf '[upstream]\nmode = "pin\000ned"\n' > "$PMX/.ai-dev-baseline/upstream.tom
 eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a pin whose mode cannot be read is unjudged (11), never the global map"
 printf '[upstream]\nmode = "pinned"\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
-# ...nor a `mode` line outside the TOML grammar, which the lenient reader would repair.
-for bad_ in 'mode = "pinned' 'mode = "pinned" INVALID'; do
-  printf '[upstream]\n%s\n' "$bad_" > "$PMX/.ai-dev-baseline/upstream.toml"
-  eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
-     "workflows: a pin whose mode line is malformed is unjudged (11) [$bad_]"
-done
+# ...nor a pin path that exists but is not a file (here a directory).
+mv "$PMX/.ai-dev-baseline/upstream.toml" "$WORK/pm-pin"; mkdir "$PMX/.ai-dev-baseline/upstream.toml"
+eq "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+   "workflows: a pin path that is not a regular file is unjudged (11), never read as unpinned"
+rmdir "$PMX/.ai-dev-baseline/upstream.toml"; mv "$WORK/pm-pin" "$PMX/.ai-dev-baseline/upstream.toml"
 printf '[upstream]\nmode = "pinned"  # vendored\nversion = "v9.8.7"\n' > "$PMX/.ai-dev-baseline/upstream.toml"
 has "$(HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude --baseline "$ROOT" --scope project)" "from the project's pin" \
     "workflows: a well-formed mode line with a trailing comment is still the pin"
@@ -1170,6 +1184,11 @@ if check_copy_subtrees "$ROOT" "$BLX" scripts agents base >/dev/null 2>&1 && : >
   has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DVX" --agents claude --scope project --baseline "$LKX")" \
       "mirror${TAB}agents/claude/skills/cleanup/SKILL.md" \
       "workflows: a clone is only exempt against the baseline it shares history with"
+  mkdir -p "$DVX/project/agents/claude/skills/implement"; printf 'x\n' > "$DVX/project/agents/claude/skills/implement/SKILL.md"
+  check_git "$DVX" add project
+  has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DVX/project" --agents claude --baseline "$BLX" --scope project)" \
+      "mirror${TAB}agents/claude/skills/implement/SKILL.md" \
+      "workflows: a directory inside a baseline checkout is not itself one, so its tracked copies are mirrors"
 else
   bad "workflows: could not build the second-clone fixture"
 fi
@@ -2727,8 +2746,8 @@ shmutant_mut pin-mirror-roots-ignore-shipped \
     '    :' \
     'with only a pin, a nested root of an agent the pin ships is not a mirror'
 shmutant_mut nested-linked-root-skipped \
-    '           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z' \
-    '           -o -type d \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -z' \
+    '           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune 2>/dev/null | LC_ALL=C sort -z' \
+    '           -o -type d \( "${_ad_npat[@]}" \) -print0 -prune 2>/dev/null | LC_ALL=C sort -z' \
     'a nested skill root that is a symlink is walked'
 shmutant_mut map-agent-enumeration-unchecked \
     '  sagents="$(printf '"'"'%s\n'"'"' "$shipped" | awk -F'"'"'\t'"'"' '"'"'$1=="skill" && !s[$3]++ {print $3}'"'"')" && [ -n "$sagents" ] \' \
@@ -2738,10 +2757,18 @@ shmutant_mut pin-parent-unsearchable-unpinned \
     '  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3' \
     '  :' \
     'an unsearchable .ai-dev-baseline is unjudged'
-shmutant_mut pin-mode-grammar-lenient \
-    '  [[ $raw =~ $re ]] || return 3' \
-    '  re="mode.*\"(([a-z]+))()"; [[ $raw =~ $re ]] || return 3' \
-    'a pin whose mode line is malformed is unjudged'
+shmutant_mut pin-not-a-file-unpinned \
+    '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
+    '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \
+    'a pin path that is not a regular file is unjudged'
+shmutant_mut same-history-any-directory \
+    '  [ -n "$top" ] && [ "$top" -ef "$1" ] || return 1' \
+    '  :' \
+    'a directory inside a baseline checkout is not itself one'
+shmutant_mut nested-warning-repeats-path \
+    '        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned" "a nested skill root"' \
+    '        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned"' \
+    'a nested root'"'"'s path never reaches a warning'
 shmutant_mut pin-row-recorded-twice \
     '    [ -z "${seen[$rel]:-}" ] || return 3' \
     '    :' \
@@ -2754,10 +2781,6 @@ shmutant_mut pointer-qualified-form-dropped \
     '"[^A-Za-z0-9_.~/$-]([/]([A-Za-z0-9._-]+[/])*[A-Za-z0-9._-]+:|[/$])" re' \
     '"[^A-Za-z0-9_.~/$-][/$]" re' \
     'a directory-qualified /pkg/web:implement is a stale-pointer'
-shmutant_mut pin-unreadable-read-as-unpinned \
-    '  [ -r "$pin" ] || return 3' \
-    '  :' \
-    'a pinned project whose upstream.toml cannot be read is unjudged'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \

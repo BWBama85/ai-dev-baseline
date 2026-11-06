@@ -32,7 +32,8 @@ only by a release it upgrades to. These entries are the notes for both.
 - **`/adopt` walks nested skill roots and reads a pinned project's own map (#535, third slice).**
   The scan finds every `<subdir>/.claude/skills` (Claude) and `<subdir>/.agents/skills` (Codex)
   below the top level, so a competing skill in a package directory is a finding and reaches the
-  plan; the trailer counts them (`nested=<N>`). A pinned project's payload supplies the
+  plan; the trailer counts them (`nested=<N>`). A symlinked directory above such a root is not
+  descended. A pinned project's payload supplies the
   superseded-name map and the shipped set, even beside a global install, so the `workflows` rung
   works on a CI runner with no install; a pin that is edited or unreadable is "not judged", never
   replaced by another release's map. Also: an exported `CDPATH` no longer corrupts paths,
