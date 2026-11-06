@@ -1143,12 +1143,24 @@ NESTED
     local -a _ad_match=(\( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune)
     # EVERY agent's top-level roots seed it, not only the agents asked about: a Codex root inside a
     # Claude skill directory is loaded by Codex whatever this run was asked to judge.
+    # A root reached through a link, at any component, is not walked (the walk does not follow links).
+    # One that cannot be listed is the agent's own arm's to report when that agent is asked about;
+    # otherwise nothing else would, so the walk is incomplete.
+    local _ad_sel
     for a in claude codex gemini ${agents//,/ }; do
+      _ad_sel=""; case ",$agents," in *",$a,"*) _ad_sel=1 ;; esac
       for _ad_r in ".$a/skills" $(adb_agent_project_skill_dirs "$a"); do
         [ -z "${_ad_qseen[$_ad_r]:-}" ] || continue
         _ad_qseen["$_ad_r"]=1
+        if ! _ad_parents_searchable "$root" "$_ad_r"; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi
+        [ -e "$root/$_ad_r" ] || [ -L "$root/$_ad_r" ] || continue
+        _ad_has_link "$root" "$_ad_r" && continue
+        if [ ! -d "$root/$_ad_r" ] || [ ! -r "$root/$_ad_r" ] || [ ! -x "$root/$_ad_r" ]; then
+          [ -n "$_ad_sel" ] || _ad_fail=1; continue
+        fi
         for _ad_sd in "$root/$_ad_r"/*/; do
-          [ -d "$_ad_sd" ] && [ ! -L "${_ad_sd%/}" ] && [ -r "$_ad_sd" ] && [ -x "$_ad_sd" ] || continue
+          [ -d "$_ad_sd" ] && [ ! -L "${_ad_sd%/}" ] || continue
+          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi
           _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")   # a top-level root's skill
         done
       done
@@ -2699,7 +2711,7 @@ cmd_workflows() {
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
       BEGIN { k = split(names, N, " ")
-              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-]([/]([A-Za-z0-9._-]+[/])*[A-Za-z0-9._-]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-]([/]([^[:space:]:/]+[/])*[^[:space:]:/]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
       { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
       nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
       continue

@@ -847,6 +847,27 @@ for ag_ in codex claude,codex; do
       "workflows: a root inside a top-level skill directory is found [--agents $ag_]"
 done
 rm -rf "$NSX/pkg/.claude" "$NSX/.claude/skills/host"
+# ...unless a skill directory of an agent NOT asked about cannot be listed: nothing else reports it.
+mkdir -p "$NSX/.claude/skills/locked/sub/.agents/skills/implement"; printf 'x\n' > "$NSX/.claude/skills/locked/sub/.agents/skills/implement/SKILL.md"
+chmod 000 "$NSX/.claude/skills/locked"
+if [ -x "$NSX/.claude/skills/locked" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unreadable seed is unexercised"
+else
+  eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents codex --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
+     "workflows: an unreadable skill directory of an agent not asked about makes nested roots unjudged (11)"
+fi
+chmod 755 "$NSX/.claude/skills/locked"; rm -rf "$NSX/.claude/skills/locked"
+# A top-level root that is a LINK is not walked for nested roots (links are not followed).
+mkdir -p "$WORK/outside-skills/host/sub/.agents/skills/implement" "$WORK/wf-linked-top"
+printf 'x\n' > "$WORK/outside-skills/host/sub/.agents/skills/implement/SKILL.md"
+mkdir -p "$WORK/wf-linked-top/.claude"; ln -s "$WORK/outside-skills" "$WORK/wf-linked-top/.claude/skills"
+hasnt "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-linked-top" --agents codex --baseline "$ROOT" --scope project)" "sub/.agents/skills/implement" \
+      "workflows: a linked top-level skill root is not walked for nested roots"
+# A directory-qualified pointer whose directory is not ASCII still routes.
+printf 'Run /apps/caf\303\251:implement 3.\n' > "$NSX/CLAUDE.md"
+has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "stale-pointer${TAB}CLAUDE.md:1${TAB}-${TAB}implement-issue" \
+    "workflows: a directory-qualified pointer with a non-ASCII directory is a stale-pointer"
+rm -f "$NSX/CLAUDE.md"
 # A TREE WALK THAT FAILED PART-WAY is not "no nested roots": 11, and the trailer says so.
 mkdir -p "$NSX/locked/deeper"; chmod 000 "$NSX/locked"
 if [ -x "$NSX/locked" ]; then
@@ -2529,8 +2550,8 @@ shmutant_mut classify-project-skill-kept \
 
 # #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
 shmutant_mut pointer-word-boundary-dropped \
-    '[A-Za-z0-9._-]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
-    '[A-Za-z0-9._-]+:|[/$])" re' \
+    '[^[:space:]:/]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
+    '[^[:space:]:/]+:|[/$])" re' \
     'are not pointers (word boundary)'
 shmutant_mut pointer-reads-fenced-text \
     '! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"' \
@@ -2778,6 +2799,18 @@ shmutant_mut nested-found-roots-unwalked \
     '        [ -L "$root/$rel" ] && continue                # a linked root'"'"'s skills are read, never walked' \
     '        continue' \
     'a root inside a nested skill directory is found'
+shmutant_mut nested-unselected-unreadable-skipped \
+    '          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi' \
+    '          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then continue; fi' \
+    'an unreadable skill directory of an agent not asked about makes nested roots unjudged'
+shmutant_mut pointer-qualified-ascii-only \
+    '[/])*[^[:space:]:/]+:|[/$])"' \
+    '[/])*[A-Za-z0-9._-]+:|[/$])"' \
+    'a directory-qualified pointer with a non-ASCII directory is a stale-pointer'
+shmutant_mut nested-linked-seed-root-walked \
+    '        _ad_has_link "$root" "$_ad_r" && continue' \
+    '        :' \
+    'a linked top-level skill root is not walked for nested roots'
 shmutant_mut pin-not-a-file-unpinned \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \
@@ -2799,7 +2832,7 @@ shmutant_mut nested-count-includes-commands \
     '    top_=""; for r_ in ${roots//,/ }; do case "$rel" in "$r_"/*) top_=1 ;; esac; done; [ -n "$top_" ] || nnest=$((nnest + 1))' \
     'a top-level legacy command is not nested'
 shmutant_mut pointer-qualified-form-dropped \
-    '"[^A-Za-z0-9_.~/$-]([/]([A-Za-z0-9._-]+[/])*[A-Za-z0-9._-]+:|[/$])" re' \
+    '"[^A-Za-z0-9_.~/$-]([/]([^[:space:]:/]+[/])*[^[:space:]:/]+:|[/$])" re' \
     '"[^A-Za-z0-9_.~/$-][/$]" re' \
     'a directory-qualified /pkg/web:implement is a stale-pointer'
 
