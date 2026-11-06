@@ -834,6 +834,19 @@ mkdir -p "$NSX/the project tree could not be walked"
 has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)" "nested=2" \
     "workflows: a directory named like the failure message does not fake a failed walk"
 rmdir "$NSX/the project tree could not be walked"
+# A ROOT INSIDE ANOTHER AGENT'S SKILL DIRECTORY is found too, and asking about more agents can never
+# hide it: a Codex .agents/skills under a Claude skill, nested or at the top level.
+mkdir -p "$NSX/pkg/.claude/skills/container/deeper/.agents/skills/implement" "$NSX/.claude/skills/host/sub/.agents/skills/swarm"
+printf 'x\n' > "$NSX/pkg/.claude/skills/container/deeper/.agents/skills/implement/SKILL.md"
+printf 'x\n' > "$NSX/.claude/skills/host/sub/.agents/skills/swarm/SKILL.md"
+for ag_ in codex claude,codex; do
+  ndo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents "$ag_" --baseline "$ROOT" --scope project)"
+  has "$ndo" "competes${TAB}pkg/.claude/skills/container/deeper/.agents/skills/implement${TAB}codex" \
+      "workflows: a root inside a nested skill directory is found [--agents $ag_]"
+  has "$ndo" "competes${TAB}.claude/skills/host/sub/.agents/skills/swarm${TAB}codex" \
+      "workflows: a root inside a top-level skill directory is found [--agents $ag_]"
+done
+rm -rf "$NSX/pkg/.claude" "$NSX/.claude/skills/host"
 # A TREE WALK THAT FAILED PART-WAY is not "no nested roots": 11, and the trailer says so.
 mkdir -p "$NSX/locked/deeper"; chmod 000 "$NSX/locked"
 if [ -x "$NSX/locked" ]; then
@@ -2746,8 +2759,8 @@ shmutant_mut pin-mirror-roots-ignore-shipped \
     '    :' \
     'with only a pin, a nested root of an agent the pin ships is not a mirror'
 shmutant_mut nested-linked-root-skipped \
-    '           -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune 2>/dev/null | LC_ALL=C sort -z' \
-    '           -o -type d \( "${_ad_npat[@]}" \) -print0 -prune 2>/dev/null | LC_ALL=C sort -z' \
+    '    local -a _ad_match=(\( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 -prune)' \
+    '    local -a _ad_match=(-type d \( "${_ad_npat[@]}" \) -print0 -prune)' \
     'a nested skill root that is a symlink is walked'
 shmutant_mut map-agent-enumeration-unchecked \
     '  sagents="$(printf '"'"'%s\n'"'"' "$shipped" | awk -F'"'"'\t'"'"' '"'"'$1=="skill" && !s[$3]++ {print $3}'"'"')" && [ -n "$sagents" ] \' \
@@ -2757,6 +2770,14 @@ shmutant_mut pin-parent-unsearchable-unpinned \
     '  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3' \
     '  :' \
     'an unsearchable .ai-dev-baseline is unjudged'
+shmutant_mut nested-roots-in-skill-dirs-unwalked \
+    '          _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")   # a top-level root'"'"'s skill' \
+    '          :' \
+    'a root inside a top-level skill directory is found'
+shmutant_mut nested-found-roots-unwalked \
+    '        [ -L "$root/$rel" ] && continue                # a linked root'"'"'s skills are read, never walked' \
+    '        continue' \
+    'a root inside a nested skill directory is found'
 shmutant_mut pin-not-a-file-unpinned \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \

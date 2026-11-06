@@ -203,7 +203,8 @@ The scan also walks **nested** skill roots: every `<subdir>/.claude/skills` (Cla
 it works on files there) and `<subdir>/.agents/skills` (Codex loads one from any directory between
 where it starts and the repository root) below the top level. Their skills are ordinary scan
 records, so step 4 classifies them like any other, and the trailer counts them (`nested=<N>`).
-`.git`, `.ai-dev-baseline/retired/` and the top-level agent directories are not walked for them,
+`.git`, `.ai-dev-baseline/retired/` and the top-level agent directories are not walked for them
+(only the skill directories of their roots are, as is every skill directory of a root found),
 and a linked directory above a root (a symlinked `pkg/` or `.claude`) is not descended.
 A tree the walk could not read in full is `nested=not judged`, and the run exits 11.
 
