@@ -879,6 +879,13 @@ else
       "workflows: an unlistable top-level root of an agent asked about leaves nested=not judged, never 0"
 fi
 chmod 755 "$WORK/wf-locked-sel/.claude/skills"
+# A FILE where a root or its parent would be holds no skills: not a reason to call the walk incomplete.
+mkdir -p "$WORK/wf-file-root/.claude" "$WORK/wf-file-parent"
+printf 'x\n' > "$WORK/wf-file-root/.claude/skills"; printf 'x\n' > "$WORK/wf-file-parent/.claude"
+for fx_ in wf-file-root wf-file-parent; do
+  eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/$fx_" --agents codex --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
+     "workflows: a file where a skill root or its parent would be does not make the walk unjudged [$fx_]"
+done
 # ...and the same for a TOP-LEVEL root of an agent not asked about that cannot be listed at all.
 mkdir -p "$WORK/wf-locked-top/.claude/skills/host"; chmod 000 "$WORK/wf-locked-top/.claude/skills"
 if [ -x "$WORK/wf-locked-top/.claude/skills" ]; then
@@ -2865,6 +2872,14 @@ shmutant_mut nested-trailer-measured-zero \
     '              "the skill root "*|"a nested skill root "*|*"under a nested skill root "*)' \
     '              "a nested skill root "*|*"under a nested skill root "*)' \
     'leaves nested=not judged, never 0'
+shmutant_mut nested-file-root-fails \
+    '        [ -d "$root/$_ad_r" ] || continue' \
+    '        :' \
+    'a file where a skill root or its parent would be does not make the walk unjudged [wf-file-root]'
+shmutant_mut nested-file-parent-fails \
+    '        [ -z "$_ad_blk" ] || continue' \
+    '        :' \
+    'a file where a skill root or its parent would be does not make the walk unjudged [wf-file-parent]'
 shmutant_mut pin-not-a-file-unpinned \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \

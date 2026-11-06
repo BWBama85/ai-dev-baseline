@@ -1141,16 +1141,25 @@ NESTED
     # when that agent is asked about; otherwise nothing else would, so the walk is incomplete.
     local -a _ad_starts=(.)
     local -A _ad_qseen=()
-    local _ad_r _ad_sel _ad_fail=""
+    local _ad_r _ad_sel _ad_fail="" _ad_blk
     for a in claude codex gemini ${agents//,/ }; do
       _ad_sel=""; case ",$agents," in *",$a,"*) _ad_sel=1 ;; esac
       for _ad_r in ".$a/skills" $(adb_agent_project_skill_dirs "$a"); do
         [ -z "${_ad_qseen[$_ad_r]:-}" ] || continue
         _ad_qseen["$_ad_r"]=1
+        # A FILE where a directory would be (the root, or an ancestor of it) holds no skills: skipped.
+        # Only a directory that cannot be read leaves the walk incomplete.
+        _ad_np="$root"; _ad_nd="${_ad_r%/*}/"; _ad_blk=""
+        while [ -n "$_ad_nd" ]; do
+          _ad_np="$_ad_np/${_ad_nd%%/*}"; _ad_nd="${_ad_nd#*/}"
+          if { [ -e "$_ad_np" ] || [ -L "$_ad_np" ]; } && [ ! -d "$_ad_np" ]; then _ad_blk=1; break; fi
+        done
+        [ -z "$_ad_blk" ] || continue
         if ! _ad_parents_searchable "$root" "$_ad_r"; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi
         [ -e "$root/$_ad_r" ] || [ -L "$root/$_ad_r" ] || continue
         _ad_has_link "$root" "$_ad_r" && continue
-        if [ ! -d "$root/$_ad_r" ] || [ ! -r "$root/$_ad_r" ] || [ ! -x "$root/$_ad_r" ]; then
+        [ -d "$root/$_ad_r" ] || continue
+        if [ ! -r "$root/$_ad_r" ] || [ ! -x "$root/$_ad_r" ]; then
           [ -n "$_ad_sel" ] || _ad_fail=1; continue
         fi
         _ad_starts+=("./$_ad_r")
