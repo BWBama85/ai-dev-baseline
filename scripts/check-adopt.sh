@@ -869,6 +869,16 @@ else
      "workflows: an unreadable skill directory of an agent not asked about makes nested roots unjudged (11)"
 fi
 chmod 755 "$NSX/.claude/skills/locked"; rm -rf "$NSX/.claude/skills/locked"
+# A top-level root of an agent that IS asked about, unlistable: its arm reports it, and the trailer
+# does not show a measured zero for the nested roots it may hold.
+mkdir -p "$WORK/wf-locked-sel/.claude/skills/host"; chmod 000 "$WORK/wf-locked-sel/.claude/skills"
+if [ -x "$WORK/wf-locked-sel/.claude/skills" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unlistable selected root is unexercised"
+else
+  has "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/wf-locked-sel" --agents claude,codex --baseline "$ROOT" --scope project)" "nested=not judged" \
+      "workflows: an unlistable top-level root of an agent asked about leaves nested=not judged, never 0"
+fi
+chmod 755 "$WORK/wf-locked-sel/.claude/skills"
 # ...and the same for a TOP-LEVEL root of an agent not asked about that cannot be listed at all.
 mkdir -p "$WORK/wf-locked-top/.claude/skills/host"; chmod 000 "$WORK/wf-locked-top/.claude/skills"
 if [ -x "$WORK/wf-locked-top/.claude/skills" ]; then
@@ -2851,6 +2861,10 @@ shmutant_mut nested-linked-seed-root-walked \
     '        _ad_has_link "$root" "$_ad_r" && continue' \
     '        :' \
     'a top-level skill root under a linked agent directory'
+shmutant_mut nested-trailer-measured-zero \
+    '              "the skill root "*|"a nested skill root "*|*"under a nested skill root "*)' \
+    '              "a nested skill root "*|*"under a nested skill root "*)' \
+    'leaves nested=not judged, never 0'
 shmutant_mut pin-not-a-file-unpinned \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \

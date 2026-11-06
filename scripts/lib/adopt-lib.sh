@@ -2571,7 +2571,12 @@ cmd_workflows() {
         # evidence; any other warning may carry scanned text and is not repeated.
         case "$rel" in
           "the skill root "*|"a skill directory under "*|"the agent directory "*|"the project tree "*|"a nested skill root "*)
-            case "$rel" in "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;; esac
+            # Any of these leaves nested skills uncounted, so the trailer never shows a measured zero.
+            case "$rel" in
+              "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;;
+              "the skill root "*|"a nested skill root "*|*"under a nested skill root "*)
+                [ -n "$nested" ] || nested="nested=not judged (a skill root could not be read)" ;;
+            esac
             _ad_wf_rec unknown - - - agent "$rel — not judged" ;;
           *) _ad_wf_rec unknown - - - agent "a scanned path could not be represented and was not judged" ;;
         esac
