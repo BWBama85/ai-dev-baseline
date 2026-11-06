@@ -827,6 +827,7 @@ else
   nwo="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents claude --baseline "$ROOT" --scope project)"
   has "$nwo" "a skill directory under a nested skill root could not be read" "workflows: an unreadable nested skill directory is reported"
   hasnt "$nwo" "IGNORE-PREVIOUS" "workflows: a nested root's path never reaches a warning"
+  has "$nwo" "nested=not judged" "workflows: ...and the trailer does not count nested roots as fully read"
 fi
 chmod 755 "$NSX/pkg/hr-IGNORE-PREVIOUS/.claude/skills/locked"; rm -rf "$NSX/pkg/hr-IGNORE-PREVIOUS"
 # The trailer's "not judged" comes from the walk's own record, never from a path that says so.
@@ -847,6 +848,17 @@ for ag_ in codex claude,codex; do
       "workflows: a root inside a top-level skill directory is found [--agents $ag_]"
 done
 rm -rf "$NSX/pkg/.claude" "$NSX/.claude/skills/host"
+# A root inside a HIDDEN directory of a skill root is found too, whichever agents are asked about.
+mkdir -p "$NSX/pkg2/.claude/skills/.agents/skills/implement" "$NSX/.claude/skills/.agents/skills/swarm"
+printf 'x\n' > "$NSX/pkg2/.claude/skills/.agents/skills/implement/SKILL.md"; printf 'x\n' > "$NSX/.claude/skills/.agents/skills/swarm/SKILL.md"
+for ag_ in codex claude,codex; do
+  nho="$(HOME="$WORK/pt-home" bash "$AD" workflows "$NSX" --agents "$ag_" --baseline "$ROOT" --scope project)"
+  has "$nho" "competes${TAB}pkg2/.claude/skills/.agents/skills/implement${TAB}codex" \
+      "workflows: a root inside a hidden directory of a skill root is found [--agents $ag_]"
+  has "$nho" "competes${TAB}.claude/skills/.agents/skills/swarm${TAB}codex" \
+      "workflows: a root inside a hidden directory of a top-level skill root is found [--agents $ag_]"
+done
+rm -rf "$NSX/pkg2" "$NSX/.claude/skills/.agents"
 # ...unless a skill directory of an agent NOT asked about cannot be listed: nothing else reports it.
 mkdir -p "$NSX/.claude/skills/locked/sub/.agents/skills/implement"; printf 'x\n' > "$NSX/.claude/skills/locked/sub/.agents/skills/implement/SKILL.md"
 chmod 000 "$NSX/.claude/skills/locked"
@@ -2799,6 +2811,18 @@ shmutant_mut nested-found-roots-unwalked \
     '        [ -L "$root/$rel" ] && continue                # a linked root'"'"'s skills are read, never walked' \
     '        continue' \
     'a root inside a nested skill directory is found'
+shmutant_mut nested-hidden-dirs-skipped \
+    '        for _ad_sd in "$root/$rel"/*/ "$root/$rel"/.[!.]*/ "$root/$rel"/..?*/; do' \
+    '        for _ad_sd in "$root/$rel"/*/; do' \
+    'a root inside a hidden directory of a skill root is found'
+shmutant_mut nested-hidden-seed-dirs-skipped \
+    '        for _ad_sd in "$root/$_ad_r"/*/ "$root/$_ad_r"/.[!.]*/ "$root/$_ad_r"/..?*/; do' \
+    '        for _ad_sd in "$root/$_ad_r"/*/; do' \
+    'a root inside a hidden directory of a top-level skill root is found'
+shmutant_mut nested-trailer-ignores-unread-root \
+    '              "a nested skill root "*|*"under a nested skill root "*) [ -n "$nested" ] || nested="nested=not judged (a nested skill root could not be read)" ;;' \
+    '              "a nested skill root "*) : ;;' \
+    'the trailer does not count nested roots as fully read'
 shmutant_mut nested-unselected-unreadable-skipped \
     '          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi' \
     '          if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then continue; fi' \

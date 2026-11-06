@@ -1015,7 +1015,7 @@ _ad_has_link() {
 # <skill-root> (and one `override` per overrides.md), skipping what the pinned receipt owns.
 _ad_scan_skills() {
   # <label> names the root in a warning: the table's own path for a top-level root, a fixed phrase
-  # for a nested one, whose path is the repository's text and is never repeated in a diagnostic.
+  # for a nested one, whose path is the repository's text and is not repeated in these warnings.
   local root="$1" sroot="$2" a="$3" _ad_owned="$4" label="${5:-$2}" d n
   for d in "$root/$sroot"/*/; do
     [ -d "$d" ] || continue
@@ -1158,7 +1158,8 @@ NESTED
         if [ ! -d "$root/$_ad_r" ] || [ ! -r "$root/$_ad_r" ] || [ ! -x "$root/$_ad_r" ]; then
           [ -n "$_ad_sel" ] || _ad_fail=1; continue
         fi
-        for _ad_sd in "$root/$_ad_r"/*/; do
+        # Hidden directories too: a dot-directory is no skill, but a root can sit inside one.
+        for _ad_sd in "$root/$_ad_r"/*/ "$root/$_ad_r"/.[!.]*/ "$root/$_ad_r"/..?*/; do
           [ -d "$_ad_sd" ] && [ ! -L "${_ad_sd%/}" ] || continue
           if [ ! -r "$_ad_sd" ] || [ ! -x "$_ad_sd" ]; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi
           _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")   # a top-level root's skill
@@ -1186,7 +1187,7 @@ NESTED
         case "$rel" in */*/*) ;; *) continue ;; esac   # `.claude/skills` itself: the top-level root
         _ad_keep+=("$rel")
         [ -L "$root/$rel" ] && continue                # a linked root's skills are read, never walked
-        for _ad_sd in "$root/$rel"/*/; do
+        for _ad_sd in "$root/$rel"/*/ "$root/$rel"/.[!.]*/ "$root/$rel"/..?*/; do
           [ -d "$_ad_sd" ] && [ ! -L "${_ad_sd%/}" ] && [ -r "$_ad_sd" ] && [ -x "$_ad_sd" ] || continue
           _ad_sd="${_ad_sd%/}"; _ad_queue+=("./${_ad_sd#"$root/"}")
         done
@@ -2592,7 +2593,10 @@ cmd_workflows() {
         # evidence; any other warning may carry scanned text and is not repeated.
         case "$rel" in
           "the skill root "*|"a skill directory under "*|"the agent directory "*|"the project tree "*|"a nested skill root "*)
-            case "$rel" in "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;; esac
+            case "$rel" in
+              "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;;
+              "a nested skill root "*|*"under a nested skill root "*) [ -n "$nested" ] || nested="nested=not judged (a nested skill root could not be read)" ;;
+            esac
             _ad_wf_rec unknown - - - agent "$rel — not judged" ;;
           *) _ad_wf_rec unknown - - - agent "a scanned path could not be represented and was not judged" ;;
         esac
