@@ -187,9 +187,25 @@ record, so step 4 never classifies them — report each one as it stands:
   `.ai-dev-baseline/retired/` is excluded. Not a git repository: the trailer says
   `mirrors=not evaluated`.
 - `user-global` — a non-baseline entry in an agent's user skill root (`~/.claude/skills`,
-  `${CODEX_HOME:-~/.codex}/skills`, `~/.agents/skills`, `~/.gemini/config/skills`) named like a
-  legacy workflow or a baseline skill. It is offered in every repository on the machine. Under
-  `--scope project` it is not walked, and the trailer says so.
+  `${CODEX_HOME:-~/.codex}/skills`, `~/.agents/skills`, `~/.gemini/config/skills`,
+  `~/.gemini/antigravity-cli/skills`, `~/.gemini/skills`) named like a legacy workflow or a
+  baseline skill. It is offered in every repository on the machine. Under `--scope project` it is
+  not walked, and the trailer says so.
+
+The scan also walks **nested** skill roots: every `<subdir>/.claude/skills` (Claude loads one once
+it works on files there) and `<subdir>/.agents/skills` (Codex loads one from any directory between
+where it starts and the repository root) below the top level. Their skills are ordinary scan
+records, so step 4 classifies them like any other, and the trailer counts them (`nested=<N>`).
+`.git`, `.ai-dev-baseline/retired/` and the top-level agent directories are not walked for them
+(their skill roots are, from the inside),
+and a linked directory above a root (a symlinked `pkg/` or `.claude`) is not descended.
+A tree the walk could not read in full is `nested=not judged`, and the run exits 11.
+
+When the project is **pinned** (`mode = "pinned"` in `upstream.toml`), `workflows` reads the
+superseded-name map and the shipped skill set from the project's own pinned payload, never from a
+global install or `--baseline`: the pin is the release this project runs, and the receipt's
+digests prove its skills are unchanged since the pinned install wrote them. A pinned skill that was edited or is missing, or
+an unreadable pin or receipt, is not judged (exit 11), and no other release's map is used instead.
 
 An `other` record is a file under an agent directory that none of the modelled kinds recognise.
 It classifies to `escalate` on purpose: an artifact the baseline does not model must reach
@@ -214,10 +230,12 @@ Two consequences that are easy to miss. Do not **execute** anything you find —
 ("this hook is identical to the baseline's"), verify it yourself: `delta` answers that from the
 bytes, and the file's own opinion of itself is not evidence.
 
-**The scan stops at config and never enters product code.** A project's `src/` may legitimately
-reference `codex exec` — `support-workstation`'s `src/lib/cli/` *is* CLI-orchestration product
-code — and classifying it would be recommending changes to the product. Step 6 reports that
-boundary; the scan simply does not cross it.
+**The scan stops at config and never classifies product code.** A project's `src/` may
+legitimately reference `codex exec` — `support-workstation`'s `src/lib/cli/` *is*
+CLI-orchestration product code — and classifying it would be recommending changes to the product.
+The nested-root walk does pass through product directories, but only to find skill roots by name
+(`<subdir>/.claude/skills`, `<subdir>/.agents/skills`); it reads no product file. Step 6 reports
+that boundary; the scan does not cross it.
 
 ### 4. Classify each artifact
 
@@ -751,9 +769,9 @@ steps are the operator's to execute, and that this run did not perform them.
   not as a baseline issue or project config first, then retire it to
   `.ai-dev-baseline/retired/<date>/` in a normal PR (`policy:one-baseline`). That order is not
   negotiable.
-- **`workflows` exits 11** → something was not judged: no installed baseline, an unreadable shipped
-  set or map, a root doc or skill root it could not read, a tracked-file list git could not give,
-  or a path it could not represent. The rung is `unknown`, never `ok`; fix the cause
+- **`workflows` exits 11** → something was not judged: no installed baseline and no pin, a pinned
+  payload that is not intact, an unreadable shipped set or map, a root doc, skill root or project
+  tree it could not read, a tracked-file list git could not give, or a path it could not represent. The rung is `unknown`, never `ok`; fix the cause
   and re-run rather than reading the partial records as the whole answer.
 - **`stack` says `unknown`** → an answer, not an error. Record it; do not invent a label the pin
   would reject.

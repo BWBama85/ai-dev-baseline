@@ -335,6 +335,10 @@ has "$out" "NEVER EXECUTED" "probe: the never-executed case says so in words"
 ar receipt check "$d" >/dev/null 2>&1; eq $? 11 "receipt: absent is 11 (none)"
 ar receipt run "$d" >/dev/null 2>&1;   eq $? 0  "receipt: a passing gate run exits 0"
 ar receipt check "$d" >/dev/null 2>&1; eq $? 0  "receipt: a fresh passing receipt is 0 (ok)"
+# An exported CDPATH neither moves a relative root nor leaks a second path into its capture (#535).
+mkdir -p "$WORK/cdpath-decoy/${d##*/}"
+( cd "${d%/*}" && CDPATH="$WORK/cdpath-decoy" bash "$AR" receipt check "${d##*/}" >/dev/null 2>&1 ); eq $? 0 \
+  "receipt: with an exported CDPATH, a relative root is still the checkout named"
 out="$(ar probe "$d")"
 has "$out" "gates${TAB}ok" "probe: a fresh passing receipt makes the gates rung ok"
 
@@ -524,6 +528,18 @@ has "$out" "exempt=1" "probe: ...with the counts visible"
 out="$( HOME="$WORK/no-install-home" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}unknown" "probe: no installed baseline -> workflows unknown, never ok"
 has "$out" "could not read what the baseline ships" "probe: ...saying the baseline could not be read"
+# A PINNED project with no global install (a CI runner, #537) is judged from its own pin (#535).
+d="$WORK/p-workflows-pinned"; mkrepo "$d"; mkdir -p "$d/.ai-dev-baseline" "$d/.claude/skills/implement"
+printf 'x\n' > "$d/.claude/skills/implement/SKILL.md"
+: > "$d/.ai-dev-baseline/pinned-files.sha256"
+for a_ in claude codex; do
+  mkdir -p "$d/.$a_/skills/implement-issue"; cp "$wfinstall/agents/$a_/skills/implement-issue/SKILL.md" "$d/.$a_/skills/implement-issue/SKILL.md"
+  printf '%s  %s\n' "$(adb_sha256 "$d/.$a_/skills/implement-issue/SKILL.md")" ".$a_/skills/implement-issue/SKILL.md" >> "$d/.ai-dev-baseline/pinned-files.sha256"
+done
+printf '[upstream]\nmode = "pinned"\nversion = "v1.2.3"\n' > "$d/.ai-dev-baseline/upstream.toml"
+out="$( HOME="$WORK/no-install-home" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}todo" "probe: a pinned project with no global install is judged from its pin, never unknown"
+has "$out" "competes .claude/skills/implement -> implement-issue (owner)" "probe: ...with the pin's map"
 
 # THE HARNESS RUNG CHECKS WHAT A RUN NEEDS, not that a directory exists: every manifest destination
 # of each requested agent is our link into the source AND resolves (#539). The fixture resolves an
@@ -1235,6 +1251,10 @@ _ar_mut_run() { ( cd "$1" && ADB_STATE_DIR="$1/state" bash scripts/check-adopt-r
 # shellcheck source=/dev/null
 . "$ROOT/scripts/shmutant.sh" || bad "check-adopt-readiness: scripts/shmutant.sh could not be sourced"
 shmutant_target scripts/lib/adopt-readiness.sh
+shmutant_mut cdpath-not-unset \
+    'unset CDPATH' \
+    ':' \
+    'receipt: with an exported CDPATH, a relative root is still the checkout named'
 
 # THE FAIL-CLOSED MUTATIONS. Each turns one guard toward the flattering answer.
 #

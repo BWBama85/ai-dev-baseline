@@ -1644,7 +1644,7 @@ fact selfcheck-cost-2026-08 'absent:8m46s to 12m55s' 'fires:spanned **8m46s to 1
 # figure deliberately: they are dated records of what was measured when, and rewriting them would
 # be falsifying history rather than correcting a claim. They are not in this list and must not be
 # added to it.
-fact selfcheck-cost-stale 'absent:66[-–—]72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
+fact selfcheck-cost-stale 'absent:66(-|–|—)72 ?s|(^|[^0-9])66 ?s([^0-9]|$)' \
   'fires:66-72s after' 'fires:measured at 66–72s a turn' 'fires:even 66s per turn is the wrong trade' \
   -- $_sc_cost_docs agents.toml .claude/scripts/precommit-gate.sh \
      docs/per-project-overrides.md .github/workflows/ci.yml

@@ -2170,13 +2170,28 @@ adb_agent_project_skill_dirs() {
   esac
 }
 
+# adb_agent_nested_skill_dirs <agent> — the skill roots the agent also loads from a SUBDIRECTORY of
+# the project, as `<dir>/<root>`, space-separated (#535). Claude loads `<subdir>/.claude/skills` once
+# it works on files there; Codex loads `.agents/skills` in every directory from its working directory
+# up to the repository root (vendor docs, read 2026-11-05). Empty where no nested discovery is
+# documented.
+adb_agent_nested_skill_dirs() {
+  case "$1" in
+    claude) printf '%s' '.claude/skills' ;;
+    codex)  printf '%s' '.agents/skills' ;;
+    *)      printf '' ;;
+  esac
+}
+
 # THE USER-ROOT TABLE, one `<base> <relpath>` line per root the agent loads, the root the baseline
 # installs into first. <base> is `home` ($HOME) or `codex` (${CODEX_HOME:-$HOME/.codex}). Codex loads
 # two: `$CODEX_HOME/skills` (deprecated, still read) and `$HOME/.agents/skills` (codex-rs
-# ext/skills host_roots.rs). Both readers below are views of this table, so they cannot drift.
+# ext/skills host_roots.rs). The Antigravity CLI also loads `~/.gemini/antigravity-cli/skills` and
+# `~/.gemini/skills` (antigravity.google/docs/skills). Both readers below are views of this table,
+# so they cannot drift.
 _adb_agent_user_skill_root_specs() {
   case "$1" in
-    gemini) printf '%s\n' 'home .gemini/config/skills' ;;
+    gemini) printf '%s\n' 'home .gemini/config/skills' 'home .gemini/antigravity-cli/skills' 'home .gemini/skills' ;;
     codex)  printf '%s\n' 'codex skills' 'home .agents/skills' ;;
     *)      printf 'home .%s/skills\n' "$1" ;;
   esac

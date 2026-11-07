@@ -84,6 +84,10 @@
 # required.
 
 set -u
+# An exported CDPATH makes `cd` print its destination, which lands inside every `$(cd … && pwd)`
+# capture, and can resolve a relative path against the wrong directory (#535). Every path here is
+# meant literally.
+unset CDPATH
 
 # --- required shared library (fail loud on a broken install, per design-principles §5) --------
 # common.sh lives beside this file (install.sh symlinks the whole scripts/lib dir into
@@ -961,8 +965,9 @@ cmd_classify() {
 # Enumerate the project's adoption surface as `<kind>TAB<relpath>TAB<name>` records.
 #
 # THE SCAN IS BOUNDED TO CONFIG, NOT CODE. It descends only into each agent's own directory, the
-# root docs, agents.toml, .ai-dev-baseline/, and the two prior-framework artifacts. It never walks
-# `src/`, and #29's first axis is why: support-workstation's `src/lib/cli/` IS product code that  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
+# root docs, agents.toml, .ai-dev-baseline/, the two prior-framework artifacts, and the nested skill
+# roots an agent loads (found by name anywhere below the root; nothing else there is read). It never
+# classifies `src/`, and #29's first axis is why: support-workstation's `src/lib/cli/` IS product code that  (adb-claim-ok: #29 was consolidated INTO #20 and closed NOT_PLANNED (2026-08-10, "the work is not dropped, it moved") — the reference is this change's provenance, not tracked work)
 # orchestrates agent CLIs, and a scan that classified it would be recommending changes to the
 # product. `hygiene` reports on that boundary; `scan` simply does not cross it.
 
@@ -1004,6 +1009,36 @@ _ad_has_link() {
     [ -L "$p" ] && return 0
   done
   return 1
+}
+
+# _ad_scan_skills <root> <skill-root> <agent> <owned> — one `skill` record per skill directory under
+# <skill-root> (and one `override` per overrides.md), skipping what the pinned receipt owns.
+_ad_scan_skills() {
+  # <label> names the root in a warning: the table's own path for a top-level root, a fixed phrase
+  # for a nested one, whose path is the repository's text and is not repeated in these warnings.
+  local root="$1" sroot="$2" a="$3" _ad_owned="$4" label="${5:-$2}" d n
+  for d in "$root/$sroot"/*/; do
+    [ -d "$d" ] || continue
+    n="${d%/}"; n="${n##*/}"
+    if [ ! -r "$d" ] || [ ! -x "$d" ]; then
+      _ad_emit warning "a skill directory under $label could not be read — it was not inventoried"
+      continue
+    fi
+    [ -f "$d/overrides.md" ] && _ad_emit override "$sroot/$n/overrides.md" overrides.md "$a"
+    # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
+    # one, so its presence is the project's own — and in pinned mode it is a delta with no
+    # working home, which is precisely what the operator needs told.
+    # A receipt-owned skill reached through a SYMLINKED directory — the skill's own, or any
+    # ancestor's: the walk below does not follow links, so files a project added inside it would
+    # go unseen. Not judged, never clean.
+    if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then
+      _ad_emit warning "a skill directory under $label is a symlink the scan does not walk — its files were not inventoried"
+      continue
+    fi
+    _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && continue
+    [ -f "$d/SKILL.md" ]     && _ad_emit skill    "$sroot/$n" "$n" "$a"
+  done
+  return 0
 }
 
 cmd_scan() {
@@ -1068,6 +1103,91 @@ cmd_scan() {
     _ad_emit pinned .ai-dev-baseline/pinned-files.sha256 pinned-payload -
   fi
 
+  # NESTED PROJECT SKILL ROOTS (#535): Claude loads `<subdir>/.claude/skills` once it works on files
+  # there, and Codex loads `.agents/skills` from every directory between its working directory and
+  # the repository root, so every such root BELOW the top level is one an agent may load (owner
+  # decision 2026-11-05: the whole tree). Read from the filesystem, never the git index, so an
+  # untracked skill is seen and an index entry with no file is not. `.git`, the retirement folder
+  # and the top-level agent directories are pruned (their skill roots are walked from as start
+  # points, below). A root that is itself a link is walked; a linked
+  # directory ABOVE a root is not descended (the walk does not follow links). One walk for every agent, NUL-delimited, with its
+  # status as the last field: a walk that failed part-way is a warning, never "no nested roots".
+  local -a _ad_nested=() _ad_npat=() _ad_keep=() _ad_nprune=()
+  local _ad_nd _ad_np
+  # THE TOP-LEVEL AGENT DIRECTORIES ARE PRUNED: their skill roots and files are the arms below, which
+  # judge an unreadable one themselves, and `.claude/worktrees/` holds checkouts of this same project.
+  for a in claude codex gemini ${agents//,/ }; do
+    for _ad_np in ".$a" $(adb_agent_project_skill_dirs "$a"); do
+      _ad_np="./${_ad_np%%/*}"
+      case " ${_ad_nprune[*]} " in *" $_ad_np "*) ;; *) _ad_nprune+=(-o -path "$_ad_np") ;; esac
+    done
+  done
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    _ad_nd="$(adb_agent_nested_skill_dirs "$a")"
+    [ -n "$_ad_nd" ] || continue
+    case " ${_ad_npat[*]} " in *" */$_ad_nd "*) continue ;; esac
+    [ "${#_ad_npat[@]}" -eq 0 ] || _ad_npat+=(-o)
+    _ad_npat+=(-path "*/$_ad_nd")
+  done <<NESTED
+$(printf '%s\n' "$agents" | tr ',' '\n')
+NESTED
+  if [ "${#_ad_npat[@]}" -gt 0 ]; then
+    # ONE WALK THAT NEVER STOPS AT A ROOT (owner decision 2026-11-06): a root inside another root's
+    # skill directory, hidden or not, is found by the same walk as any other, and ANY directory it
+    # cannot read makes the nested result not judged. Its start points are the tree, minus the
+    # top-level agent directories, plus each of their skill roots that is a readable directory
+    # reached through no link. A top-level root that cannot be listed is its own arm's to report
+    # when that agent is asked about; otherwise nothing else would, so the walk is incomplete.
+    local -a _ad_starts=(.)
+    local -A _ad_qseen=()
+    local _ad_r _ad_sel _ad_fail="" _ad_blk
+    for a in claude codex gemini ${agents//,/ }; do
+      _ad_sel=""; case ",$agents," in *",$a,"*) _ad_sel=1 ;; esac
+      for _ad_r in ".$a/skills" $(adb_agent_project_skill_dirs "$a"); do
+        [ -z "${_ad_qseen[$_ad_r]:-}" ] || continue
+        _ad_qseen["$_ad_r"]=1
+        # A FILE where a directory would be (the root, or an ancestor of it) holds no skills: skipped.
+        # Only a directory that cannot be read leaves the walk incomplete.
+        _ad_np="$root"; _ad_nd="${_ad_r%/*}/"; _ad_blk=""
+        while [ -n "$_ad_nd" ]; do
+          _ad_np="$_ad_np/${_ad_nd%%/*}"; _ad_nd="${_ad_nd#*/}"
+          if { [ -e "$_ad_np" ] || [ -L "$_ad_np" ]; } && [ ! -d "$_ad_np" ]; then _ad_blk=1; break; fi
+        done
+        [ -z "$_ad_blk" ] || continue
+        if ! _ad_parents_searchable "$root" "$_ad_r"; then [ -n "$_ad_sel" ] || _ad_fail=1; continue; fi
+        [ -e "$root/$_ad_r" ] || [ -L "$root/$_ad_r" ] || continue
+        _ad_has_link "$root" "$_ad_r" && continue
+        [ -d "$root/$_ad_r" ] || continue
+        if [ ! -r "$root/$_ad_r" ] || [ ! -x "$root/$_ad_r" ]; then
+          [ -n "$_ad_sel" ] || _ad_fail=1; continue
+        fi
+        _ad_starts+=("./$_ad_r")
+      done
+    done
+    if [ -z "$_ad_fail" ]; then
+      mapfile -d '' -t _ad_nested < <(
+        cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
+        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \
+             -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -zu
+        _ad_nps=("${PIPESTATUS[@]}")
+        printf '\0%s' "$(( _ad_nps[0] | _ad_nps[1] ))")
+      if [ "${#_ad_nested[@]}" -eq 0 ] || [ "${_ad_nested[-1]}" != 0 ]; then _ad_fail=1; fi
+    fi
+    if [ -n "$_ad_fail" ]; then
+      printf 'warning%sthe project tree could not be walked in full — nested skill roots were not inventoried\n' "$TAB"
+      _ad_nested=()
+    else
+      unset '_ad_nested[-1]'
+      for rel in "${_ad_nested[@]}"; do
+        rel="${rel#./}"
+        case "$rel" in */*/*) ;; *) continue ;; esac   # `.claude/skills` itself: the top-level root
+        _ad_keep+=("$rel")
+      done
+      _ad_nested=("${_ad_keep[@]}")
+    fi
+  fi
+
   # Per-agent config trees.
   local sroot sroots
   while IFS= read -r a; do
@@ -1094,28 +1214,24 @@ cmd_scan() {
           continue
         fi
       fi
-      for d in "$root/$sroot"/*/; do
-        [ -d "$d" ] || continue
-        n="${d%/}"; n="${n##*/}"
-        if [ ! -r "$d" ] || [ ! -x "$d" ]; then
-          _ad_emit warning "a skill directory under $sroot could not be read — it was not inventoried"
-          continue
-        fi
-        [ -f "$d/overrides.md" ] && _ad_emit override "$sroot/$n/overrides.md" overrides.md "$a"
-        # An overrides.md is ALWAYS reported, even inside a pinned payload: the install never writes
-        # one, so its presence is the project's own — and in pinned mode it is a delta with no
-        # working home, which is precisely what the operator needs told.
-        # A receipt-owned skill reached through a SYMLINKED directory — the skill's own, or any
-        # ancestor's: the walk below does not follow links, so files a project added inside it would
-        # go unseen. Not judged, never clean.
-        if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then
-          _ad_emit warning "a skill directory under $sroot is a symlink the scan does not walk — its files were not inventoried"
-          continue
-        fi
-        _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && continue
-        [ -f "$d/SKILL.md" ]     && _ad_emit skill    "$sroot/$n" "$n" "$a"
-      done
+      _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned"
     done
+    # NESTED PROJECT ROOTS (#535): the same enumeration for each root the walk above found below the
+    # top level for this agent.
+    _ad_nd="$(adb_agent_nested_skill_dirs "$a")"
+    if [ -n "$_ad_nd" ]; then
+      for sroot in "${_ad_nested[@]}"; do
+        case "$sroot" in */"$_ad_nd") ;; *) continue ;; esac
+        # A LINKED root is walked as the top-level ones are (an agent follows it); one that resolves
+        # to no directory loads nothing.
+        [ -d "$root/$sroot" ] || continue
+        if [ ! -r "$root/$sroot" ] || [ ! -x "$root/$sroot" ]; then
+          printf 'warning%sa nested skill root could not be listed — its skills were not inventoried\n' "$TAB"
+          continue
+        fi
+        _ad_scan_skills "$root" "$sroot" "$a" "$_ad_owned" "a nested skill root"
+      done
+    fi
     [ -d "$root/.$a" ] || continue
     # A SYMLINKED agent directory is not walked below (find does not follow a link it starts on),
     # so nothing under it would be inventoried. Not judged, never clean.
@@ -2153,8 +2269,7 @@ cmd_plan() {
 # disagree: a map that cannot be read whole must never read as "nothing is superseded".
 cmd_supersedes() {
   [ "$#" -eq 1 ] || die "supersedes: needs <baseline-root>"
-  local root="$1" shipped kind name agent src line tok fmrule out=""
-  local -A claim=() marker=() markerfrom=()
+  local root="$1" shipped agent
   shipped="$( (cmd_shipped "$root") )" || die "supersedes: could not read what the baseline ships under $(adb_display_value "$root")"
   # EVERY BASELINE AGENT CONTRIBUTES TO THE ONE MAP, so each must have a listable skills directory
   # holding at least one shipped skill: a render whose skills cannot be listed still ships root docs
@@ -2166,9 +2281,22 @@ cmd_supersedes() {
       die "supersedes: the shipped skills of $agent could not be listed — the map cannot be read whole"
     fi
   done <<< "$(_ad_agents_from_baseline "$root")"
-  # EVERY BASELINE AGENT SHIPS THE SAME SKILL SET: a workflow one agent's render lacks would
-  # otherwise be offered there as the replacement for a legacy name.
-  local first_set="" this_set
+  _ad_map_from_shipped "$shipped" "$root/scripts/skill-description.awk"
+}
+
+# _ad_map_from_shipped <shipped-records> <frontmatter-awk|""> — the map from the `skill` records of
+# a shipped set (`skill TAB name TAB agent TAB skill-dir`), with every read-side rule. An empty awk
+# path skips the shared frontmatter rule: only for SKILL.md files whose bytes a pinned receipt's
+# digest proves unchanged since the pinned install wrote them from the release build.sh validated.
+# Dies (2) as supersedes does.
+_ad_map_from_shipped() {
+  local shipped="$1" fmawk="$2" kind name agent src line tok fmrule out=""
+  local -A claim=() marker=() markerfrom=()
+  # EVERY AGENT SHIPS THE SAME SKILL SET: a workflow one agent's render lacks would otherwise be
+  # offered there as the replacement for a legacy name.
+  local first_set="" this_set sagents
+  sagents="$(printf '%s\n' "$shipped" | awk -F'\t' '$1=="skill" && !s[$3]++ {print $3}')" && [ -n "$sagents" ] \
+    || die "supersedes: could not list the agents of the shipped set"
   while IFS= read -r agent; do
     [ -n "$agent" ] || continue
     this_set="$(printf '%s\n' "$shipped" | awk -F'\t' -v g="$agent" '$1=="skill" && $3==g {print $2}' | LC_ALL=C sort)" \
@@ -2176,7 +2304,7 @@ cmd_supersedes() {
     if [ -z "$first_set" ]; then first_set="$this_set"
     elif [ "$this_set" != "$first_set" ]; then die "supersedes: the baseline agents ship different skill sets — rebuild the baseline"
     fi
-  done <<< "$(_ad_agents_from_baseline "$root")"
+  done <<< "$sagents"
   while IFS="$TAB" read -r kind name agent src; do
     [ "$kind" = skill ] || continue
     case "$name" in ''|-*|*[!a-z0-9-]*) die "supersedes: a shipped skill name is outside [a-z0-9-] — the map would carry it" ;; esac
@@ -2184,13 +2312,15 @@ cmd_supersedes() {
       || die "supersedes: $(adb_display_value "$src/SKILL.md") is missing or unreadable — the map cannot be read whole"
     # THE SHARED FRONTMATTER RULE FIRST (scripts/skill-description.awk, build.sh's own): a header
     # an agent's loader would not parse ships a skill whose marker nobody can trust.
-    fmrule="$(set -o pipefail; LC_ALL=C tr '\000' '\001' < "$src/SKILL.md" | LC_ALL=C awk -f "$root/scripts/skill-description.awk" 2>/dev/null)" \
-      || die "supersedes: the skill frontmatter rule could not run on $name ($agent)"
-    case "$fmrule" in
-      ok"$TAB"*) ;;
-      bad"$TAB"*) die "supersedes: $name ($agent) fails the skill frontmatter rule — the map cannot be read whole" ;;
-      *) die "supersedes: the skill frontmatter rule gave no verdict on $name ($agent)" ;;
-    esac
+    if [ -n "$fmawk" ]; then
+      fmrule="$(set -o pipefail; LC_ALL=C tr '\000' '\001' < "$src/SKILL.md" | LC_ALL=C awk -f "$fmawk" 2>/dev/null)" \
+        || die "supersedes: the skill frontmatter rule could not run on $name ($agent)"
+      case "$fmrule" in
+        ok"$TAB"*) ;;
+        bad"$TAB"*) die "supersedes: $name ($agent) fails the skill frontmatter rule — the map cannot be read whole" ;;
+        *) die "supersedes: the skill frontmatter rule gave no verdict on $name ($agent)" ;;
+      esac
+    fi
     # THE READ SIDE HOLDS THE BUILD'S RULES: a frontmatter opened on line 1 and closed, exactly one
     # marker line inside it and none after it, its grammar, no `release`, no shipped skill name.
     line="$(awk '
@@ -2273,6 +2403,83 @@ _ad_baseline_link() {
   case "$t" in "$b"/*) return 0 ;; esac
   return 1
 }
+# _ad_pin_shipped <project-root> — the shipped SKILL set of the project's own release pin, as
+# `skill TAB name TAB agent TAB skill-dir` records, read from its receipt (owner decision 2026-11-03:
+# when a project is pinned, its pin supplies the map, not a global install).
+# Returns: 0 records printed · 1 not a pinned project · 3 pinned, but not intact (no readable
+# receipt, no recorded skill, or a recorded SKILL.md the receipt's digest no longer matches — an
+# edited or missing one). Never falls back to anything else on 3.
+_ad_pin_shipped() {
+  local root="$1" pin receipt mode owned hash rel ag nm out="" n=0
+  pin="$root/.ai-dev-baseline/upstream.toml"; receipt="$root/.ai-dev-baseline/pinned-files.sha256"
+  # A pin that cannot be read is not "not pinned": that would hand the project another release's map.
+  # So an unsearchable `.ai-dev-baseline` is asked about before the pin's absence is believed.
+  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3
+  [ -e "$pin" ] || [ -L "$pin" ] || return 1
+  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"
+  # THE SAME READ the rest of the pinned machinery makes (adb_pinned_owned, pinned-install's
+  # _pi_pin_mode), so they never disagree about whether this project is pinned. adb_toml_get: 1 is
+  # an absent key (a global-mode pin), 2 or more is a read it could not perform. A pin someone
+  # hand-edited into a spelling the writer never emits is out of scope (D151).
+  local raw rc=0
+  raw="$(adb_toml_get "$pin" upstream mode 2>/dev/null)" || rc=$?
+  [ "$rc" -lt 2 ] || return 3
+  [ "$rc" -eq 0 ] || return 1
+  mode="$(adb_toml_unquote "$raw" 2>/dev/null)" || return 3
+  [ "$mode" = pinned ] || return 1
+  # The receipt is read WHOLE or not at all: `read` drops a last line with no newline, and the
+  # skill it names would leave the map unnoticed.
+  [ ! -L "$receipt" ] && adb_bytes_whole "$receipt" 8388608 || return 3
+  owned="$(adb_pinned_owned "$root")"
+  local -A seen=()
+  while read -r hash rel; do
+    case "$hash" in ''|'#'*) continue ;; esac
+    case "$rel" in .*/skills/*/SKILL.md) ;; *) continue ;; esac
+    ag="${rel#.}"; ag="${ag%%/*}"
+    case "$ag" in ''|*[!a-z0-9-]*) continue ;; esac
+    case "$rel" in ".$ag/skills/"*) ;; *) continue ;; esac   # a pinned skill sits at the agent's own root
+    nm="${rel#".$ag/skills/"}"; nm="${nm%/SKILL.md}"
+    case "$nm" in ''|-*|*[!a-z0-9-]*) return 3 ;; esac   # a recorded skill this map cannot carry
+    # EACH SKILL ONCE: membership in the owned set says only that SOME row for this path matched,
+    # so a second row (with any digest) is a receipt this reader cannot read as one answer.
+    [ -z "${seen[$rel]:-}" ] || return 3
+    seen["$rel"]=1
+    _ad_owns "$owned" "$rel" || return 3
+    out="$out$(printf 'skill\t%s\t%s\t%s' "$nm" "$ag" "$root/.$ag/skills/$nm")"$'\n'
+    n=$((n + 1))
+  done < "$receipt" || return 3
+  [ "$n" -gt 0 ] || return 3
+  printf '%s' "$out"
+}
+
+# _ad_pin_version <project-root> — the pin's recorded version, or `unversioned`.
+_ad_pin_version() {
+  local v
+  v="$(adb_toml_unquote "$(adb_toml_get "$1/.ai-dev-baseline/upstream.toml" upstream version 2>/dev/null)" 2>/dev/null)" || v=""
+  case "$v" in ''|*[!A-Za-z0-9._+-]*) v=unversioned ;; esac
+  printf '%s' "$v"
+}
+
+# _ad_same_history <root> <baseline-root> — true when both are git repositories sharing a root
+# commit: <root> is another clone (or a worktree) of the installed baseline, so its rendered
+# agents/*/skills are the product rather than mirrors. A copied layout shares no history. No
+# baseline, no history or a git that cannot answer is false, so the skills are reported.
+_ad_same_history() {
+  [ -n "$2" ] || return 1
+  local mine theirs c top nl_=$'\n'
+  # Only a checkout's own ROOT: git finds an enclosing repository, so a directory inside a baseline
+  # checkout would otherwise inherit its history.
+  top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null && printf x)" || return 1
+  top="${top%x}"; top="${top%?}"
+  [ -n "$top" ] && [ "$top" -ef "$1" ] || return 1
+  mine="$(git -C "$1" rev-list --max-parents=0 HEAD 2>/dev/null)" && [ -n "$mine" ] || return 1
+  theirs="$(git -C "$2" rev-list --max-parents=0 HEAD 2>/dev/null)" && [ -n "$theirs" ] || return 1
+  while IFS= read -r c; do
+    case "$c" in ''|*[!0-9a-f]*) continue ;; esac
+    case "$nl_$theirs$nl_" in *"$nl_$c$nl_"*) return 0 ;; esac
+  done <<< "$mine"
+  return 1
+}
 _ad_wf_rec() {  # <class> <path> <agent> <target> <owner> <remedy>
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$@"
 }
@@ -2302,16 +2509,29 @@ cmd_workflows() {
     done
   done
 
-  local why=""
+  local why="" pinrc=0 msrc=install
   if [ -z "$broot" ]; then broot="$(adb_install_source 2>/dev/null)" || broot=""; fi
   local shipped="" map=""
-  if [ -z "$broot" ]; then
-    why="no installed baseline found"
-  elif ! shipped="$( (cmd_shipped "$broot") 2>/dev/null )" || [ -z "$shipped" ]; then
-    why="the shipped set is unreadable"
-  elif ! map="$( (cmd_supersedes "$broot") 2>/dev/null )"; then
-    why="the superseded-name map is unreadable"
-  fi
+  # THE PROJECT'S OWN PIN SUPPLIES THE MAP when it has one (owner decision 2026-11-03), even beside
+  # a global install or an explicit --baseline: the pin is the release this project runs. The
+  # receipt's digests prove its SKILL.md files are the bytes the pinned install recorded (integrity,
+  # not provenance: the install checksummed the release artifact, nothing here re-proves it). A pin that is
+  # not intact is not judged, never replaced by another release's map. `broot` (the global
+  # install) still answers which user-root entries and personal skills are the baseline's links.
+  shipped="$( (_ad_pin_shipped "$root") 2>/dev/null )" || pinrc=$?
+  case "$pinrc" in
+    0) msrc=pin
+       map="$( (_ad_map_from_shipped "$shipped" "") 2>/dev/null )" || why="the pinned payload's superseded-name map is unreadable" ;;
+    1) shipped=""
+       if [ -z "$broot" ]; then
+         why="no installed baseline found"
+       elif ! shipped="$( (cmd_shipped "$broot") 2>/dev/null )" || [ -z "$shipped" ]; then
+         why="the shipped set is unreadable"
+       elif ! map="$( (cmd_supersedes "$broot") 2>/dev/null )"; then
+         why="the superseded-name map is unreadable"
+       fi ;;
+    *) why="the project's pinned payload is not intact: a recorded skill is missing or edited, or the pin or its receipt is unreadable" ;;
+  esac
   if [ -n "$why" ]; then
     _ad_wf_rec unknown - - - agent "could not read what the baseline ships ($why) — workflows not judged"
     _ad_wf_rec summary - - - - "roots=$roots skills=0 mapped=0 same-name=0 exempt=0 unmapped=0 unknown=1; map=not read; $ug"
@@ -2335,15 +2555,21 @@ cmd_workflows() {
   while IFS="$TAB" read -r kind name agent src; do
     [ "$kind" = skill ] || continue
     ships["$agent/$name"]="$src"; shipn["$name"]=1
+    # A pin vendors only Claude and Codex, and every agent ships the same skill set (the map reader
+    # proved it for the pinned ones), so every selected agent is judged against the same names.
+    if [ "$msrc" = pin ]; then for a in ${agents//,/ }; do ships["$a/$name"]="$src"; done; fi
   done <<< "$shipped"
   local ver
-  ver="$(git -C "$broot" describe --tags --always 2>/dev/null)" || ver=""
-  case "$ver" in ''|*[!A-Za-z0-9._+-]*) ver="unversioned" ;; esac
+  if [ "$msrc" = pin ]; then
+    ver="$(_ad_pin_version "$root"), from the project's pin"
+  else
+    ver="$(git -C "$broot" describe --tags --always 2>/dev/null)" || ver=""
+    case "$ver" in ''|*[!A-Za-z0-9._+-]*) ver="unversioned" ;; esac
+  fi
 
-  # NESTED PROJECT ROOTS — Claude's `<subdir>/.claude/skills`, Codex's `.agents/skills` up the
-  # working-directory ancestry — are not walked here (owner decision 2026-11-03: #535's second PR),
-  # so the trailer says so rather than letting a zero read as coverage.
-  local nested="nested=not evaluated (not yet modelled)"
+  # NESTED PROJECT ROOTS (the scan walks them): the trailer counts the skills found below the top
+  # level, or says they were not judged when the tree walk failed.
+  local nnest=0 nested=""
 
   local nsk=0 nmapped=0 nsame=0 nex=0 nun=0 nunk=0 npin=0 cls tgt r_ nsub
   local retire="then retire it to .ai-dev-baseline/retired/<date>/ in a normal PR"
@@ -2353,7 +2579,13 @@ cmd_workflows() {
         # Our own warnings name only the skill-root table and an agent token, so they are kept as
         # evidence; any other warning may carry scanned text and is not repeated.
         case "$rel" in
-          "the skill root "*|"a skill directory under "*|"the agent directory "*)
+          "the skill root "*|"a skill directory under "*|"the agent directory "*|"the project tree "*|"a nested skill root "*)
+            # Any of these leaves nested skills uncounted, so the trailer never shows a measured zero.
+            case "$rel" in
+              "the project tree could not be walked"*) nested="nested=not judged (the project tree could not be walked)" ;;
+              "the skill root "*|"a nested skill root "*|*"under a nested skill root "*)
+                [ -n "$nested" ] || nested="nested=not judged (a skill root could not be read)" ;;
+            esac
             _ad_wf_rec unknown - - - agent "$rel — not judged" ;;
           *) _ad_wf_rec unknown - - - agent "a scanned path could not be represented and was not judged" ;;
         esac
@@ -2411,6 +2643,11 @@ cmd_workflows() {
       *) continue ;;
     esac
     nsk=$((nsk + 1))
+    # NESTED means under one of this agent's nested roots below the top level; a top-level skill or
+    # a legacy `.claude/commands` file is not.
+    local top_=1 nd_
+    nd_="$(adb_agent_nested_skill_dirs "$agent")"
+    if [ -n "$nd_" ]; then case "$rel" in */"$nd_"/*) top_=""; nnest=$((nnest + 1)) ;; esac; fi
     case "$rel$name$agent" in
       *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "a skill path outside the closed charset was not judged"; continue ;;
     esac
@@ -2423,9 +2660,10 @@ cmd_workflows() {
       nsame=$((nsame + 1))
       cls=shadows
       # Claude runs a PERSONAL skill over a same-named project one, so while the baseline's own
-      # link is installed there the project copy never runs. Other agents list both copies.
+      # link is installed there the project copy never runs. Other agents list both copies, and so
+      # does Claude for a NESTED one (as `<dir>:<name>`), which is why only a top-level copy counts.
       # The link must RESOLVE to a readable skill: a dangling one proves nothing about what runs.
-      if [ "$agent" = claude ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \
+      if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \
          && [ -f "$HOME/.claude/skills/$name/SKILL.md" ] && [ -r "$HOME/.claude/skills/$name/SKILL.md" ]; then cls=duplicates; fi
       if [ "$cls" = duplicates ]; then
         _ad_wf_rec duplicates "$rel" "$agent" "$name" owner "same name as a baseline skill, whose installed personal copy runs instead — this copy never runs; $retire"
@@ -2446,7 +2684,8 @@ cmd_workflows() {
   # a finding). A baseline name with no project copy routes to the baseline, so it is not one. A
   # name ends at a character no skill name carries, or at a `.` that does not continue one
   # (`/implement.` and `/implement...` end a sentence; `/implement.foo`, `/implement..x` and
-  # `/implement./f` do not).
+  # `/implement./f` do not). Claude's directory-qualified form for a nested skill,
+  # `/<subdir path>:<name>` (`/apps/web:deploy`, code.claude.com/docs/en/skills), routes too.
   # Fenced blocks and HTML comments are not prose (adb_md_prose); inline code is, because "run
   # `/implement 12`" is still an instruction. Only <doc>:<line> and the name are emitted.
   local -A pnames=() mnames=()
@@ -2465,7 +2704,7 @@ cmd_workflows() {
     fi
     hits_="$(printf '%s\n' "$prose_" | LC_ALL=C awk -v names="$pt_list" '
       BEGIN { k = split(names, N, " ")
-              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-][/$]" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
+              for (i = 1; i <= k; i++) { re = N[i]; gsub(/\./, "[.]", re); R[i] = "[^A-Za-z0-9_.~/$-]([/]([^[:space:]:/]+[/])*[^[:space:]:/]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])" } }
       { l = " " $0 " "; for (i = 1; i <= k; i++) if (match(l, R[i])) print NR "\t" N[i] }')" || {
       nunk=$((nunk + 1)); _ad_wf_rec unknown - - - agent "the root doc $doc_ could not be searched — its pointers were not judged"
       continue
@@ -2480,7 +2719,7 @@ cmd_workflows() {
 
   # --- mirror: a TRACKED */SKILL.md outside every discovery root, named like a finding -----------
   # Tracked only (git ls-files), so a local run and CI agree. Excluded: every agent's project skill
-  # roots (the scan's business), nested roots (not evaluated yet), the retirement folder the remedy
+  # roots and nested roots (the scan's business), the retirement folder the remedy
   # points at, and — when the project IS the baseline — the baseline's own rendered skills. The INDEX
   # is the authority, not the working tree: a staged file whose working copy was deleted still ships.
   # Only `*SKILL.md` paths are listed, so memory follows the candidates, not the repository.
@@ -2498,16 +2737,21 @@ cmd_workflows() {
   fi
   if [ -n "$gitok" ]; then
     local -a tracked_=()
-    local self_="" t_ d_ mn_ allroots_="" ag_
+    local self_="" t_ d_ mn_ allroots_="" ag_ shipags_="" k_
+    # The agents of the shipped set the map came from: with a pin and no global install, those are
+    # the only record of which agents the baseline ships.
+    for k_ in "${!ships[@]}"; do case " $shipags_ " in *" ${k_%%/*} "*) ;; *) shipags_="$shipags_ ${k_%%/*}" ;; esac; done
     local -A mseen_=()
     # The project IS a baseline checkout — the installed clone, or another clone of it (a
-    # development checkout beside the install): its rendered agents/*/skills are the product.
-    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } \
-       || { [ -f "$root/install.sh" ] && [ -d "$root/agents" ] && [ -d "$root/base/workflows" ]; }; then self_=1; fi
+    # development checkout beside the install), proved by shared history, never by a layout an
+    # unrelated repository can copy: its rendered agents/*/skills are the product.
+    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || _ad_same_history "$root" "$broot"; then self_=1; fi
     # Every skill root ANY agent loads — the selected agents and every agent the baseline ships —
     # read from the one table, so a root is never also reported as a mirror of itself.
-    for ag_ in ${agents//,/ } $(_ad_agents_from_baseline "$broot"); do
+    local nestroots_=""
+    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot") ${shipags_}; do
       allroots_="$allroots_ .$ag_/skills $(adb_agent_project_skill_dirs "$ag_")"
+      nestroots_="$nestroots_ $(adb_agent_nested_skill_dirs "$ag_")"
     done
     mapfile -d '' -t tracked_ < <(
       cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
@@ -2527,8 +2771,9 @@ cmd_workflows() {
         esac
         [ -n "$self_" ] && case "$t_" in agents/*/skills/*) continue ;; esac
         local inr_=""
-        # A root at the top, or NESTED below it (not evaluated yet): either way not a mirror.
-        for r_ in $allroots_; do case "$t_" in "$r_"/*|*/"$r_"/*) inr_=1 ;; esac; done
+        # A root at the top, or a NESTED root the scan walks: either way the scan's, not a mirror.
+        for r_ in $allroots_; do case "$t_" in "$r_"/*) inr_=1 ;; esac; done
+        for r_ in $nestroots_; do case "$t_" in */"$r_"/*) inr_=1 ;; esac; done
         [ -z "$inr_" ] || continue
         # An unmerged index lists a path once per conflict stage: one path, one finding.
         [ -z "${mseen_[$t_]:-}" ] || continue
@@ -2598,6 +2843,7 @@ cmd_workflows() {
     ug="user-global=$nug"
   fi
 
+  [ -n "$nested" ] || nested="nested=$nnest"
   _ad_wf_rec summary - - - - "roots=$roots skills=$nsk mapped=$nmapped same-name=$nsame exempt=$nex unmapped=$nun pins=$npin pointers=$npt ${mirror} unknown=$nunk; map=$nmap names from $nwf workflows ($ver); $nested; $ug"
   [ "$nunk" -eq 0 ] || return 11
   [ $((nmapped + nsame + nun + npin + npt + nmir + nug)) -eq 0 ] || return 10
