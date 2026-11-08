@@ -2989,38 +2989,45 @@ _ad_conf_rec() {  # <class> <rule> <site> <deviation> <detail> — a control byt
 # _ad_deviations <decisions-file> — one `<id>TAB<audit-rule>TAB<missing>` line per DEVIATION entry
 # that names an `audit-rule`, read from PROSE only (an example in a fence declares nothing).
 # <missing> is `-`, or the comma-joined problems: a required field absent or empty, a field given
-# twice (`twice:<field>`), a value carrying a tab or control byte (`control:<field>`), or an id
-# another DEVIATION also uses (`duplicate-id`). Every line has exactly three fields, so a consumer
-# reading <missing> reads the whole verdict. rc 1 = the file could not be read whole.
+# twice (`twice:<field>`), a `date` that is not YYYY-MM-DD, an empty title, an id or audit-rule outside its grammar (`bad-id`, printed as
+# id `-`; `bad-audit-rule`), or an id another DEVIATION heading also uses (`duplicate-id`). An entry
+# ends at the next level-1 or level-2 heading. Every printed field is in a closed charset, so each
+# line has exactly three. rc 1 = the file could not be read whole.
 _ad_deviations() {
   local f="$1" prose
   [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f" || return 1
   prose="$(adb_md_prose text < "$f" 2>/dev/null)" || return 1
   printf '%s\n' "$prose" | LC_ALL=C awk '
     function add(m, w) { return m (m == "" ? "" : ",") w }
-    function flush(  i, miss, req) {
+    function flush(  i, miss, req, r) {
       if (id != "" && ("audit-rule" in F)) {
         split("date category baseline-rule conflict scope reason", req, " "); miss = bad
         for (i = 1; i <= 6; i++) if (!(req[i] in F) || F[req[i]] == "") miss = add(miss, req[i])
         if (("category" in F) && F["category"] != "deviation" && F["category"] != "") miss = add(miss, "category")
-        n++; RID[n] = id; RRULE[n] = F["audit-rule"]; RMISS[n] = miss; seen[id]++
+        if (F["date"] != "" && F["date"] !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/) miss = add(miss, "date")
+        r = F["audit-rule"]; if (r !~ /^[a-z0-9][a-z0-9-]*$/) { r = "-"; miss = add(miss, "bad-audit-rule") }
+        n++; RID[n] = id; RRULE[n] = r; RMISS[n] = miss
       }
       id = ""; bad = ""; delete F
     }
-    /^## / { flush()
-             h = substr($0, 4)
-             if (match(h, /^[^ ]+ (—|-) DEVIATION: /)) { id = h; sub(/ .*/, "", id) }
-             next }
+    /^##? / { flush()
+              h = $0; sub(/^##? /, "", h)
+              if (match(h, /^[^ ]+ (—|-) DEVIATION:/)) {
+                id = h; sub(/ .*/, "", id); t = h; sub(/^[^ ]+ (—|-) DEVIATION:[ \t]*/, "", t)
+                if (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) { id = "-"; bad = "bad-id" }
+                else seen[id]++
+                if (t ~ /^[ \t]*$/) bad = add(bad, "title")
+              }
+              next }
     id != "" && /^- [a-z-]+:/ {
       k = $0; sub(/^- /, "", k); sub(/:.*/, "", k)
       v = $0; sub(/^- [a-z-]+:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
       if (k in F) { bad = add(bad, "twice:" k); next }
-      if (v ~ /[\001-\037\177]/) { bad = add(bad, "control:" k); v = "" }
       F[k] = v
     }
     END { flush()
           for (i = 1; i <= n; i++) {
-            m = RMISS[i]; if (seen[RID[i]] > 1) m = add(m, "duplicate-id")
+            m = RMISS[i]; if (RID[i] != "-" && seen[RID[i]] > 1) m = add(m, "duplicate-id")
             print RID[i] "\t" (RRULE[i] == "" ? "-" : RRULE[i]) "\t" (m == "" ? "-" : m)
           } }'
 }
@@ -3061,7 +3068,7 @@ cmd_conformance() {
   fi
   while IFS="$TAB" read -r id rule miss; do
     [ -n "$id" ] && [ "$dev_ok" -eq 1 ] || continue
-    if ! [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! [[ "$rule" =~ ^[a-z0-9-]+$ ]]; then
+    if [ "$id" = - ] || [ "$rule" = - ]; then
       nref=$((nref + 1)); _ad_conf_rec refused - .ai-dev-baseline/decisions.md - "a DEVIATION's id or audit-rule is not a plain token — not honoured"; continue
     fi
     case " $_AD_CONF_RULES " in
@@ -3093,11 +3100,11 @@ cmd_conformance() {
     gmd="$gm"; case "$gmd" in "${HOME:-/nonexistent}"/*) gmd="~${gmd#"$HOME"}" ;; esac
     gmd="${gmd//[[:space:][:cntrl:],]/_}"
     files="${files:+$files,}$gmd"
-    _ad_conf_rec scanned same-model-review "$gmd" - "the global manifest — [roles] it declares apply where the project's agents.toml is silent"
+    _ad_conf_rec scanned same-model-review "$gmd" - "the global manifest, present — the roles reader consults it for any role the project's agents.toml does not declare"
   fi
   # The roles reader resolves the manifest from the repository top level; a root below it would be
   # judged by another project's file.
-  top="$(cd "$root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || top=""
+  top="$(cd "$root" 2>/dev/null && adb_repo_root)" || top=""
   if [ -n "$top" ] && ! [ "$top" -ef "$root" ]; then
     rung="unknown project-root-is-not-the-repository-top-level"; rrc=2
   else
@@ -3143,7 +3150,7 @@ cmd_conformance() {
     fi
     case "$pend" in
       END-WHOLE|END-UNKNOWN)
-        files="${files:+$files,}workflows-record"
+        files="${files:+$files,}${wf//[[:space:][:cntrl:],]/_}"
         _ad_conf_rec scanned root-doc-workflow - - "the workflows record's stale-pointer findings (CLAUDE.md, AGENTS.md, GEMINI.md prose)"
         while IFS="$TAB" read -r site remedy; do
           [ -n "$site" ] || continue

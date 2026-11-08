@@ -1445,7 +1445,7 @@ dev_entry() {  # <id> <audit-rule> [omit-field]
   printf '## %s — DEVIATION: one licence\n' "$1"
   for f_ in date category baseline-rule conflict scope reason; do
     [ "$f_" = "${3:-}" ] && continue
-    case "$f_" in category) printf -- '- category:      deviation\n' ;; *) printf -- '- %s: value\n' "$f_" ;; esac
+    case "$f_" in category) printf -- '- category:      deviation\n' ;; date) printf -- '- date: 2026-11-01\n' ;; *) printf -- '- %s: value\n' "$f_" ;; esac
   done
   printf -- '- audit-rule:    %s\n\n' "$2"
 }
@@ -1479,6 +1479,20 @@ has "$(cf "$CF1")" "refused${TAB}same-model-review${TAB}.ai-dev-baseline/decisio
     "conformance: a DEVIATION giving a field twice is refused, never read by its first value"
 { dev_entry D13 same-model-review; dev_entry D13 same-model-review; } > "$CF1/.ai-dev-baseline/decisions.md"
 eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: two DEVIATIONs sharing an id clear nothing"
+# ...an id carrying tabs, a duplicate id on a heading with no audit-rule, a field taken from the
+# section after the entry, a malformed date and an empty title are each refused too.
+{ printf '## D21%ssame-model-review%s- — DEVIATION: tabbed\n' "$TAB" "$TAB"; dev_entry X same-model-review reason | sed 1d; } > "$CF1/.ai-dev-baseline/decisions.md"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$WORK/an-tabid.tsv" --decisions "$CF1/.ai-dev-baseline/decisions.md" primary=claude review=claude review-deviation=D21 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a DEVIATION heading whose id carries tabs is refused"
+eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: ...and clears nothing"
+{ dev_entry D22 same-model-review; printf '## D22 — DEVIATION: another\n- date: 2026-11-01\n\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
+eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: an id shared with a DEVIATION that names no audit-rule is still a duplicate"
+{ dev_entry D23 same-model-review reason; printf '# Other section\n- reason: borrowed\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
+eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: a field from the section after the entry does not complete it"
+dev_entry D24 same-model-review | sed 's/^- date: 2026-11-01$/- date: not-a-date/' > "$CF1/.ai-dev-baseline/decisions.md"
+has "$(cf "$CF1")" "D24${TAB}the DEVIATION is missing date" "conformance: a DEVIATION whose date is not YYYY-MM-DD is refused"
+dev_entry D25 same-model-review | sed 's/DEVIATION: one licence$/DEVIATION:/' > "$CF1/.ai-dev-baseline/decisions.md"
+has "$(cf "$CF1")" "D25${TAB}the DEVIATION is missing title" "conformance: a DEVIATION with an empty title is refused"
 # A decision-log directory that cannot be searched is not "no decision log".
 dev_entry D3 same-model-review > "$CF1/.ai-dev-baseline/decisions.md"
 chmod 000 "$CF1/.ai-dev-baseline"
@@ -3124,9 +3138,9 @@ shmutant_mut conformance-unknown-drops-pointers \
     '      END-WHOLE|END-UNKNOWN)' \
     '      END-WHOLE)' \
     'conformance: ...and the pointers it did establish are still reported'
-shmutant_mut deviation-control-byte-accepted \
-    '      if (v ~ /[\001-\037\177]/) { bad = add(bad, "control:" k); v = "" }' \
-    '      if (0) { bad = add(bad, "control:" k); v = "" }' \
+shmutant_mut deviation-audit-rule-grammar-unchecked \
+    '        r = F["audit-rule"]; if (r !~ /^[a-z0-9][a-z0-9-]*$/) { r = "-"; miss = add(miss, "bad-audit-rule") }' \
+    '        r = F["audit-rule"]' \
     'answers: a deviation whose audit-rule carries a tab is refused'
 shmutant_mut deviation-unsearchable-is-absent \
     '  if ! _ad_parents_searchable "$root" .ai-dev-baseline/decisions.md; then' \
@@ -3136,6 +3150,22 @@ shmutant_mut conformance-link-read \
     '    if [ -f "$wf" ] && [ ! -L "$wf" ] && head -c 1073741825' \
     '    if [ -f "$wf" ] && head -c 1073741825' \
     'conformance: a linked workflows record is refused'
+shmutant_mut deviation-tabbed-id-accepted \
+    '                if (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) { id = "-"; bad = "bad-id" }' \
+    '                if (0) { id = "-"; bad = "bad-id" }' \
+    'answers: a DEVIATION heading whose id carries tabs is refused'
+shmutant_mut deviation-duplicate-counts-audited-only \
+    '                else seen[id]++' \
+    '                else seen[""]++' \
+    'conformance: an id shared with a DEVIATION that names no audit-rule is still a duplicate'
+shmutant_mut deviation-entry-runs-past-h1 \
+    '    /^##? / { flush()' \
+    '    /^## / { flush()' \
+    'conformance: a field from the section after the entry does not complete it'
+shmutant_mut deviation-date-unchecked \
+    '        if (F["date"] != "" && F["date"] !~' \
+    '        if (0 && F["date"] !~' \
+    'conformance: a DEVIATION whose date is not YYYY-MM-DD is refused'
 shmutant_mut answers-deviation-unverified \
     '    printf '"'"'%s\n'"'"' "$devs" | LC_ALL=C awk' \
     '    true || LC_ALL=C awk' \
