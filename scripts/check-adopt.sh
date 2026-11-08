@@ -1466,6 +1466,28 @@ has "$cfo" "refused${TAB}same-model-review${TAB}.ai-dev-baseline/decisions.md${T
 cfo="$(cf "$CF1")"
 has "$cfo" "refused${TAB}root-doc-workflow${TAB}.ai-dev-baseline/decisions.md${TAB}D5${TAB}a DEVIATION cannot clear" "conformance: a DEVIATION never clears root-doc-workflow (policy:one-baseline)"
 has "$cfo" "refused${TAB}no-such-rule${TAB}" "conformance: a DEVIATION naming an unknown rule is refused"
+# ONE READER, the whole record: a tab smuggled into a value, a field given twice and an id used by
+# two DEVIATIONs are each refused, so neither consumer can read a partial verdict as a clean one.
+{ dev_entry D11 same-model-review reason | sed "s/^- audit-rule:    same-model-review$/- audit-rule: same-model-review${TAB}-/"; } > "$CF1/.ai-dev-baseline/decisions.md"
+cfo="$(cf "$CF1")"; cfrc=$?
+eq "$cfrc" 10 "conformance: a tab smuggled into audit-rule does not clear the finding"
+has "$cfo" "refused${TAB}" "conformance: ...the entry is refused"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$WORK/an-tab.tsv" --decisions "$CF1/.ai-dev-baseline/decisions.md" primary=claude review=claude review-deviation=D11 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a deviation whose audit-rule carries a tab is refused, as conformance refuses it"
+{ dev_entry D12 same-model-review; printf -- '- category: general\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
+has "$(cf "$CF1")" "refused${TAB}same-model-review${TAB}.ai-dev-baseline/decisions.md${TAB}D12${TAB}the DEVIATION is missing twice:category" \
+    "conformance: a DEVIATION giving a field twice is refused, never read by its first value"
+{ dev_entry D13 same-model-review; dev_entry D13 same-model-review; } > "$CF1/.ai-dev-baseline/decisions.md"
+eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: two DEVIATIONs sharing an id clear nothing"
+# A decision-log directory that cannot be searched is not "no decision log".
+dev_entry D3 same-model-review > "$CF1/.ai-dev-baseline/decisions.md"
+chmod 000 "$CF1/.ai-dev-baseline"
+if [ -r "$CF1/.ai-dev-baseline" ]; then ok; else
+  cfo="$(cf "$CF1")"; cfrc=$?
+  eq "$cfrc" 11 "conformance: an unsearchable .ai-dev-baseline is not judged (exit 11), never 'no decision log'"
+  hasnt "$cfo" "no decision log" "conformance: ...and it does not claim the log is absent"
+fi
+chmod 755 "$CF1/.ai-dev-baseline"
 printf 'x\000y\n' > "$CF1/.ai-dev-baseline/decisions.md"
 cfo="$(cf "$CF1")"; cfrc=$?
 eq "$cfrc" 11 "conformance: an unreadable decision log is not judged in full (exit 11)"
@@ -1483,6 +1505,11 @@ has "$cfo" "rules=same-model-review,root-doc-workflow " "conformance: with --wor
 printf '%s\n' "$pto" | grep -v "^summary${TAB}" > "$WORK/conf-wf-cut.tsv"
 eq "$(cf "$CF2" --workflows "$WORK/conf-wf-cut.tsv" >/dev/null; echo $?)" 11 "conformance: a workflows record with no summary is not judged (exit 11)"
 { printf '%s\n' "$pto" | grep -v "^summary${TAB}"; printf 'unknown\t-\t-\t-\tagent\tnot judged\n'; printf '%s\n' "$pto" | grep "^summary${TAB}"; } > "$WORK/conf-wf-unk.tsv"
+# A FIFO or a link is refused before a byte is read: a FIFO would block the audit.
+mkfifo "$WORK/conf-wf.fifo" 2>/dev/null && \
+  eq "$(cf "$CF2" --workflows "$WORK/conf-wf.fifo" >/dev/null; echo $?)" 11 "conformance: a FIFO workflows record is refused without reading it"
+ln -s "$WORK/conf-wf.tsv" "$WORK/conf-wf-link.tsv"
+eq "$(cf "$CF2" --workflows "$WORK/conf-wf-link.tsv" >/dev/null; echo $?)" 11 "conformance: a linked workflows record is refused"
 cfo="$(cf "$CF2" --workflows "$WORK/conf-wf-unk.tsv")"; cfrc=$?
 eq "$cfrc" 11 "conformance: a workflows record holding an unknown is not judged in full"
 has "$cfo" "finding${TAB}root-doc-workflow${TAB}CLAUDE.md:3${TAB}" "conformance: ...and the pointers it did establish are still reported"
@@ -3097,6 +3124,18 @@ shmutant_mut conformance-unknown-drops-pointers \
     '      END-WHOLE|END-UNKNOWN)' \
     '      END-WHOLE)' \
     'conformance: ...and the pointers it did establish are still reported'
+shmutant_mut deviation-control-byte-accepted \
+    '      if (v ~ /[\001-\037\177]/) { bad = add(bad, "control:" k); v = "" }' \
+    '      if (0) { bad = add(bad, "control:" k); v = "" }' \
+    'answers: a deviation whose audit-rule carries a tab is refused'
+shmutant_mut deviation-unsearchable-is-absent \
+    '  if ! _ad_parents_searchable "$root" .ai-dev-baseline/decisions.md; then' \
+    '  if false; then' \
+    "conformance: an unsearchable .ai-dev-baseline is not judged"
+shmutant_mut conformance-link-read \
+    '    if [ -f "$wf" ] && [ ! -L "$wf" ] && head -c 1073741825' \
+    '    if [ -f "$wf" ] && head -c 1073741825' \
+    'conformance: a linked workflows record is refused'
 shmutant_mut answers-deviation-unverified \
     '    printf '"'"'%s\n'"'"' "$devs" | LC_ALL=C awk' \
     '    true || LC_ALL=C awk' \

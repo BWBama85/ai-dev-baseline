@@ -2988,21 +2988,24 @@ _ad_conf_rec() {  # <class> <rule> <site> <deviation> <detail> — a control byt
 
 # _ad_deviations <decisions-file> — one `<id>TAB<audit-rule>TAB<missing>` line per DEVIATION entry
 # that names an `audit-rule`, read from PROSE only (an example in a fence declares nothing).
-# <missing> is `-`, or the comma-joined required fields that are absent or empty. rc 1 = the file
-# could not be read whole.
+# <missing> is `-`, or the comma-joined problems: a required field absent or empty, a field given
+# twice (`twice:<field>`), a value carrying a tab or control byte (`control:<field>`), or an id
+# another DEVIATION also uses (`duplicate-id`). Every line has exactly three fields, so a consumer
+# reading <missing> reads the whole verdict. rc 1 = the file could not be read whole.
 _ad_deviations() {
   local f="$1" prose
   [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f" || return 1
   prose="$(adb_md_prose text < "$f" 2>/dev/null)" || return 1
   printf '%s\n' "$prose" | LC_ALL=C awk '
+    function add(m, w) { return m (m == "" ? "" : ",") w }
     function flush(  i, miss, req) {
       if (id != "" && ("audit-rule" in F)) {
-        split("date category baseline-rule conflict scope reason", req, " "); miss = ""
-        for (i = 1; i <= 6; i++) if (!(req[i] in F) || F[req[i]] == "") miss = miss (miss == "" ? "" : ",") req[i]
-        if (("category" in F) && F["category"] != "deviation" && F["category"] != "") miss = miss (miss == "" ? "" : ",") "category"
-        print id "\t" F["audit-rule"] "\t" (miss == "" ? "-" : miss)
+        split("date category baseline-rule conflict scope reason", req, " "); miss = bad
+        for (i = 1; i <= 6; i++) if (!(req[i] in F) || F[req[i]] == "") miss = add(miss, req[i])
+        if (("category" in F) && F["category"] != "deviation" && F["category"] != "") miss = add(miss, "category")
+        n++; RID[n] = id; RRULE[n] = F["audit-rule"]; RMISS[n] = miss; seen[id]++
       }
-      id = ""; delete F
+      id = ""; bad = ""; delete F
     }
     /^## / { flush()
              h = substr($0, 4)
@@ -3011,9 +3014,15 @@ _ad_deviations() {
     id != "" && /^- [a-z-]+:/ {
       k = $0; sub(/^- /, "", k); sub(/:.*/, "", k)
       v = $0; sub(/^- [a-z-]+:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
-      if (!(k in F)) F[k] = v
+      if (k in F) { bad = add(bad, "twice:" k); next }
+      if (v ~ /[\001-\037\177]/) { bad = add(bad, "control:" k); v = "" }
+      F[k] = v
     }
-    END { flush() }'
+    END { flush()
+          for (i = 1; i <= n; i++) {
+            m = RMISS[i]; if (seen[RID[i]] > 1) m = add(m, "duplicate-id")
+            print RID[i] "\t" (RRULE[i] == "" ? "-" : RRULE[i]) "\t" (m == "" ? "-" : m)
+          } }'
 }
 
 cmd_conformance() {
@@ -3036,7 +3045,10 @@ cmd_conformance() {
   # --- the decision log: which rules a recorded DEVIATION speaks for ---------------------------------
   local -A cleared=()
   local dlog="$root/.ai-dev-baseline/decisions.md" devs="" dev_ok=1
-  if [ -e "$dlog" ] || [ -L "$dlog" ]; then
+  if ! _ad_parents_searchable "$root" .ai-dev-baseline/decisions.md; then
+    dev_ok=0; nunk=$((nunk + 1))
+    _ad_conf_rec unknown - .ai-dev-baseline/decisions.md - "the .ai-dev-baseline directory cannot be searched — whether a decision log exists is unknown, so no DEVIATION was honoured"
+  elif [ -e "$dlog" ] || [ -L "$dlog" ]; then
     if devs="$(_ad_deviations "$dlog")"; then
       files="${files:+$files,}.ai-dev-baseline/decisions.md"
       _ad_conf_rec scanned - .ai-dev-baseline/decisions.md - "decision log read for DEVIATION entries naming an audit-rule"
@@ -3048,7 +3060,7 @@ cmd_conformance() {
     _ad_conf_rec scanned - .ai-dev-baseline/decisions.md - "no decision log — no DEVIATION recorded"
   fi
   while IFS="$TAB" read -r id rule miss; do
-    [ -n "$id" ] || continue
+    [ -n "$id" ] && [ "$dev_ok" -eq 1 ] || continue
     if ! [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! [[ "$rule" =~ ^[a-z0-9-]+$ ]]; then
       nref=$((nref + 1)); _ad_conf_rec refused - .ai-dev-baseline/decisions.md - "a DEVIATION's id or audit-rule is not a plain token — not honoured"; continue
     fi
@@ -3119,11 +3131,16 @@ cmd_conformance() {
     # read's status is checked, and a pointer already established survives an incomplete scan.
     local snap ptrs="" pend="" site
     snap="$(mktemp "${TMPDIR:-/tmp}/adopt-conf.XXXXXX")" || die "conformance: could not create a private snapshot"
-    if cp "$wf" "$snap" 2>/dev/null && [ "$(cmd_wclass "$snap" - - 2>/dev/null)" = none ] \
+    # Regular and not a link before a byte is read (a FIFO would block), and the copy itself is
+    # bounded one byte past the limit `wclass` enforces, so an oversized record cannot fill the disk.
+    if [ -f "$wf" ] && [ ! -L "$wf" ] && head -c 1073741825 "$wf" > "$snap" 2>/dev/null \
+       && [ "$(cmd_wclass "$snap" - - 2>/dev/null)" = none ] \
        && ptrs="$(LC_ALL=C awk -F'\t' '$1 == "unknown" { u = 1 } $1 == "stale-pointer" { print $2 "\t" $6 } END { print (u ? "END-UNKNOWN" : "END-WHOLE") }' "$snap")"; then
       pend="${ptrs##*$'\n'}"; [ "$pend" = "$ptrs" ] && ptrs="" || ptrs="${ptrs%$'\n'*}"
     fi
-    rm -f "$snap"
+    if ! rm -f "$snap" 2>/dev/null || [ -e "$snap" ]; then
+      nunk=$((nunk + 1)); _ad_conf_rec unknown root-doc-workflow - - "the private snapshot of the workflows record could not be removed"
+    fi
     case "$pend" in
       END-WHOLE|END-UNKNOWN)
         files="${files:+$files,}workflows-record"
