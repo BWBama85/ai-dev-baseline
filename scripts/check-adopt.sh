@@ -1395,6 +1395,111 @@ else
   bad "could not copy the tree for the build-time map rules"
 fi
 
+# --- 4f. conformance (#301): the project's own instructions, against the baseline ------------------
+# Two rules today (D152): same-model-review (the CONFIGURED review rung, clearable by a recorded
+# DEVIATION) and root-doc-workflow (the workflows record's stale-pointers, never clearable).
+CFH="$WORK/conf-home"; mkdir -p "$CFH"
+cf() { HOME="$CFH" bash "$AD" conformance "$@"; }
+cfrepo() {  # <dir> <agents.toml text> — a git repository whose top level is <dir>
+  mkdir -p "$1"; git -C "$1" init -q >/dev/null 2>&1; printf '%s' "$2" > "$1/agents.toml"
+}
+CF1="$WORK/conf-same"; cfrepo "$CF1" "$(printf '[roles]\nprimary = "claude"\nreview = ["claude"]\n')"
+cfo="$(cf "$CF1")"; cfrc=$?
+eq "$cfrc" 10 "conformance: primary = claude, review = [claude] is a finding (exit 10)"
+has "$cfo" "finding${TAB}same-model-review${TAB}agents.toml${TAB}-${TAB}SAME-MODEL only" "conformance: the same-model finding names its rule and file"
+REMEDY="$(bash "$ROOT/scripts/lib/role-dispatch.sh" rung-remedy same-model)"
+has "$cfo" "$REMEDY" "conformance: the remedy is the one agent-init prints (role-dispatch.sh rung-remedy)"
+has "$(cat "$ROOT/bin/agent-init")" "rung-remedy same-model" "agent-init: the same-model remedy comes from rung-remedy, not its own copy"
+hasnt "$cfo" "not declared" "conformance: a DECLARED same-model review does not claim it was undeclared"
+has "$cfo" "rules=same-model-review,root-doc-workflow=not-evaluated" "conformance: the trailer names every rule, evaluated or not"
+has "$cfo" "files=agents.toml" "conformance: the trailer names the files it read"
+eq "$(printf '%s\n' "$cfo" | tail -n 1 | cut -f1)" summary "conformance: the summary record is last"
+eq "$(cf "$CF1")" "$cfo" "conformance: a re-run prints the same records (nothing new on an audited project)"
+
+# THE CONFIGURED RUNG, not the live one: with no agent CLI on PATH the live ladder says `none`, and
+# the audit must still see the same-model configuration.
+CFBIN="$WORK/conf-bin"; mkdir -p "$CFBIN"
+for t_ in bash git awk sed tr cat mktemp dirname basename wc grep head tail cut rm sort uniq env date mv cp ls \
+          chmod stat od readlink ln mkdir rmdir find xargs id uname tee touch cmp; do
+  p_="$(command -v "$t_")" && ln -sf "$p_" "$CFBIN/$t_"
+done
+eq "$(cd "$CF1" && PATH="$CFBIN" HOME="$CFH" "$CFBIN/bash" "$ROOT/scripts/lib/role-dispatch.sh" review-rung | cut -d' ' -f1)" none \
+   "conformance fixture: with no agent CLI on PATH the LIVE rung is none"
+eq "$(PATH="$CFBIN" HOME="$CFH" "$CFBIN/bash" "$AD" conformance "$CF1" >/dev/null 2>&1; echo $?)" 10 \
+   "conformance: the same-model finding does not depend on which agent CLIs are installed"
+
+CF2="$WORK/conf-indep"; cfrepo "$CF2" "$(printf '[roles]\nprimary = "claude"\nreview = ["claude", "codex"]\n')"
+cfo="$(cf "$CF2")"; cfrc=$?
+eq "$cfrc" 0 "conformance: a review list holding a different agent is independent (exit 0)"
+hasnt "$cfo" "${TAB}same-model-review${TAB}agents.toml${TAB}-${TAB}SAME" "conformance: ...and reports no same-model finding"
+has "$cfo" "findings=0" "conformance: a clean pass still prints its counts"
+
+CF3="$WORK/conf-unset"; cfrepo "$CF3" "$(printf '[roles]\nprimary = "codex"\n')"
+cfo="$(cf "$CF3")"; cfrc=$?
+eq "$cfrc" 10 "conformance: an undeclared review defaults to primary's own pass — a finding"
+has "$cfo" "is not declared in the project's agents.toml" "conformance: ...and says the review came from a lower layer"
+
+# A recorded DEVIATION clears it — prose only, every required field, and the audit-rule named.
+dev_entry() {  # <id> <audit-rule> [omit-field]
+  printf '## %s — DEVIATION: one licence\n' "$1"
+  for f_ in date category baseline-rule conflict scope reason; do
+    [ "$f_" = "${3:-}" ] && continue
+    case "$f_" in category) printf -- '- category:      deviation\n' ;; *) printf -- '- %s: value\n' "$f_" ;; esac
+  done
+  printf -- '- audit-rule:    %s\n\n' "$2"
+}
+mkdir -p "$CF1/.ai-dev-baseline"
+dev_entry D3 same-model-review > "$CF1/.ai-dev-baseline/decisions.md"
+cfo="$(cf "$CF1")"; cfrc=$?
+eq "$cfrc" 0 "conformance: a recorded DEVIATION for same-model-review clears the finding (exit 0)"
+has "$cfo" "deviation${TAB}same-model-review${TAB}agents.toml${TAB}D3${TAB}" "conformance: ...reported as a deviation naming its id"
+hasnt "$cfo" "finding${TAB}" "conformance: ...and not as a finding"
+eq "$(cf "$CF1")" "$cfo" "conformance: re-running does not re-flag a recorded deviation"
+{ printf '```\n'; dev_entry D9 same-model-review; printf '```\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
+eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: a DEVIATION inside a fenced block declares nothing"
+dev_entry D4 same-model-review reason > "$CF1/.ai-dev-baseline/decisions.md"
+cfo="$(cf "$CF1")"; cfrc=$?
+eq "$cfrc" 10 "conformance: a DEVIATION missing a required field does not clear the finding"
+has "$cfo" "refused${TAB}same-model-review${TAB}.ai-dev-baseline/decisions.md${TAB}D4${TAB}the DEVIATION is missing reason" "conformance: ...and is named as refused, with the missing field"
+{ dev_entry D5 root-doc-workflow; dev_entry D6 no-such-rule; } > "$CF1/.ai-dev-baseline/decisions.md"
+cfo="$(cf "$CF1")"
+has "$cfo" "refused${TAB}root-doc-workflow${TAB}.ai-dev-baseline/decisions.md${TAB}D5${TAB}a DEVIATION cannot clear" "conformance: a DEVIATION never clears root-doc-workflow (policy:one-baseline)"
+has "$cfo" "refused${TAB}no-such-rule${TAB}" "conformance: a DEVIATION naming an unknown rule is refused"
+printf 'x\000y\n' > "$CF1/.ai-dev-baseline/decisions.md"
+cfo="$(cf "$CF1")"; cfrc=$?
+eq "$cfrc" 11 "conformance: an unreadable decision log is not judged in full (exit 11)"
+has "$cfo" "finding${TAB}same-model-review" "conformance: ...and the finding is still reported, never cleared by a log it could not read"
+rm -f "$CF1/.ai-dev-baseline/decisions.md"
+
+# root-doc-workflow: the workflows record's stale-pointers — the fenced /implement in PTX's CLAUDE.md
+# was never a pointer, so it is no finding here either.
+printf '%s\n' "$pto" > "$WORK/conf-wf.tsv"
+cfo="$(cf "$CF2" --workflows "$WORK/conf-wf.tsv")"; cfrc=$?
+eq "$cfrc" 10 "conformance: a root-doc pointer in the workflows record is a finding (exit 10)"
+has "$cfo" "finding${TAB}root-doc-workflow${TAB}CLAUDE.md:3${TAB}-${TAB}" "conformance: the root-doc finding names its file and line"
+hasnt "$cfo" "CLAUDE.md:7" "conformance: an instruction inside a fenced block is not reported"
+has "$cfo" "rules=same-model-review,root-doc-workflow " "conformance: with --workflows the root-doc rule is evaluated"
+printf '%s\n' "$pto" | grep -v "^summary${TAB}" > "$WORK/conf-wf-cut.tsv"
+eq "$(cf "$CF2" --workflows "$WORK/conf-wf-cut.tsv" >/dev/null; echo $?)" 11 "conformance: a workflows record with no summary is not judged (exit 11)"
+{ printf '%s\n' "$pto" | grep -v "^summary${TAB}"; printf 'unknown\t-\t-\t-\tagent\tnot judged\n'; printf '%s\n' "$pto" | grep "^summary${TAB}"; } > "$WORK/conf-wf-unk.tsv"
+eq "$(cf "$CF2" --workflows "$WORK/conf-wf-unk.tsv" >/dev/null; echo $?)" 11 "conformance: a workflows record holding an unknown is not judged in full"
+
+# Every other way to be unsure is 11, and a bad invocation is 2.
+CF4="$WORK/conf-nested"; cfrepo "$CF4" "$(printf '[roles]\nprimary = "claude"\nreview = ["codex"]\n')"
+mkdir -p "$CF4/pkg"; printf '[roles]\nprimary = "claude"\n' > "$CF4/pkg/agents.toml"
+eq "$(cf "$CF4/pkg" >/dev/null; echo $?)" 11 "conformance: a root below its repository's top level is not judged (another file would answer)"
+CF5="$WORK/conf-bad"; cfrepo "$CF5" "$(printf '[roles]\nprimary = "claude"\nreview = ["nope"]\n')"
+eq "$(cf "$CF5" >/dev/null; echo $?)" 11 "conformance: an unreadable review rung is not judged (exit 11), never clean"
+CF6="$WORK/conf-none"; mkdir -p "$CF6"; git -C "$CF6" init -q >/dev/null 2>&1
+has "$(cf "$CF6")" "scanned${TAB}same-model-review${TAB}-${TAB}-${TAB}no project agents.toml" "conformance: with no agents.toml it says whose roles it judged"
+eq "$(cf >/dev/null 2>&1; echo $?)" 2 "conformance: no project root is usage (exit 2)"
+eq "$(cf "$CF2" --frob >/dev/null 2>&1; echo $?)" 2 "conformance: an unknown option is usage (exit 2)"
+eq "$(cf "$WORK/no-such-dir" >/dev/null 2>&1; echo $?)" 2 "conformance: a missing directory is usage (exit 2)"
+cfbefore="$(cd "$CF1" && find . -type f -not -path './.git/*' | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; cksum < "$f"; done)"
+cf "$CF1" >/dev/null 2>&1
+eq "$(cd "$CF1" && find . -type f -not -path './.git/*' | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; cksum < "$f"; done)" "$cfbefore" \
+   "conformance: the audit never alters the project it reads"
+
 # --- 5. the getrich inventory, end to end --------------------------------------------------------
 # #20's acceptance criterion, discharged against the SHAPE rather than the live repo (see the
 # header): remove the duplicated non-prescribed hook, keep the stack CLAUDE.md, keep the
@@ -1675,6 +1780,34 @@ bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers 
 eq "$(adb_toml_get "$WORK/p-twice.toml" roles primary >/dev/null 2>&1; echo $?)" 1 \
    "propose: a key answered twice applies neither answer"
 has "$(cat "$WORK/p-twice.toml")" "more than once" "...and names the repeat"
+
+# THE GREENFIELD RULE (#301): an interview cannot complete with review = primary unless the answer
+# names a recorded deviation — and the deviation answer is refused where it explains nothing.
+AX="$WORK/answers-xpair.tsv"
+HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude bots=none >/dev/null 2>&1
+cp "$AX" "$WORK/answers-xpair.before"
+axo="$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=claude 2>&1)"; axrc=$?
+eq "$axrc" 2 "answers: review = primary is refused without a deviation"
+has "$axo" "implementer checking itself" "answers: ...and the refusal says why"
+has "$axo" "review-deviation=" "answers: ...and names the way to record a deliberate exception"
+if cmp -s "$AX" "$WORK/answers-xpair.before"; then ok; else bad "answers: a refused review = primary leaves the previous answers whole"; fi
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=claude review-deviation=D3 >/dev/null 2>&1; echo $?)" 0 \
+   "answers: review = primary with a recorded deviation completes"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=claude,codex >/dev/null 2>&1; echo $?)" 0 \
+   "answers: a review list holding a different agent is independent"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=codex review-deviation=D3 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a review-deviation beside an independent review is refused"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" review=claude review-deviation=D3 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a review-deviation with no answered primary explains nothing and is refused"
+eq "$(an review-deviation 'D 3' >/dev/null 2>&1; echo $?)" 2 "answers: a review-deviation that is not a decision id is refused"
+printf 'primary\tclaude\nreview\tclaude\n' > "$WORK/planted-same.tsv"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted-same.tsv" > "$WORK/p-same.toml"
+hasnt "$(cat "$WORK/p-same.toml")" 'review        = ["claude"]' "propose: a planted review = primary with no deviation is not rendered"
+has "$(cat "$WORK/p-same.toml")" "the review answer was refused" "propose: ...and the refusal is a NOTE"
+printf 'primary\tclaude\nreview\tclaude\nreview-deviation\tD3\n' > "$WORK/planted-dev.tsv"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted-dev.tsv" > "$WORK/p-dev.toml"
+eq "$(adb_toml_get "$WORK/p-dev.toml" roles review)" '["claude"]' "propose: a same-model review with its deviation is live"
+has "$(cat "$WORK/p-dev.toml")" "recorded as DEVIATION D3" "propose: ...and the line names the deviation"
 
 # --- 7e. [gates]: a detected gate is SHOWN, not pinned; nothing detected is loud ------------------
 printf 'test\tpnpm test\nlint\tpnpm lint\n' > "$WORK/gates.tsv"
@@ -2900,6 +3033,43 @@ shmutant_mut pointer-qualified-form-dropped \
     '"[^A-Za-z0-9_.~/$-]([/]([^[:space:]:/]+[/])*[^[:space:]:/]+:|[/$])" re' \
     '"[^A-Za-z0-9_.~/$-][/$]" re' \
     'a directory-qualified /pkg/web:implement is a stale-pointer'
+
+shmutant_mut conformance-same-model-ignored \
+    '    0:same-model)' \
+    '    0:SAME-MODEL-NEVER)' \
+    'conformance: primary = claude, review = [claude] is a finding'
+shmutant_mut conformance-live-rung \
+    'review-rung --configured 2>/dev/null)" || rrc=$?' \
+    'review-rung 2>/dev/null)" || rrc=$?' \
+    'conformance: the same-model finding does not depend on which agent CLIs are installed'
+shmutant_mut conformance-deviation-clears-any-rule \
+    '_AD_CONF_CLEARABLE=" same-model-review "' \
+    '_AD_CONF_CLEARABLE=" same-model-review root-doc-workflow "' \
+    'conformance: a DEVIATION never clears root-doc-workflow'
+shmutant_mut conformance-incomplete-deviation-honoured \
+    '    if [ "$miss" != - ]; then' \
+    '    if false; then' \
+    'conformance: a DEVIATION missing a required field does not clear the finding'
+shmutant_mut conformance-deviation-read-from-fences \
+    'adb_md_prose text < "$f" 2>/dev/null)" || return 1' \
+    'cat "$f")" || return 1' \
+    'conformance: a DEVIATION inside a fenced block declares nothing'
+shmutant_mut conformance-pointers-dropped \
+    "done < <(LC_ALL=C awk -F'\\t' '\$1 == \"stale-pointer\"' \"\$wf\")" \
+    "done < <(LC_ALL=C awk -F'\\t' '\$1 == \"NEVER\"' \"\$wf\")" \
+    'conformance: a root-doc pointer in the workflows record is a finding'
+shmutant_mut conformance-workflows-record-unvalidated \
+    '  elif [ "$(cmd_wclass "$wf" - - 2>/dev/null)" != none ] \' \
+    '  elif false \' \
+    'conformance: a workflows record with no summary is not judged'
+shmutant_mut answers-same-model-accepted \
+    '  if [ "$same" -eq 1 ] && [ -z "$d" ]; then' \
+    '  if false; then' \
+    'answers: review = primary is refused without a deviation'
+shmutant_mut propose-same-model-not-rechecked \
+    '  if ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}"' \
+    '  if false && ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}"' \
+    'propose: a planted review = primary with no deviation is not rendered'
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \

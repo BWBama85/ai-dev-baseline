@@ -30,7 +30,7 @@ yet is itself an escalation (bucket 4) — say so and ask, don't invent a home.
 | Project rule / convention / stack boundary | the repo's own root doc (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`) |
 | Custom gate *policy* (order, conditional) | the repo's own `.claude/scripts/precommit-gate.sh` |
 | Workflow that genuinely diverges | a baseline issue — a project carries no skills of its own (`policy:one-baseline`); `/adopt`'s `workflows` rung reports any it finds |
-| Deviation from a baseline rule | a `DEVIATION` entry in the decision log (it explains a `workflows` finding; it never clears one) |
+| Deviation from a baseline rule | a `DEVIATION` entry in the decision log (it explains a `workflows` finding and never clears one; with an `audit-rule` the adoption conformance audit can clear, it turns that finding into a reported deviation) |
 | A recurring review-finding class this project keeps hitting | `.ai-dev-baseline/patterns.md` — the pattern ledger and its promoted checklist |
 | General gap (would help many projects) | the supported stopgap surface; a baseline issue **only if it clears the bar** |
 
@@ -65,6 +65,7 @@ A **deviation** adds the fields that make it a deliberate, reviewable fork — n
 - conflict:      the project requirement that forces the deviation
 - scope:         where it applies (paths / workflows)
 - reason:        why the deviation is justified
+- audit-rule:    optional — the adoption conformance audit rule it answers (same-model-review)
 ```
 
 ## Rules

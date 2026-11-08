@@ -11,6 +11,15 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Added
 
+- **`/adopt` audits a project's own instructions against the baseline (#301, decidable half).**
+  `adopt-lib.sh conformance` reports `same-model-review` (`[roles] review` names only the agent
+  that drives, judged from the configured review rung so installed CLIs do not change the answer)
+  and `root-doc-workflow` (a root-doc line routing work to a project skill), and it names the files
+  it read and the rules it evaluated. A `DEVIATION` with `audit-rule: same-model-review` turns that
+  finding into a reported deviation, while a deviation never clears a workflow finding. The
+  completion contract gains a `conformance` rung. The interview refuses `review` = `primary` unless
+  a `review-deviation` is answered. `role-dispatch.sh` gains `review-rung --configured` and
+  `rung-remedy`, which agent-init now prints.
 - **`/adopt` reports which workflow a project runs (#535, first slice).** `adopt-lib.sh workflows`
   classifies every project skill and prior-framework pin by name and path, never by reading the
   skill: `competes` (a legacy name such as `implement`, `swarm`, `review`, `pr` or

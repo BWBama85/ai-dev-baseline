@@ -141,6 +141,7 @@ reviewers${TAB}owner${TAB}[reviewers] bots agrees with the GitHub Apps that revi
 release${TAB}owner${TAB}the release command resolves to a real target
 decisions${TAB}agent${TAB}a decision log exists for the unknowns adoption hit
 workflows${TAB}owner${TAB}the project runs the baseline's workflows — no competing, same-name or project skill, no prior framework's pin, and nothing routing work to one (root-doc pointer, tracked mirror, user skill root)
+conformance${TAB}owner${TAB}the project's own instructions do not contradict the baseline — review is not primary, unless a recorded DEVIATION says why
 EOF
 }
 
@@ -670,6 +671,22 @@ cmd_probe() {
     10) _ar_emit workflows todo "the project carries or routes work to skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each skill and mirror to .ai-dev-baseline/retired/<date>/ in a normal PR, re-point each root-doc line at the baseline workflow, and move each user-level skill out of its user root; $wsum" ;;
     11) _ar_emit workflows unknown "workflows not judged in full$( [ -n "$wfind" ] && printf ' (found so far:%s)' "$wfind") — ${wsum:-no summary}; $(printf '%s\n' "$wout" | awk -F'\t' '$1=="unknown" {printf "%s%s", (n++ ? "; " : ""), $6}')" ;;
     *)  _ar_emit workflows unknown "adopt-lib.sh workflows failed (exit $wrc) — workflows not judged" ;;
+  esac
+
+  # --- conformance (#301) ------------------------------------------------------------------
+  # `adopt-lib.sh conformance` without --workflows: root-doc pointers are the workflows rung's, so
+  # they are not counted twice. Deviations it honoured are named, because a cleared rule is still
+  # a decision someone should be able to find.
+  local cout crc cfind cdev csum
+  cout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" conformance "$root" 2>/dev/null)"; crc=$?
+  csum="$(printf '%s\n' "$cout" | awk -F'\t' '$1=="summary" {print $5; exit}')"
+  cfind="$(printf '%s\n' "$cout" | awk -F'\t' '$1=="finding" {printf " %s at %s: %s;", $2, $3, $5}')"
+  cdev="$(printf '%s\n' "$cout" | awk -F'\t' '$1=="deviation" {printf " %s (DEVIATION %s);", $2, $4}')"
+  case "$crc" in
+    0)  _ar_emit conformance ok "no instruction contradicts the baseline${cdev:+ — cleared by a recorded deviation:$cdev} — $csum" ;;
+    10) _ar_emit conformance todo "the project's instructions contradict the baseline:${cfind} change the configuration, or record a DEVIATION with that audit-rule in .ai-dev-baseline/decisions.md; $csum" ;;
+    11) _ar_emit conformance unknown "conformance not judged in full — ${csum:-no summary}; $(printf '%s\n' "$cout" | awk -F'\t' '$1=="unknown" {printf "%s%s", (n++ ? "; " : ""), $5}')" ;;
+    *)  _ar_emit conformance unknown "adopt-lib.sh conformance failed (exit $crc) — conformance not judged" ;;
   esac
 }
 

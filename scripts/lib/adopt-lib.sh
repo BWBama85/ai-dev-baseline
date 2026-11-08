@@ -28,8 +28,9 @@
 # `hygiene` asks git about ignore rules and tracked files, where asking git itself is the whole
 # point — reimplementing .gitignore precedence is how you get a confidently wrong answer about
 # negations — `workflows` asks which files are tracked (its `mirror` class), and `pin-describe`
-# asks the BASELINE clone what it is (#464). `scan`, `hygiene`, `workflows` and `pin-describe`
-# read the filesystem: deterministic and offline, not pure. `answers`
+# asks the BASELINE clone what it is (#464). `scan`, `hygiene`, `workflows`, `conformance` and
+# `pin-describe` read the filesystem: deterministic and offline, not pure. `conformance` asks git
+# for the repository top level and role-dispatch.sh for the configured review rung. `answers`
 # writes the file it is given, and the record readers copy their input into a private temp before
 # parsing it. Everything else is a pure function of its arguments, its stdin and the files it is
 # handed. The workflow
@@ -74,10 +75,13 @@
 #   adopt-lib.sh plan                                       # classified TSV on stdin
 #   adopt-lib.sh supersedes  <baseline-root>                # <legacy-name>TAB<workflow>, the shipped map
 #   adopt-lib.sh workflows   <project-root> [--agents a,b] [--scope project|all] [--baseline <dir>]
-#                                                          # workflow conformance (#535); the one subcommand
-#                                                          #   with its own exit codes: 0 none · 10 findings
+#                                                          # workflow conformance (#535), with its own
+#                                                          #   exit codes: 0 none · 10 findings
 #                                                          #   · 11 not judged in full · 2 usage
 #   adopt-lib.sh wclass      <workflows-tsv> <relpath> <agent>  # one path's workflows class, from a WHOLE file
+#   adopt-lib.sh conformance <project-root> [--workflows <workflows-tsv>]
+#                                                          # instruction conformance (#301): 0 none · 10 findings
+#                                                          #   · 11 not judged in full · 2 usage
 #   adopt-lib.sh -h | --help
 #
 # Requires: awk, sed, git (hygiene's ignore and tracked-file axes, and pin-describe). jq is NOT
@@ -414,7 +418,11 @@ _ad_pr_list() {
 #   release            <agent>|none             [roles] release — none: this project cuts no releases
 #   gate.<label>       <command>|""             [gates] <label> — "" disables it
 #   gate-state.<label> na                       [gates.state] <label>
+#   review-deviation   <decision-id>            the DEVIATION that records a same-model review (#301)
 #
+# Across the pairs (`_ad_answers_cross`): a `review` naming only the answered `primary` is the
+# implementer checking itself (D21), and it is accepted only beside a `review-deviation`, which in
+# turn is accepted only beside such a review.
 # _ad_answer_check <key> <value> — 0, or 1 with the reason on stdout. The one validator for `answers`
 # and for `propose`, which re-reads the agent-writable file rather than trusting what `answers` wrote.
 _ad_answer_check() {
@@ -437,6 +445,9 @@ _ad_answer_check() {
     bots)
       [ "$v" = none ] || [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?(,[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?)*$ ]] \
         || { printf 'bots must be GitHub logins (an optional [bot] suffix), comma-separated, or none; got %s' "$(adb_tsv_field_display "$v")"; return 1; } ;;
+    review-deviation)
+      [[ "$v" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || { printf 'review-deviation must be a decision id (letters, digits, . _ -), got %s' "$(adb_tsv_field_display "$v")"; return 1; } ;;
     gate.*|gate-state.*)
       _ad_gate_label_ok "${k#*.}" \
         || { printf 'the gate label in %s is one the gate runner would ignore (a letter, then letters, digits, _ or -)' "$(adb_tsv_field_display "$k")"; return 1; }
@@ -449,8 +460,28 @@ _ad_answer_check() {
           *'"'*|*'\'*) printf '%s contains a double quote or a backslash, which agents.toml cannot hold (its reader keeps escapes verbatim) — put the command in a script and declare that' "$k"; return 1 ;;
         esac
       fi ;;
-    *) printf 'unknown interview key %s (primary|review|bots|release|gate.<label>|gate-state.<label>)' "$(adb_tsv_field_display "$k")"; return 1 ;;
+    *) printf 'unknown interview key %s (primary|review|bots|release|review-deviation|gate.<label>|gate-state.<label>)' "$(adb_tsv_field_display "$k")"; return 1 ;;
   esac
+  return 0
+}
+
+# _ad_answers_cross <primary> <review> <review-deviation> — 0, or 1 with the reason on stdout. Empty
+# means unanswered. Same-model is the configured review rung's sense: no review token differs from
+# primary.
+_ad_answers_cross() {
+  local p="$1" r="$2" d="$3" t same=0
+  if [ -n "$p" ] && [ -n "$r" ]; then
+    same=1
+    while IFS= read -r t; do [ "$t" = "$p" ] || same=0; done < <(printf '%s\n' "$r" | tr ',' '\n')
+  fi
+  if [ "$same" -eq 1 ] && [ -z "$d" ]; then
+    printf 'review names only %s, the agent that drives (primary): that is the implementer checking itself. Answer a different review agent, or record a DEVIATION with audit-rule: same-model-review in .ai-dev-baseline/decisions.md and answer review-deviation=<its id>' "$p"
+    return 1
+  fi
+  if [ "$same" -eq 0 ] && [ -n "$d" ]; then
+    printf 'review-deviation is only for a review answer naming only the answered primary'
+    return 1
+  fi
   return 0
 }
 
@@ -466,7 +497,7 @@ cmd_answers() {
   [ "$#" -ge 1 ] && [ -n "$1" ] || die "answers: needs <file> [<key>=<value>…]"
   local file="$1" pair k v reason stage dir
   shift
-  local -A given=()
+  local -A given=() val=()
   # Parameter expansion, not `$(dirname …)`: a substitution strips a trailing newline from the name.
   case "$file" in */*) dir="${file%/*}"; [ -n "$dir" ] || dir=/ ;; *) dir=. ;; esac
   [ -d "$dir" ] || die "answers: not a directory: $(adb_display_value "$dir")"
@@ -475,8 +506,10 @@ cmd_answers() {
     k="${pair%%=*}"; v="${pair#*=}"
     reason="$(_ad_answer_check "$k" "$v")" || die "answers: $reason — nothing was written"
     [ -z "${given[$k]:-}" ] || die "answers: $k is answered twice — nothing was written"
-    given[$k]=1
+    given[$k]=1; val[$k]="$v"
   done
+  reason="$(_ad_answers_cross "${val[primary]:-}" "${val[review]:-}" "${val[review-deviation]:-}")" \
+    || die "answers: $reason — nothing was written"
   stage="$(mktemp "$dir/.adopt-answers.XXXXXX")" || die "answers: could not create a stage in $(adb_display_value "$dir")"
   for pair in "$@"; do
     printf '%s\t%s\n' "${pair%%=*}" "${pair#*=}" >> "$stage" || { rm -f "$stage"; die "answers: could not write the stage — nothing was published"; }
@@ -521,6 +554,11 @@ _ad_answers_read() {
     fi
     _AD_ANS[$k]="$v"
   done
+  # The cross-pair rule, re-applied to what the file holds: a refused pair applies neither half.
+  if ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}" "${_AD_ANS[review]:-}" "${_AD_ANS[review-deviation]:-}")"; then
+    _AD_ANS_NOTES+=("the review answer was refused — $reason")
+    unset '_AD_ANS[review]' '_AD_ANS[review-deviation]'
+  fi
   return 0
 }
 
@@ -1567,7 +1605,11 @@ REST
 _ad_render_review_answer() {
   local out="" t
   while IFS= read -r t; do out="${out:+$out, }\"$t\""; done < <(printf '%s\n' "${_AD_ANS[review]}" | tr ',' '\n')
-  printf '%-13s = [%s]     # answered in the /adopt interview\n' review "$out"
+  if [ -n "${_AD_ANS[review-deviation]:-}" ]; then
+    printf '%-13s = [%s]     # answered in the /adopt interview — SAME-MODEL, recorded as DEVIATION %s\n' review "$out" "${_AD_ANS[review-deviation]}"
+  else
+    printf '%-13s = [%s]     # answered in the /adopt interview\n' review "$out"
+  fi
 }
 
 # [reviewers] — inferred from the PR history `adopt-readiness.sh observe` read (#459, D128).
@@ -2895,6 +2937,171 @@ cmd_wclass() {
   esac
 }
 
+# --- conformance (#301): what a project's own instructions say against the baseline -------------
+#
+#   adopt-lib.sh conformance <project-root> [--workflows <workflows-tsv>]
+#
+# stdout: `<class>TAB<rule>TAB<site>TAB<deviation>TAB<detail>` records, then one `summary`:
+#   finding    a rule the project's instructions contradict; <detail> is the remedy
+#   deviation  the same, cleared by a recorded DEVIATION whose `audit-rule` names the rule
+#   refused    a DEVIATION naming a rule it cannot clear, or missing a required field
+#   scanned    a file read (<site>), or a rule not evaluated and why
+#   unknown    a rule that could not be judged
+#   summary    files, rules, and the counts — so a zero is visible
+# exit: 0 nothing outstanding (deviations included) · 10 findings · 11 not judged in full · 2 usage
+#
+# Rules — the decidable half of #301 (owner decision 2026-11-08, D152); prose classification of
+# verification scaffolding waits for a rule catalog:
+#   same-model-review   [roles] review names only the agent that drives — the configured review
+#                       rung (`role-dispatch.sh review-rung --configured`, the ladder agent-init and
+#                       /implement-issue read). A DEVIATION may clear it.
+#   root-doc-workflow   a root-doc prose line routes work to a project or legacy skill: the
+#                       `stale-pointer` records of the `workflows` file given with --workflows.
+#                       policy:one-baseline — a DEVIATION never clears it.
+#
+# The project's instruction text is classified, never executed; the roles are read by the shared
+# TOML reader and the decision log through the shared prose filter.
+_AD_CONF_RULES="same-model-review root-doc-workflow"
+_AD_CONF_CLEARABLE=" same-model-review "
+_ad_conf_rec() {  # <class> <rule> <site> <deviation> <detail> — a control byte in <detail> becomes a space
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5//[[:cntrl:]]/ }"
+}
+
+# _ad_deviations <decisions-file> — one `<id>TAB<audit-rule>TAB<missing>` line per DEVIATION entry
+# that names an `audit-rule`, read from PROSE only (an example in a fence declares nothing).
+# <missing> is `-`, or the comma-joined required fields that are absent or empty. rc 1 = the file
+# could not be read whole.
+_ad_deviations() {
+  local f="$1" prose
+  [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f" || return 1
+  prose="$(adb_md_prose text < "$f" 2>/dev/null)" || return 1
+  printf '%s\n' "$prose" | LC_ALL=C awk '
+    function flush(  i, miss, req) {
+      if (id != "" && ("audit-rule" in F)) {
+        split("date category baseline-rule conflict scope reason", req, " "); miss = ""
+        for (i = 1; i <= 6; i++) if (!(req[i] in F) || F[req[i]] == "") miss = miss (miss == "" ? "" : ",") req[i]
+        if (("category" in F) && F["category"] != "deviation" && F["category"] != "") miss = miss (miss == "" ? "" : ",") "category"
+        print id "\t" F["audit-rule"] "\t" (miss == "" ? "-" : miss)
+      }
+      id = ""; delete F
+    }
+    /^## / { flush()
+             h = substr($0, 4)
+             if (match(h, /^[^ ]+ (—|-) DEVIATION: /)) { id = h; sub(/ .*/, "", id) }
+             next }
+    id != "" && /^- [a-z-]+:/ {
+      k = $0; sub(/^- /, "", k); sub(/:.*/, "", k)
+      v = $0; sub(/^- [a-z-]+:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
+      if (!(k in F)) F[k] = v
+    }
+    END { flush() }'
+}
+
+cmd_conformance() {
+  local root="" wf=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --workflows) [ "$#" -ge 2 ] && [ -n "$2" ] || die "conformance: --workflows needs a file"; wf="$2"; shift 2 ;;
+      -*) die "conformance: unknown option: $1" ;;
+      *)  [ -z "$root" ] || die "conformance: takes exactly one <project-root>"; root="$1"; shift ;;
+    esac
+  done
+  [ -n "$root" ] || die "conformance: needs <project-root>"
+  [ -d "$root" ] || die "conformance: not a directory: $(adb_display_value "$root")"
+  local libdir nfind=0 ndev=0 nunk=0 nref=0 files="" rules="" line id rule miss
+  libdir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P)" || die "conformance: cannot locate its own library directory"
+
+  # --- the decision log: which rules a recorded DEVIATION speaks for ---------------------------------
+  local -A cleared=()
+  local dlog="$root/.ai-dev-baseline/decisions.md" devs="" dev_ok=1
+  if [ -e "$dlog" ] || [ -L "$dlog" ]; then
+    if devs="$(_ad_deviations "$dlog")"; then
+      files="${files:+$files,}.ai-dev-baseline/decisions.md"
+      _ad_conf_rec scanned - .ai-dev-baseline/decisions.md - "decision log read for DEVIATION entries naming an audit-rule"
+    else
+      dev_ok=0; nunk=$((nunk + 1))
+      _ad_conf_rec unknown - .ai-dev-baseline/decisions.md - "the decision log could not be read as prose (unreadable, over 1 MiB, or holding a NUL byte) — no DEVIATION was honoured"
+    fi
+  else
+    _ad_conf_rec scanned - .ai-dev-baseline/decisions.md - "no decision log — no DEVIATION recorded"
+  fi
+  while IFS="$TAB" read -r id rule miss; do
+    [ -n "$id" ] || continue
+    if ! [[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || ! [[ "$rule" =~ ^[a-z0-9-]+$ ]]; then
+      nref=$((nref + 1)); _ad_conf_rec refused - .ai-dev-baseline/decisions.md - "a DEVIATION's id or audit-rule is not a plain token — not honoured"; continue
+    fi
+    case " $_AD_CONF_RULES " in
+      *" $rule "*) ;;
+      *) nref=$((nref + 1)); _ad_conf_rec refused "$rule" .ai-dev-baseline/decisions.md "$id" "audit-rule names no rule this audit evaluates ($_AD_CONF_RULES)"; continue ;;
+    esac
+    case "$_AD_CONF_CLEARABLE" in
+      *" $rule "*) ;;
+      *) nref=$((nref + 1)); _ad_conf_rec refused "$rule" .ai-dev-baseline/decisions.md "$id" "a DEVIATION cannot clear $rule (policy:one-baseline): it explains the finding, the finding stands"; continue ;;
+    esac
+    if [ "$miss" != - ]; then
+      nref=$((nref + 1)); _ad_conf_rec refused "$rule" .ai-dev-baseline/decisions.md "$id" "the DEVIATION is missing $miss (handling-the-unknown.md's deviation fields) — not honoured"; continue
+    fi
+    [ -n "${cleared[$rule]:-}" ] || cleared[$rule]="$id"
+  done <<< "$devs"
+
+  # --- same-model-review ---------------------------------------------------------------------------
+  rules="same-model-review"
+  local msite=- rung rrc=0 top tok remedy
+  if [ -f "$root/agents.toml" ]; then
+    msite=agents.toml; files="${files:+$files,}agents.toml"
+    _ad_conf_rec scanned same-model-review agents.toml - "[roles] primary and review, layered over the global manifest"
+  else
+    _ad_conf_rec scanned same-model-review - - "no project agents.toml — the effective roles are the global manifest's and the built-in defaults"
+  fi
+  # The roles reader resolves the manifest from the repository top level; a root below it would be
+  # judged by another project's file.
+  top="$(cd "$root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || top=""
+  if [ -n "$top" ] && ! [ "$top" -ef "$root" ]; then
+    rung="unknown project-root-is-not-the-repository-top-level"; rrc=2
+  else
+    rung="$(cd "$root" 2>/dev/null && bash "$libdir/role-dispatch.sh" review-rung --configured 2>/dev/null)" || rrc=$?
+  fi
+  case "$rrc:${rung%% *}" in
+    0:same-model)
+      tok="${rung#same-model }"; tok="${tok%% *}"
+      remedy="SAME-MODEL only — \`review\` names \`$tok\`, which also writes the code. $(bash "$libdir/role-dispatch.sh" rung-remedy same-model 2>/dev/null)"
+      # An undeclared review is the built-in default, the primary's own pass: say so, or the
+      # remedy points at a line the project never wrote.
+      if [ "$msite" = - ] || ! adb_toml_get "$root/agents.toml" roles review >/dev/null 2>&1; then
+        remedy="$remedy (\`review\` is not declared in the project's agents.toml, so it comes from the global manifest or the built-in default, which is primary's own pass.)"
+      fi
+      if [ "$dev_ok" -eq 1 ] && [ -n "${cleared[same-model-review]:-}" ]; then
+        ndev=$((ndev + 1)); _ad_conf_rec deviation same-model-review "$msite" "${cleared[same-model-review]}" "$remedy"
+      else
+        nfind=$((nfind + 1)); _ad_conf_rec finding same-model-review "$msite" - "$remedy"
+      fi ;;
+    0:independent|0:deferred|0:none) : ;;
+    *) nunk=$((nunk + 1)); _ad_conf_rec unknown same-model-review "$msite" - "the configured review rung could not be read (${rung:-no answer}) — fix [roles] or [reviewers] in agents.toml" ;;
+  esac
+
+  # --- root-doc-workflow ---------------------------------------------------------------------------
+  if [ -z "$wf" ]; then
+    rules="$rules root-doc-workflow=not-evaluated"
+    _ad_conf_rec scanned root-doc-workflow - - "not evaluated: no --workflows record given (the workflows rung judges root-doc pointers on its own)"
+  elif [ "$(cmd_wclass "$wf" - - 2>/dev/null)" != none ] \
+       || LC_ALL=C awk -F'\t' '$1 == "unknown" { f = 1 } END { exit !f }' "$wf" 2>/dev/null; then
+    rules="$rules root-doc-workflow"
+    nunk=$((nunk + 1)); _ad_conf_rec unknown root-doc-workflow - - "the workflows record is not whole, or the workflows scan did not judge everything — root-doc pointers not judged"
+  else
+    rules="$rules root-doc-workflow"
+    files="${files:+$files,}workflows-record"
+    _ad_conf_rec scanned root-doc-workflow - - "the workflows record's stale-pointer findings (CLAUDE.md, AGENTS.md, GEMINI.md prose)"
+    while IFS="$TAB" read -r _ site _ _ _ remedy; do
+      nfind=$((nfind + 1)); _ad_conf_rec finding root-doc-workflow "$site" - "$remedy"
+    done < <(LC_ALL=C awk -F'\t' '$1 == "stale-pointer"' "$wf")
+  fi
+
+  _ad_conf_rec summary - - - "files=${files:-none} rules=${rules// /,} findings=$nfind deviations=$ndev refused=$nref unknown=$nunk"
+  [ "$nunk" -eq 0 ] || return 11
+  [ "$nfind" -eq 0 ] || return 10
+  return 0
+}
+
 # --- dispatch ------------------------------------------------------------------------------------
 main() {
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
@@ -2922,6 +3129,7 @@ main() {
     supersedes)  cmd_supersedes "$@" ;;
     workflows)   cmd_workflows "$@" ;;
     wclass)      cmd_wclass "$@" ;;
+    conformance) cmd_conformance "$@" ;;
     *) printf 'adopt-lib: unknown subcommand: %s\n' "$sub" >&2; usage >&2; exit 2 ;;
   esac
 }
