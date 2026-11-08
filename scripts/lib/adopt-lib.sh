@@ -3028,7 +3028,10 @@ cmd_conformance() {
   [ -n "$root" ] || die "conformance: needs <project-root>"
   [ -d "$root" ] || die "conformance: not a directory: $(adb_display_value "$root")"
   local libdir nfind=0 ndev=0 nunk=0 nref=0 files="" rules="" line id rule miss
-  libdir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P)" || die "conformance: cannot locate its own library directory"
+  # The sentinel keeps a directory name ending in a newline whole through the capture.
+  libdir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd -P && printf 'X')" \
+    || die "conformance: cannot locate its own library directory"
+  libdir="${libdir%X}"; libdir="${libdir%$'\n'}"
 
   # --- the decision log: which rules a recorded DEVIATION speaks for ---------------------------------
   local -A cleared=()
