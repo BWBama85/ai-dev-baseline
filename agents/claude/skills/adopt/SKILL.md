@@ -371,6 +371,7 @@ fi
 bash "$HOME/.claude/scripts/lib/adopt-lib.sh" answers ".claude/state/adopt-answers.tsv" || { echo "STOP: could not reset the interview answers (above)"; exit 1; }
 bash "$HOME/.claude/scripts/lib/adopt-lib.sh" propose --observed ".claude/state/adopt-observed.tsv" \
   --gates ".claude/state/adopt-gates.tsv" --answers ".claude/state/adopt-answers.tsv" \
+  --decisions "$PROJECT/.ai-dev-baseline/decisions.md" \
   < ".claude/state/adopt-roles.tsv" > ".claude/state/adopt-agents.toml" \
   || { echo "STOP: the proposal could not be rendered (above)"; exit 1; }
 ```
@@ -410,7 +411,9 @@ not asked:
    inferred `review` and the observed `bots`, with their evidence. `answers` refuses a `review` that
    names only the answered `primary`, because that is the implementer checking itself. The owner
    either answers a different agent, or records a `DEVIATION` with `audit-rule: same-model-review`
-   in `.ai-dev-baseline/decisions.md` and answers `review-deviation=<its id>`.
+   in `.ai-dev-baseline/decisions.md` and answers `review-deviation=<its id>`. That id must name a
+   complete entry in the log `--decisions` points at, and `propose` checks it again. An inferred
+   `review` naming only the answered `primary` is shown commented, never proposed live.
 3. **What are the gates?** → `[gates]` / `[gates.state]`. Pre-fill: what was detected. When nothing
    was, ask for the bespoke gate command (a `scripts/check.sh`, a make target) or an explicit N/A —
    adoption must not finish with enforcement silently off.
@@ -433,12 +436,13 @@ verbatim), so writing the line by hand does not help: put the command in a scrip
 # key left out. Single quotes keep the owner's bytes unexpanded; a single quote inside a value is
 # written '"'"' (close, quoted quote, reopen). `answers` validates EVERY pair before it writes
 # anything, so a refused answer leaves the previous file whole.
-bash "$HOME/.claude/scripts/lib/adopt-lib.sh" answers ".claude/state/adopt-answers.tsv" \
+bash "$HOME/.claude/scripts/lib/adopt-lib.sh" answers ".claude/state/adopt-answers.tsv" --decisions "$PROJECT/.ai-dev-baseline/decisions.md" \
   primary='claude' review='codex' bots='chatgpt-codex-connector' \
   gate.test='bash scripts/check.sh' release='none' \
   || { echo "STOP: an answer was refused or could not be recorded (above) — re-ask it; the proposal was NOT re-rendered"; exit 1; }
 bash "$HOME/.claude/scripts/lib/adopt-lib.sh" propose --observed ".claude/state/adopt-observed.tsv" \
   --gates ".claude/state/adopt-gates.tsv" --answers ".claude/state/adopt-answers.tsv" \
+  --decisions "$PROJECT/.ai-dev-baseline/decisions.md" \
   < ".claude/state/adopt-roles.tsv" > ".claude/state/adopt-agents.toml" \
   || { echo "STOP: the proposal could not be rendered (above)"; exit 1; }
 ```

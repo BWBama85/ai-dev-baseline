@@ -18,8 +18,9 @@ only by a release it upgrades to. These entries are the notes for both.
   it read and the rules it evaluated. A `DEVIATION` with `audit-rule: same-model-review` turns that
   finding into a reported deviation, while a deviation never clears a workflow finding. The
   completion contract gains a `conformance` rung. The interview refuses `review` = `primary` unless
-  a `review-deviation` is answered. `role-dispatch.sh` gains `review-rung --configured` and
-  `rung-remedy`, which agent-init now prints.
+  a `review-deviation` naming a recorded entry is answered. `role-dispatch.sh` gains
+  `review-rung --configured` and `rung-remedy`, which agent-init now prints, and the same-model
+  remedy no longer suggests an async bot, which does not change that rung.
 - **`/adopt` reports which workflow a project runs (#535, first slice).** `adopt-lib.sh workflows`
   classifies every project skill and prior-framework pin by name and path, never by reading the
   skill: `competes` (a legacy name such as `implement`, `swarm`, `review`, `pr` or

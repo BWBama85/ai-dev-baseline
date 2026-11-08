@@ -544,6 +544,10 @@ has "$out" "same-model-review (DEVIATION D7)" "probe: ...and names the deviation
 printf '[roles]\nprimary = "claude"\nreview = ["nope"]\n' > "$d/agents.toml"
 out="$(ar probe "$d" --agents claude 2>/dev/null)"
 has "$out" "conformance${TAB}unknown" "probe: an unreadable review rung makes the conformance rung unknown, never ok"
+printf '[roles]\nprimary = "claude"\nreview = ["claude"]\n' > "$d/agents.toml"; printf 'x\000y\n' > "$d/.ai-dev-baseline/decisions.md"
+out="$(ar probe "$d" --agents claude 2>/dev/null)"
+has "$out" "conformance${TAB}unknown" "probe: an unreadable decision log makes the conformance rung unknown"
+has "$out" "found so far: same-model-review at agents.toml" "probe: ...and still names the finding it established"
 # A PINNED project with no global install (a CI runner, #537) is judged from its own pin (#535).
 d="$WORK/p-workflows-pinned"; mkrepo "$d"; mkdir -p "$d/.ai-dev-baseline" "$d/.claude/skills/implement"
 printf 'x\n' > "$d/.claude/skills/implement/SKILL.md"
@@ -1276,6 +1280,10 @@ shmutant_mut cdpath-not-unset \
 #
 # The witness is the assertion's FULL label, prefix included, and every literal is ONE line —
 # shmutant matches a literal within one line, so a two-line literal can never match (D68).
+shmutant_mut conformance-unknown-drops-findings \
+    '    11) _ar_emit conformance unknown "conformance not judged in full${cfind:+ (found so far:$cfind)}' \
+    '    11) _ar_emit conformance unknown "conformance not judged in full' \
+    'probe: ...and still names the finding it established'
 shmutant_mut conformance-todo-reads-ok \
     '    10) _ar_emit conformance todo' \
     '    10) _ar_emit conformance ok' \

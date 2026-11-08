@@ -1113,7 +1113,8 @@ EOF
 # differently. rc 1 for a rung that needs no remedy.
 adb_rung_remedy() {
   case "${1:-}" in
-    same-model) printf '%s\n' 'That is the implementer checking itself. Point `review` at a different agent, or declare an async reviewer under [reviewers] bots.' ;;
+    # Not "declare a bot": the ladder returns same-model before it consults [reviewers] bots.
+    same-model) printf '%s\n' 'That is the implementer checking itself. Point `review` at a different agent.' ;;
     *) return 1 ;;
   esac
 }

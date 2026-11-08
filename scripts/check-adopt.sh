@@ -1410,6 +1410,7 @@ has "$cfo" "finding${TAB}same-model-review${TAB}agents.toml${TAB}-${TAB}SAME-MOD
 REMEDY="$(bash "$ROOT/scripts/lib/role-dispatch.sh" rung-remedy same-model)"
 has "$cfo" "$REMEDY" "conformance: the remedy is the one agent-init prints (role-dispatch.sh rung-remedy)"
 has "$(cat "$ROOT/bin/agent-init")" "rung-remedy same-model" "agent-init: the same-model remedy comes from rung-remedy, not its own copy"
+hasnt "$REMEDY" "bots" "conformance: the remedy does not offer an async bot, which the ladder never consults on this rung"
 hasnt "$cfo" "not declared" "conformance: a DECLARED same-model review does not claim it was undeclared"
 has "$cfo" "rules=same-model-review,root-doc-workflow=not-evaluated" "conformance: the trailer names every rule, evaluated or not"
 has "$cfo" "files=agents.toml" "conformance: the trailer names the files it read"
@@ -1482,7 +1483,16 @@ has "$cfo" "rules=same-model-review,root-doc-workflow " "conformance: with --wor
 printf '%s\n' "$pto" | grep -v "^summary${TAB}" > "$WORK/conf-wf-cut.tsv"
 eq "$(cf "$CF2" --workflows "$WORK/conf-wf-cut.tsv" >/dev/null; echo $?)" 11 "conformance: a workflows record with no summary is not judged (exit 11)"
 { printf '%s\n' "$pto" | grep -v "^summary${TAB}"; printf 'unknown\t-\t-\t-\tagent\tnot judged\n'; printf '%s\n' "$pto" | grep "^summary${TAB}"; } > "$WORK/conf-wf-unk.tsv"
-eq "$(cf "$CF2" --workflows "$WORK/conf-wf-unk.tsv" >/dev/null; echo $?)" 11 "conformance: a workflows record holding an unknown is not judged in full"
+cfo="$(cf "$CF2" --workflows "$WORK/conf-wf-unk.tsv")"; cfrc=$?
+eq "$cfrc" 11 "conformance: a workflows record holding an unknown is not judged in full"
+has "$cfo" "finding${TAB}root-doc-workflow${TAB}CLAUDE.md:3${TAB}" "conformance: ...and the pointers it did establish are still reported"
+# The global manifest the roles reader layers under the project's file is named as a file read.
+mkdir -p "$CFH/.config/ai-dev-baseline"; printf '[roles]\nreview = ["claude"]\n' > "$CFH/.config/ai-dev-baseline/agents.toml"
+cfo="$(cf "$CF3")"; cfrc=$?
+eq "$cfrc" 0 "conformance: a review inherited from the global manifest is judged from it"
+has "$cfo" "scanned${TAB}same-model-review${TAB}~/.config/ai-dev-baseline/agents.toml${TAB}" "conformance: ...and the global manifest is named as a file read"
+has "$cfo" "files=agents.toml,~/.config/ai-dev-baseline/agents.toml" "conformance: ...in the trailer too"
+rm -rf "$CFH/.config"
 
 # Every other way to be unsure is 11, and a bad invocation is 2.
 CF4="$WORK/conf-nested"; cfrepo "$CF4" "$(printf '[roles]\nprimary = "claude"\nreview = ["codex"]\n')"
@@ -1791,8 +1801,17 @@ eq "$axrc" 2 "answers: review = primary is refused without a deviation"
 has "$axo" "implementer checking itself" "answers: ...and the refusal says why"
 has "$axo" "review-deviation=" "answers: ...and names the way to record a deliberate exception"
 if cmp -s "$AX" "$WORK/answers-xpair.before"; then ok; else bad "answers: a refused review = primary leaves the previous answers whole"; fi
-eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=claude review-deviation=D3 >/dev/null 2>&1; echo $?)" 0 \
+AXLOG="$WORK/answers-xpair-decisions.md"
+dev_entry D3 same-model-review > "$AXLOG"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" --decisions "$AXLOG" primary=claude review=claude review-deviation=D3 >/dev/null 2>&1; echo $?)" 0 \
    "answers: review = primary with a recorded deviation completes"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" --decisions "$AXLOG" primary=claude review=claude review-deviation=D404 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a review-deviation naming no entry in the decision log is refused"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=claude review-deviation=D3 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a review-deviation with no decision log to verify it against is refused"
+dev_entry D8 same-model-review reason >> "$AXLOG"
+eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" --decisions "$AXLOG" primary=claude review=claude review-deviation=D8 >/dev/null 2>&1; echo $?)" 2 \
+   "answers: a review-deviation naming an INCOMPLETE entry is refused"
 eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=claude,codex >/dev/null 2>&1; echo $?)" 0 \
    "answers: a review list holding a different agent is independent"
 eq "$(HOME="$WORK/nohome" bash "$AD" answers "$AX" primary=claude review=codex review-deviation=D3 >/dev/null 2>&1; echo $?)" 2 \
@@ -1805,9 +1824,21 @@ bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers 
 hasnt "$(cat "$WORK/p-same.toml")" 'review        = ["claude"]' "propose: a planted review = primary with no deviation is not rendered"
 has "$(cat "$WORK/p-same.toml")" "the review answer was refused" "propose: ...and the refusal is a NOTE"
 printf 'primary\tclaude\nreview\tclaude\nreview-deviation\tD3\n' > "$WORK/planted-dev.tsv"
-bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted-dev.tsv" > "$WORK/p-dev.toml"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted-dev.tsv" --decisions "$AXLOG" > "$WORK/p-dev.toml"
 eq "$(adb_toml_get "$WORK/p-dev.toml" roles review)" '["claude"]' "propose: a same-model review with its deviation is live"
 has "$(cat "$WORK/p-dev.toml")" "recorded as DEVIATION D3" "propose: ...and the line names the deviation"
+bash "$AD" roles-infer "$FX" | HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted-dev.tsv" > "$WORK/p-dev-nolog.toml"
+eq "$(adb_toml_get "$WORK/p-dev-nolog.toml" roles review >/dev/null 2>&1; echo $?)" 1 \
+   "propose: a same-model review whose deviation cannot be verified is not live"
+# A refused answer must not come back through INFERENCE: an inferred review naming only primary.
+printf 'review\tclaude\tCLAUDE.md:1\n' > "$WORK/inferred-claude.tsv"
+HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/planted-same.tsv" < "$WORK/inferred-claude.tsv" > "$WORK/p-inf.toml"
+eq "$(adb_toml_get "$WORK/p-inf.toml" roles review >/dev/null 2>&1; echo $?)" 1 \
+   "propose: an inferred review naming only the answered primary is not live"
+has "$(cat "$WORK/p-inf.toml")" "NOT PROPOSED: inferred from CLAUDE.md:1" "propose: ...it is shown commented with its evidence"
+printf 'primary\tcodex\n' > "$WORK/answers-codex.tsv"
+HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/answers-codex.tsv" < "$WORK/inferred-claude.tsv" > "$WORK/p-inf-ok.toml"
+eq "$(adb_toml_get "$WORK/p-inf-ok.toml" roles review)" '["claude"]' "propose: an inferred review that differs from primary is still proposed"
 
 # --- 7e. [gates]: a detected gate is SHOWN, not pinned; nothing detected is loud ------------------
 printf 'test\tpnpm test\nlint\tpnpm lint\n' > "$WORK/gates.tsv"
@@ -2415,7 +2446,7 @@ if [ "$MUTATE" = "1" ]; then
 # <dir> — build the tree copy ONCE; shmutant clones it for every row. `install.sh`/`uninstall.sh`
 # come along because the suite reads them; a copy failure for those is not fatal.
 _ad_mut_prepare() {
-  check_copy_subtrees "$ROOT" "$1" scripts base agents templates >/dev/null 2>&1 || return 1
+  check_copy_subtrees "$ROOT" "$1" scripts base agents templates bin >/dev/null 2>&1 || return 1
   cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null
   return 0
 }
@@ -3055,13 +3086,25 @@ shmutant_mut conformance-deviation-read-from-fences \
     'cat "$f")" || return 1' \
     'conformance: a DEVIATION inside a fenced block declares nothing'
 shmutant_mut conformance-pointers-dropped \
-    "done < <(LC_ALL=C awk -F'\\t' '\$1 == \"stale-pointer\"' \"\$wf\")" \
-    "done < <(LC_ALL=C awk -F'\\t' '\$1 == \"NEVER\"' \"\$wf\")" \
+    '$1 == "stale-pointer" { print $2' \
+    '$1 == "NEVER" { print $2' \
     'conformance: a root-doc pointer in the workflows record is a finding'
 shmutant_mut conformance-workflows-record-unvalidated \
-    '  elif [ "$(cmd_wclass "$wf" - - 2>/dev/null)" != none ] \' \
-    '  elif false \' \
+    '[ "$(cmd_wclass "$snap" - - 2>/dev/null)" = none ]' \
+    'true' \
     'conformance: a workflows record with no summary is not judged'
+shmutant_mut conformance-unknown-drops-pointers \
+    '      END-WHOLE|END-UNKNOWN)' \
+    '      END-WHOLE)' \
+    'conformance: ...and the pointers it did establish are still reported'
+shmutant_mut answers-deviation-unverified \
+    '    printf '"'"'%s\n'"'"' "$devs" | LC_ALL=C awk' \
+    '    true || LC_ALL=C awk' \
+    'answers: a review-deviation naming no entry in the decision log is refused'
+shmutant_mut propose-inferred-same-model-live \
+    '    if [ "$role" = review ] && [ -n "${_AD_ANS[primary]:-}" ] && _ad_known_agent "$tok" \' \
+    '    if false && [ "$role" = review ] && [ -n "${_AD_ANS[primary]:-}" ] && _ad_known_agent "$tok" \' \
+    'propose: an inferred review naming only the answered primary is not live'
 shmutant_mut answers-same-model-accepted \
     '  if [ "$same" -eq 1 ] && [ -z "$d" ]; then' \
     '  if false; then' \

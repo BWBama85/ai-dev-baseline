@@ -61,10 +61,10 @@
 #                                                          # class: competes:<target>|shadows|duplicates|
 #                                                          #   project-specific|exempt|unjudged|-
 #   adopt-lib.sh roles-infer <project-root>                 # propose [roles] from evidence
-#   adopt-lib.sh propose     [--observed <f>] [--gates <f>] [--answers <f>]
+#   adopt-lib.sh propose     [--observed <f>] [--gates <f>] [--answers <f>] [--decisions <f>]
 #                                                          # roles-infer TSV on stdin -> agents.toml,
 #                                                          #   every section the template ships
-#   adopt-lib.sh answers     <file> [<key>=<value>…]        # validate the interview answers, publish <file>
+#   adopt-lib.sh answers     <file> [--decisions <log>] [<key>=<value>…]  # validate the interview answers, publish <file>
 #   adopt-lib.sh stack       <project-root>                 # the project's stack label
 #   adopt-lib.sh hygiene     <project-root> [--agents a,b] [--manifest <f>] [--observed <f>]
 #                                                          # the six adoption-hygiene axes
@@ -465,11 +465,12 @@ _ad_answer_check() {
   return 0
 }
 
-# _ad_answers_cross <primary> <review> <review-deviation> — 0, or 1 with the reason on stdout. Empty
-# means unanswered. Same-model is the configured review rung's sense: no review token differs from
-# primary.
+# _ad_answers_cross <primary> <review> <review-deviation> [<decisions-file>] — 0, or 1 with the
+# reason on stdout. Empty means unanswered. Same-model is the configured review rung's sense: no
+# review token differs from primary. A deviation is accepted only when <decisions-file> holds a
+# complete DEVIATION of that id with `audit-rule: same-model-review` (the entry `conformance` honours).
 _ad_answers_cross() {
-  local p="$1" r="$2" d="$3" t same=0
+  local p="$1" r="$2" d="$3" log="${4:-}" t same=0 devs
   if [ -n "$p" ] && [ -n "$r" ]; then
     same=1
     while IFS= read -r t; do [ "$t" = "$p" ] || same=0; done < <(printf '%s\n' "$r" | tr ',' '\n')
@@ -482,10 +483,17 @@ _ad_answers_cross() {
     printf 'review-deviation is only for a review answer naming only the answered primary'
     return 1
   fi
+  if [ -n "$d" ]; then
+    [ -n "$log" ] || { printf 'review-deviation %s cannot be verified: no decision log was given (--decisions)' "$d"; return 1; }
+    devs="$(_ad_deviations "$log" 2>/dev/null)" \
+      || { printf 'review-deviation %s cannot be verified: the decision log is missing or could not be read as prose' "$d"; return 1; }
+    printf '%s\n' "$devs" | LC_ALL=C awk -F'\t' -v id="$d" '$1 == id && $2 == "same-model-review" && $3 == "-" { f = 1 } END { exit !f }' \
+      || { printf 'review-deviation %s names no complete DEVIATION with audit-rule: same-model-review in the decision log' "$d"; return 1; }
+  fi
   return 0
 }
 
-# answers <file> [<key>=<value>…] — validate EVERY pair, then publish them as <file>'s whole
+# answers <file> [--decisions <log>] [<key>=<value>…] — validate EVERY pair, then publish them as <file>'s whole
 # content, or publish nothing and exit 2. No pair publishes an empty file: "nothing answered yet".
 #
 # Publication is `adb_publish_json` (generic despite its name): a stage beside <file>, the existing
@@ -494,9 +502,13 @@ _ad_answers_cross() {
 # accepts, leaves the previous file untouched. That <file> is the state dir's is the WORKFLOW's
 # calling convention; this subcommand writes wherever it is pointed.
 cmd_answers() {
-  [ "$#" -ge 1 ] && [ -n "$1" ] || die "answers: needs <file> [<key>=<value>…]"
-  local file="$1" pair k v reason stage dir
+  [ "$#" -ge 1 ] && [ -n "$1" ] || die "answers: needs <file> [--decisions <log>] [<key>=<value>…]"
+  local file="$1" pair k v reason stage dir log=""
   shift
+  if [ "${1:-}" = --decisions ]; then
+    [ "$#" -ge 2 ] && [ -n "$2" ] || die "answers: --decisions needs a file"
+    log="$2"; shift 2
+  fi
   local -A given=() val=()
   # Parameter expansion, not `$(dirname …)`: a substitution strips a trailing newline from the name.
   case "$file" in */*) dir="${file%/*}"; [ -n "$dir" ] || dir=/ ;; *) dir=. ;; esac
@@ -508,7 +520,7 @@ cmd_answers() {
     [ -z "${given[$k]:-}" ] || die "answers: $k is answered twice — nothing was written"
     given[$k]=1; val[$k]="$v"
   done
-  reason="$(_ad_answers_cross "${val[primary]:-}" "${val[review]:-}" "${val[review-deviation]:-}")" \
+  reason="$(_ad_answers_cross "${val[primary]:-}" "${val[review]:-}" "${val[review-deviation]:-}" "$log")" \
     || die "answers: $reason — nothing was written"
   stage="$(mktemp "$dir/.adopt-answers.XXXXXX")" || die "answers: could not create a stage in $(adb_display_value "$dir")"
   for pair in "$@"; do
@@ -527,7 +539,7 @@ cmd_answers() {
 declare -A _AD_ANS=()
 _AD_ANS_NOTES=()
 _ad_answers_read() {
-  local f="$1" line k v reason
+  local f="$1" log="${2:-}" line k v reason
   local -a lines=()
   local -A count=() noted=()
   _AD_ANS=(); _AD_ANS_NOTES=()
@@ -555,7 +567,7 @@ _ad_answers_read() {
     _AD_ANS[$k]="$v"
   done
   # The cross-pair rule, re-applied to what the file holds: a refused pair applies neither half.
-  if ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}" "${_AD_ANS[review]:-}" "${_AD_ANS[review-deviation]:-}")"; then
+  if ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}" "${_AD_ANS[review]:-}" "${_AD_ANS[review-deviation]:-}" "$log")"; then
     _AD_ANS_NOTES+=("the review answer was refused — $reason")
     unset '_AD_ANS[review]' '_AD_ANS[review-deviation]'
   fi
@@ -1455,14 +1467,14 @@ EOF
 #   --answers <f>    the interview's `answers` records — they OVERRIDE an inferred value, and the
 #                    trailing comment says the owner answered rather than that the repo showed it
 cmd_propose() {
-  local observed="" gates="" answers="" have_obs=0 have_gates=0 obs_why="" gates_why=""
+  local observed="" gates="" answers="" decisions="" have_obs=0 have_gates=0 obs_why="" gates_why=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --observed|--gates|--answers)
+      --observed|--gates|--answers|--decisions)
         [ "$#" -ge 2 ] && [ -n "$2" ] || die "propose: $1 needs a file"
-        case "$1" in --observed) observed="$2" ;; --gates) gates="$2" ;; --answers) answers="$2" ;; esac
+        case "$1" in --observed) observed="$2" ;; --gates) gates="$2" ;; --answers) answers="$2" ;; --decisions) decisions="$2" ;; esac
         shift 2 ;;
-      *) die "propose: unknown argument: $1 (roles-infer TSV on stdin; options --observed/--gates/--answers)" ;;
+      *) die "propose: unknown argument: $1 (roles-infer TSV on stdin; options --observed/--gates/--answers/--decisions)" ;;
     esac
   done
   local role tok ev rec line k v
@@ -1489,7 +1501,7 @@ cmd_propose() {
     fi
   fi
   _AD_ANS=(); _AD_ANS_NOTES=()
-  [ -z "$answers" ] || _ad_answers_read "$answers"
+  [ -z "$answers" ] || _ad_answers_read "$answers" "$decisions"
 
   cat <<'HDR'
 # ai-dev-baseline — agent role manifest, PROPOSED by /adopt.
@@ -1534,6 +1546,13 @@ HDR
     fi
     # The evidence quotes a scanned file's path, and a control byte is illegal even in a TOML comment.
     _ad_toml_text_ok "$ev" || ev="$(adb_display_value "$ev")"
+    # An INFERRED review naming only the answered primary is the same-model pair the interview
+    # refuses, so it is shown, never proposed live — a refused answer must not return through it.
+    if [ "$role" = review ] && [ -n "${_AD_ANS[primary]:-}" ] && _ad_known_agent "$tok" \
+       && ! _ad_answers_cross "${_AD_ANS[primary]}" "$tok" "" >/dev/null; then
+      printf '# review       = ["%s"]     # NOT PROPOSED: inferred from %s, but it names only primary (the implementer checking itself)\n' "$tok" "$ev"
+      continue
+    fi
     case "$tok" in
       none|ambiguous)
         printf '# %-11s = ""          # NOT INFERRED: %s\n' "$role" "$ev" ;;
@@ -3053,6 +3072,14 @@ cmd_conformance() {
   else
     _ad_conf_rec scanned same-model-review - - "no project agents.toml — the effective roles are the global manifest's and the built-in defaults"
   fi
+  local gm gmd
+  gm="$(adb_global_manifest)"
+  if [ -e "$gm" ] || [ -L "$gm" ]; then
+    gmd="$gm"; case "$gmd" in "${HOME:-/nonexistent}"/*) gmd="~${gmd#"$HOME"}" ;; esac
+    gmd="${gmd//[[:space:][:cntrl:],]/_}"
+    files="${files:+$files,}$gmd"
+    _ad_conf_rec scanned same-model-review "$gmd" - "the global manifest — [roles] it declares apply where the project's agents.toml is silent"
+  fi
   # The roles reader resolves the manifest from the repository top level; a root below it would be
   # judged by another project's file.
   top="$(cd "$root" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || top=""
@@ -3083,17 +3110,28 @@ cmd_conformance() {
   if [ -z "$wf" ]; then
     rules="$rules root-doc-workflow=not-evaluated"
     _ad_conf_rec scanned root-doc-workflow - - "not evaluated: no --workflows record given (the workflows rung judges root-doc pointers on its own)"
-  elif [ "$(cmd_wclass "$wf" - - 2>/dev/null)" != none ] \
-       || LC_ALL=C awk -F'\t' '$1 == "unknown" { f = 1 } END { exit !f }' "$wf" 2>/dev/null; then
-    rules="$rules root-doc-workflow"
-    nunk=$((nunk + 1)); _ad_conf_rec unknown root-doc-workflow - - "the workflows record is not whole, or the workflows scan did not judge everything — root-doc pointers not judged"
   else
     rules="$rules root-doc-workflow"
-    files="${files:+$files,}workflows-record"
-    _ad_conf_rec scanned root-doc-workflow - - "the workflows record's stale-pointer findings (CLAUDE.md, AGENTS.md, GEMINI.md prose)"
-    while IFS="$TAB" read -r _ site _ _ _ remedy; do
-      nfind=$((nfind + 1)); _ad_conf_rec finding root-doc-workflow "$site" - "$remedy"
-    done < <(LC_ALL=C awk -F'\t' '$1 == "stale-pointer"' "$wf")
+    # ONE private snapshot is validated and read, so the file judged whole is the file read; every
+    # read's status is checked, and a pointer already established survives an incomplete scan.
+    local snap ptrs="" pend="" site
+    snap="$(mktemp "${TMPDIR:-/tmp}/adopt-conf.XXXXXX")" || die "conformance: could not create a private snapshot"
+    if cp "$wf" "$snap" 2>/dev/null && [ "$(cmd_wclass "$snap" - - 2>/dev/null)" = none ] \
+       && ptrs="$(LC_ALL=C awk -F'\t' '$1 == "unknown" { u = 1 } $1 == "stale-pointer" { print $2 "\t" $6 } END { print (u ? "END-UNKNOWN" : "END-WHOLE") }' "$snap")"; then
+      pend="${ptrs##*$'\n'}"; [ "$pend" = "$ptrs" ] && ptrs="" || ptrs="${ptrs%$'\n'*}"
+    fi
+    rm -f "$snap"
+    case "$pend" in
+      END-WHOLE|END-UNKNOWN)
+        files="${files:+$files,}workflows-record"
+        _ad_conf_rec scanned root-doc-workflow - - "the workflows record's stale-pointer findings (CLAUDE.md, AGENTS.md, GEMINI.md prose)"
+        while IFS="$TAB" read -r site remedy; do
+          [ -n "$site" ] || continue
+          nfind=$((nfind + 1)); _ad_conf_rec finding root-doc-workflow "$site" - "$remedy"
+        done <<< "$ptrs"
+        [ "$pend" = END-WHOLE ] || { nunk=$((nunk + 1)); _ad_conf_rec unknown root-doc-workflow - - "the workflows scan did not judge everything — the root-doc pointers above may not be all of them"; } ;;
+      *) nunk=$((nunk + 1)); _ad_conf_rec unknown root-doc-workflow - - "the workflows record is not whole, or could not be read — root-doc pointers not judged" ;;
+    esac
   fi
 
   _ad_conf_rec summary - - - "files=${files:-none} rules=${rules// /,} findings=$nfind deviations=$ndev refused=$nref unknown=$nunk"

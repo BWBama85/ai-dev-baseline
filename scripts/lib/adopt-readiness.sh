@@ -681,11 +681,12 @@ cmd_probe() {
   cout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" conformance "$root" 2>/dev/null)"; crc=$?
   csum="$(printf '%s\n' "$cout" | awk -F'\t' '$1=="summary" {print $5; exit}')"
   cfind="$(printf '%s\n' "$cout" | awk -F'\t' '$1=="finding" {printf " %s at %s: %s;", $2, $3, $5}')"
+  cfind="$cfind$(printf '%s\n' "$cout" | awk -F'\t' '$1=="refused" {printf " refused DEVIATION %s (%s): %s;", $4, $2, $5}')"
   cdev="$(printf '%s\n' "$cout" | awk -F'\t' '$1=="deviation" {printf " %s (DEVIATION %s);", $2, $4}')"
   case "$crc" in
-    0)  _ar_emit conformance ok "no instruction contradicts the baseline${cdev:+ — cleared by a recorded deviation:$cdev} — $csum" ;;
+    0)  _ar_emit conformance ok "the evaluated conformance rules pass${cdev:+ — cleared by a recorded deviation:$cdev} — $csum" ;;
     10) _ar_emit conformance todo "the project's instructions contradict the baseline:${cfind} change the configuration, or record a DEVIATION with that audit-rule in .ai-dev-baseline/decisions.md; $csum" ;;
-    11) _ar_emit conformance unknown "conformance not judged in full — ${csum:-no summary}; $(printf '%s\n' "$cout" | awk -F'\t' '$1=="unknown" {printf "%s%s", (n++ ? "; " : ""), $5}')" ;;
+    11) _ar_emit conformance unknown "conformance not judged in full${cfind:+ (found so far:$cfind)}${cdev:+ (cleared by a recorded deviation:$cdev)} — ${csum:-no summary}; $(printf '%s\n' "$cout" | awk -F'\t' '$1=="unknown" {printf "%s%s", (n++ ? "; " : ""), $5}')" ;;
     *)  _ar_emit conformance unknown "adopt-lib.sh conformance failed (exit $crc) — conformance not judged" ;;
   esac
 }
