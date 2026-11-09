@@ -4013,6 +4013,12 @@ ln -s "$sk540/p/.codex/skills/dual" "$sk540/h/.agents/skills/dual"
 out="$(sk_run codex)"; rc=$?
 eq "$rc:$out" "10:collides${TAB}dual" "skill-collisions: a self-linked copy does not hide a distinct copy in the other Codex root"
 rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
+mkdir -p "$sk540/p/.agents/skills/.hid" "$sk540/h/.agents/skills/.hid" "$sk540/p/.agents/skills/viafile" "$sk540/h/.agents/skills/viafile"
+: > "$sk540/p/.agents/skills/.hid/SKILL.md"; : > "$sk540/h/.agents/skills/.hid/SKILL.md"
+: > "$sk540/p/.agents/skills/viafile/SKILL.md"; ln -s "$sk540/p/.agents/skills/viafile/SKILL.md" "$sk540/h/.agents/skills/viafile/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: Codex skips hidden folders, and a SKILL.md linked to the project's is one skill"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
 for lk in "$sk540/p/.claude" "$sk540/p"; do
   chmod 000 "$lk"
   if [ -x "$lk" ]; then

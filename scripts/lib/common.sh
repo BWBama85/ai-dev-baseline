@@ -2292,6 +2292,8 @@ adb_skill_collisions() {
       nd="$n"; nok=1; case "$n" in *[!A-Za-z0-9._-]*) nd=-; nok="" ;; esac
       if [ "$agent" = claude ]; then
         case "$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')" in synced|anthropic-skills) continue ;; esac
+      else
+        case "$n" in .*) continue ;; esac   # Codex's loader skips hidden folders
       fi
       case "$seen" in *" $n "*) continue ;; esac
       why=""
@@ -2322,7 +2324,8 @@ adb_skill_collisions() {
         if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
         u="$uroot/$n"
         if [ -f "$u/SKILL.md" ]; then
-          if [ "$u" -ef "$d" ]; then continue; fi   # the project's own skill, reached twice
+          # The project's own skill reached twice, by its folder or by its SKILL.md: one skill.
+          if [ "$u" -ef "$d" ] || [ "$u/SKILL.md" -ef "$d/SKILL.md" ]; then continue; fi
           if [ -r "$u/SKILL.md" ]; then found=1; break; fi
           why="personal $n/SKILL.md is unreadable"
         elif [ -L "$u" ] && [ ! -e "$u" ]; then
