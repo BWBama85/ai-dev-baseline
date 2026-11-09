@@ -1603,8 +1603,8 @@ has "$spo" "surface${TAB}.claude/rules/a11y.md${TAB}rule${TAB}claude${TAB}globs$
   "specialized: a globs: rule keeps its intended scope, loads every session, and must be respelled"
 has "$spo" "key-spelling${TAB}.claude/rules/a11y.md${TAB}rule${TAB}claude${TAB}globs${TAB}src/components/**/* src/ui/**${TAB}claude:every-session${TAB}paths" \
   "specialized: a globs: rule carries a key-spelling finding naming paths"
-has "$spo" "surface${TAB}.claude/rules/both.md${TAB}rule${TAB}claude${TAB}both${TAB}src/**/*.php${TAB}claude:on-path-match${TAB}respell" \
-  "specialized: paths: beside globs: scopes by paths, and the stray key is still a finding"
+has "$spo" "surface${TAB}.claude/rules/both.md${TAB}rule${TAB}claude${TAB}both${TAB}src/**/*.php${TAB}claude:on-path-match${TAB}extra-key" \
+  "specialized: paths: beside globs: scopes by paths, and the stray key is an extra-key finding"
 has "$spo" "surface${TAB}.claude/rules/sub/general.md${TAB}rule${TAB}claude${TAB}none${TAB}-${TAB}claude:every-session${TAB}unhomed:rootdoc" \
   "specialized: an unscoped rule (in a subdirectory) holds repo-wide facts, so its home is the root doc"
 has "$spo" "surface${TAB}.claude/rules/api.md${TAB}rule${TAB}claude${TAB}paths${TAB}apps/api/** apps/api/src/*.ts${TAB}claude:on-path-match${TAB}unhomed:nested:apps/api" \
@@ -1621,7 +1621,7 @@ has "$spo" "surface${TAB}apps/api/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${
   "specialized: a nested CLAUDE.md inside a package is in its home"
 has "$spo" "surface${TAB}apps/web/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}codex:cwd-at-or-below${TAB}exempt" \
   "specialized: a nested AGENTS.md with NO manifest beside it is still enumerated (and here exempted)"
-has "$spo" "surface${TAB}docs/guide/GEMINI.md${TAB}nested-doc${TAB}gemini${TAB}-${TAB}-${TAB}gemini:subdir-scan${TAB}unhomed:rules" \
+has "$spo" "surface${TAB}docs/guide/GEMINI.md${TAB}nested-doc${TAB}gemini${TAB}-${TAB}-${TAB}gemini:on-access${TAB}unhomed:rules" \
   "specialized: a nested doc outside a package belongs in a paths: rule"
 has "$spo" "surface${TAB}.codex/rules/db.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/db.md${TAB}-" \
   "specialized: a byte-identical .codex copy is a mirror naming its source"
@@ -1642,13 +1642,13 @@ has "$spo" "exemption-refused${TAB}decisions.md:24${TAB}-${TAB}-${TAB}-${TAB}-${
   "specialized: keeps: never explains away a globs: key"
 has "$spo" "exemption-refused${TAB}decisions.md:35${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}no-surface" \
   "specialized: keeps: naming a directory above a surface is refused — the match is exact, never a prefix"
-has "$spo" "surface${TAB}docs/guide/GEMINI.md${TAB}nested-doc${TAB}gemini${TAB}-${TAB}-${TAB}gemini:subdir-scan${TAB}unhomed:rules" \
+has "$spo" "surface${TAB}docs/guide/GEMINI.md${TAB}nested-doc${TAB}gemini${TAB}-${TAB}-${TAB}gemini:on-access${TAB}unhomed:rules" \
   "specialized: refused and fenced keeps: lines exempt nothing — the finding stays"
 has "$spo" "pointer${TAB}.claude/rules/tools.md:10${TAB}rule${TAB}-${TAB}-${TAB}-${TAB}-${TAB}implement" \
   "specialized: a prose line invoking a legacy skill is a pointer at its line"
 hasnt "$spo" "pointer${TAB}.claude/rules/tools.md:7" "specialized: a pointer inside a fenced block is not prose"
 hasnt "$spo" "IGNORE-ALL" "specialized: no scanned prose reaches the output"
-has "$spo" "specialized: rules=7 nested=3 mirrors=2 facts=0 mixed=0 workflows=0 unhomed=4 respell=2 exempt=2 refused=4 unjudged=0 pointers=1 unknown=3 judgment=not-given" \
+has "$spo" "specialized: rootdocs=0 rules=7 nested=3 mirrors=2 facts=0 mixed=0 workflows=0 unhomed=4 respell=2 exempt=2 refused=4 unjudged=0 pointers=1 unknown=3 judgment=not-given" \
   "specialized: the trailer counts every class"
 eq "$(printf '%s\n' "$spo" | tail -n 1 | cut -f1)" summary "specialized: the summary is the last record"
 
@@ -1685,7 +1685,7 @@ has "$spj" "surface${TAB}apps/api/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${
 has "$spj" "surface${TAB}.claude/rules/a11y.md${TAB}rule${TAB}claude${TAB}globs${TAB}src/components/**/* src/ui/**${TAB}claude:every-session${TAB}respell${TAB}unjudged" "judgment: a surface with no rows is unjudged"
 has "$spj" "surface${TAB}.codex/rules/db.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/db.md${TAB}-" "judgment: a mirror is never judged"
 has "$spj" "facts=2 mixed=1 workflows=0" "judgment: the trailer counts the judged classes"
-has "$spj" "judgment=given" "judgment: the trailer says a judgment was given"
+eq "$(printf '%s\n' "$spj" | tail -n 1 | sed 's/.* judgment=//')" given "judgment: the trailer says exactly judgment=given"
 
 spt="$WORK/sp-sclass.tsv"; printf '%s\n' "$spj" > "$spt"
 eq "$(bash "$AD" sclass "$spt" .claude/rules/db.md claude)"    exempt   "sclass: an exempt surface judged facts"
@@ -1748,7 +1748,7 @@ hasnt "$spst" "judgment-refused" "judgment: ...and is never refused against the 
 SPE="$WORK/sp-empty"; mkdir -p "$SPE"; git init -q "$SPE" >/dev/null 2>&1
 spe="$(bash "$AD" specialized "$SPE")"; sperc=$?
 eq "$sperc" 0 "specialized: an empty project has nothing outstanding"
-eq "$spe" "summary${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}specialized: rules=0 nested=0 mirrors=0 facts=0 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=not-evaluated unknown=0 judgment=not-given" \
+eq "$spe" "summary${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}specialized: rootdocs=0 rules=0 nested=0 mirrors=0 facts=0 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=not-evaluated unknown=0 judgment=not-given" \
   "specialized: an empty project prints rules=0 … unknown=0, never nothing"
 SPN="$WORK/sp-nogit"; mkdir -p "$SPN"
 spn="$(bash "$AD" specialized "$SPN")"; spnrc=$?
@@ -1761,6 +1761,93 @@ eq "$(bash "$AD" specialized "$SPH" --judgment "$WORK/does-not-exist" >/dev/null
 eq "$(bash "$AD" specialized >/dev/null 2>&1; echo $?)" 2 "specialized: no project root is usage (exit 2)"
 eq "$(bash "$AD" specialized "$SPH" --bogus >/dev/null 2>&1; echo $?)" 2 "specialized: an unknown option is usage (exit 2)"
 eq "$(bash "$AD" prose "$SPH" ../etc/passwd >/dev/null 2>&1; echo $?)" 2 "prose: a path leaving the project is refused"
+# --- 4g (review round 1): the shapes the first cut got wrong ------------------------------------
+SPR="$WORK/sp-r1"; mkdir -p "$SPR/.claude" "$SPR/shared-rules" "$SPR/.codex/rules" "$SPR/apps/api/src" "$SPR/pkg/empty"
+printf '{}\n' > "$SPR/apps/api/package.json"; printf '{}\n' > "$SPR/pkg/package.json"
+ln -s ../shared-rules "$SPR/.claude/rules"
+printf -- '---\npaths: ["src/**", "tests/**"]\n---\nflow list\n' > "$SPR/shared-rules/flow.md"
+printf -- '---\npaths: "src/**"  # the source tree\n---\ncomment\n' > "$SPR/shared-rules/comment.md"
+printf -- '---\npaths:\n  - "src/[ab]*.ts"\n---\nbracket\n' > "$SPR/shared-rules/bracket.md"
+printf -- '---\npaths: "src/**"\n  - nope\n---\nscalar then list\n' > "$SPR/shared-rules/scalarlist.md"
+printf -- '---\npaths: "apps/api/../../src/**"\n---\ntraversal\n' > "$SPR/shared-rules/dotdot.md"
+printf -- '---\r\npaths: "src/x/**"\r\n---\r\nCRLF body\r\n' > "$SPR/shared-rules/crlf.md"
+: > "$SPR/shared-rules/empty.md"
+printf -- '---\npaths: "src/m/**"\n---\nFact' > "$SPR/shared-rules/mirrored.md"   # no final newline
+printf 'Fact\n' > "$SPR/.codex/rules/nonl.md"
+printf 'Fact' > "$SPR/.codex/rules/exact.md"
+printf '# Root\nfacts\n' > "$SPR/CLAUDE.md"
+printf 'override\n' > "$SPR/AGENTS.override.md"; printf 'agents\n' > "$SPR/AGENTS.md"
+printf 'deep api facts\n' > "$SPR/apps/api/src/CLAUDE.md"
+: > "$SPR/pkg/empty/AGENTS.md"
+printf 'o\n' > "$SPR/pkg/empty/AGENTS.override.md"
+git init -q "$SPR" >/dev/null 2>&1; check_git "$SPR" add -A; check_git "$SPR" commit -q -m fixture
+r1="$(bash "$AD" specialized "$SPR" --agents claude,codex)"
+has "$r1" "surface${TAB}.claude/rules/flow.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/** tests/**" "yaml: a quoted flow list with a space after the comma is read"
+has "$r1" "surface${TAB}.claude/rules/comment.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}" "yaml: an inline comment after a quoted scalar is not part of the scope"
+has "$r1" "surface${TAB}.claude/rules/bracket.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/[ab]*.ts${TAB}" "yaml: a bracket glob is a glob"
+has "$r1" "unknown${TAB}.claude/rules/scalarlist.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a list item under a scalar is malformed, never read as scoped"
+has "$r1" "unknown${TAB}.claude/rules/dotdot.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a glob with a .. component is refused, never placed in a package"
+has "$r1" "surface${TAB}.claude/rules/crlf.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/x/**${TAB}claude:on-path-match" "yaml: CRLF frontmatter is scoped"
+has "$r1" "surface${TAB}.claude/rules/empty.md${TAB}rule${TAB}claude${TAB}none${TAB}-${TAB}claude:every-session${TAB}unhomed:rootdoc" "yaml: an empty rule is unscoped, never malformed"
+has "$r1" "surface${TAB}.claude/rules/mirrored.md${TAB}rule${TAB}claude" "links: a symlinked rules directory is walked"
+has "$r1" "surface${TAB}.codex/rules/exact.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/mirrored.md" "mirror: the exact body bytes prove a mirror"
+has "$r1" "surface${TAB}.codex/rules/nonl.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}unhomed:rules" "mirror: a body that adds a final newline is not the same bytes"
+has "$r1" "surface${TAB}CLAUDE.md${TAB}rootdoc${TAB}claude${TAB}-${TAB}-${TAB}claude:every-session${TAB}homed" "rootdoc: a top-level root doc is a surface in its home"
+has "$r1" "surface${TAB}AGENTS.md${TAB}rootdoc${TAB}codex${TAB}-${TAB}-${TAB}codex:shadowed${TAB}homed" "rootdoc: AGENTS.md beside AGENTS.override.md is shadowed for Codex"
+has "$r1" "surface${TAB}pkg/empty/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}codex:shadowed${TAB}homed" "nested: AGENTS.md beside AGENTS.override.md is shadowed"
+has "$r1" "surface${TAB}apps/api/src/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${TAB}-${TAB}claude:on-demand${TAB}homed" "nested: a doc anywhere inside a package is in its home"
+r1c="$(bash "$AD" specialized "$SPR" --agents codex)"
+has "$r1c" "surface${TAB}.codex/rules/exact.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/mirrored.md" "mirror: its source is found when only codex is asked about"
+hasnt "$r1c" "surface${TAB}.claude/rules/" "mirror: ...and Claude's surfaces are not reported then"
+eq "$(bash "$AD" prose "$SPR" .claude/rules/crlf.md | tail -n +2 | tr '\t\n' ' ;')" "prose 4 4;" "prose: CRLF frontmatter is not prose"
+r1f="$WORK/sp-r1.tsv"
+r1d() { bash "$AD" prose "$SPR" "$1" | awk -F'\t' '$1=="file" {print $3}'; }
+printf '.claude/rules/crlf.md\t%s\t1\t3\tworkflow\tretire\n.claude/rules/crlf.md\t%s\t4\t4\tfact\tkeep\n' "$(r1d .claude/rules/crlf.md)" "$(r1d .claude/rules/crlf.md)" > "$r1f"
+has "$(bash "$AD" specialized "$SPR" --agents claude --judgment "$r1f")" "judgment-refused" "judgment: a workflow range over CRLF frontmatter only is refused"
+printf 'pkg/empty/AGENTS.md\t%s\t0\t0\tfact\tkeep\n' "$(r1d pkg/empty/AGENTS.md)" > "$r1f"
+has "$(bash "$AD" specialized "$SPR" --agents codex --judgment "$r1f")" "surface${TAB}pkg/empty/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}codex:shadowed${TAB}homed${TAB}facts" "judgment: an empty file is judged by one 0 0 row"
+printf 'pkg/empty/AGENTS.md\t%s\t0\t0\tfact\tkeep\npkg/empty/AGENTS.md\t%s\t1\t1\tfact\tkeep\n' "$(r1d pkg/empty/AGENTS.md)" "$(r1d pkg/empty/AGENTS.md)" > "$r1f"
+has "$(bash "$AD" specialized "$SPR" --agents codex --judgment "$r1f")" "judgment-refused" "judgment: a 0 0 row is the only row for its file"
+printf 'CLAUDE.md\t%s\t1\t1\tfact\tkeep\nCLAUDE.md\t%s\t2\t2\tworkflow\tretire\n' "$(r1d CLAUDE.md)" "$(r1d CLAUDE.md)" > "$r1f"
+r1j="$(bash "$AD" specialized "$SPR" --agents claude --judgment "$r1f")"
+has "$r1j" "surface${TAB}CLAUDE.md${TAB}rootdoc${TAB}claude${TAB}-${TAB}-${TAB}claude:every-session${TAB}homed${TAB}mixed" "judgment: a root doc can be judged mixed"
+printf '%s\n' "$r1j" > "$WORK/sp-r1j.tsv"
+eq "$(bash "$AD" sclass "$WORK/sp-r1j.tsv" CLAUDE.md claude)" split "sclass: a mixed root doc is split"
+eq "$(verdict rootdoc no unknown yes split)" move "classify: a mixed root doc is move (split), not keep"
+eq "$(verdict rootdoc no unknown yes -)" keep "classify: a root doc with no split is still a prescribed keep"
+printf '.claude/rules/empty.md\t%s\t0\t0\tfact\tkeep\n.claude/rules/flow.md\t%s\t1\t3\tfact\tkeep\n.claude/rules/flow.md\t%s\t4\t4\tworkflow\tretire\n' \
+  "$(r1d .claude/rules/empty.md)" "$(r1d .claude/rules/flow.md)" "$(r1d .claude/rules/flow.md)" > "$r1f"
+bash "$AD" specialized "$SPR" --agents claude --judgment "$r1f" > "$WORK/sp-r1k.tsv"
+eq "$(bash "$AD" sclass "$WORK/sp-r1k.tsv" .claude/rules/flow.md claude)" split "sclass: a judged split outranks its location"
+eq "$(bash "$AD" sclass "$WORK/sp-r1k.tsv" .claude/rules/empty.md claude)" unhomed:rootdoc "sclass: an unscoped rule judged facts keeps its location finding"
+printf '.claude/rules/flow.md\t%s\t1\t4\tfact\trule:../../elsewhere.md\n' "$(r1d .claude/rules/flow.md)" > "$r1f"
+has "$(bash "$AD" specialized "$SPR" --agents claude --judgment "$r1f")" "judgment-refused" "judgment: a destination that leaves the repository is refused"
+printf '.claude/rules/flow.md\t%s\t1\t4\tfact\tnested:/etc\n' "$(r1d .claude/rules/flow.md)" > "$r1f"
+has "$(bash "$AD" specialized "$SPR" --agents claude --judgment "$r1f")" "judgment-refused" "judgment: an absolute destination is refused"
+eq "$(bash "$AD" classify rule no unknown no extra-key | cut -f2 | grep -c 'delete the globs')" 1 "classify: the extra-key remedy deletes globs:, never renames it"
+# sclass validates every field, not only the width.
+printf 'surface\tx.md\tbogus\tnobody\tzzz\t-\twhere\tmirror:\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: x\n' > "$WORK/sp-garbage.tsv"
+eq "$(bash "$AD" sclass "$WORK/sp-garbage.tsv" x.md nobody)" unjudged "sclass: a record with garbage fields judges nothing"
+# A malformed decision entry never grants an exemption.
+mkdir -p "$SPR/.ai-dev-baseline"
+printf '## bad!id — keep\n- category: project-delta\n- keeps: apps/api/src/CLAUDE.md\n\n## D9 — twice\n- category: general\n- category: project-delta\n- keeps: CLAUDE.md\n' > "$SPR/.ai-dev-baseline/decisions.md"
+r1e="$(bash "$AD" specialized "$SPR" --agents claude)"
+has "$r1e" "exemption-refused${TAB}decisions.md:3${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}bad-id" "keeps: an entry whose id is not a plain token is refused"
+has "$r1e" "exemption-refused${TAB}decisions.md:8${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}twice" "keeps: an entry with a field given twice is refused"
+hasnt "$r1e" "${TAB}exempt${TAB}" "keeps: ...and neither exempts anything"
+rm -f "$SPR/.ai-dev-baseline/decisions.md"
+# A tracked doc whose path cannot be represented reaches the output only as `-`.
+NLD="$WORK/sp-nl"
+if mkdir -p "$NLD/bad
+dir" 2>/dev/null; then
+  ln -s target "$NLD/bad
+dir/CLAUDE.md"; git init -q "$NLD" >/dev/null 2>&1; check_git "$NLD" add -A; check_git "$NLD" commit -q -m nl
+  nlo="$(bash "$AD" specialized "$NLD" --agents claude)"
+  eq "$(printf '%s\n' "$nlo" | awk -F'\t' 'NF != 9' | wc -l | tr -d ' ')" 0 "specialized: a newline in a linked doc's path cannot forge a record"
+  has "$nlo" "unknown${TAB}-${TAB}nested-doc${TAB}claude" "specialized: ...it is reported as unknown with no path"
+else
+  check_note "SKIP: this filesystem refuses a newline in a directory name"
+fi
 # An EMPTY judgment is a valid one: the writer emits it for a project with nothing to judge.
 : > "$spf"
 spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
@@ -2607,9 +2694,9 @@ printf 'competes\t.claude/skills/other\tclaude\timplement-issue\towner\tr\nsumma
 eq "$(cls_first)" escalate "workflow classify: a skill with no record is unjudged, never keep"
 # A rule (#552) is judged by its `specialized` class, through `sclass`; never `other`'s escalation.
 printf 'rule\t.claude/rules/db.md\tdb.md\tclaude\n' > "$WFS/state/adopt-scan.tsv"
-printf 'surface\t.claude/rules/db.md\trule\tclaude\tpaths\tsrc/db/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\ts\n' > "$WFS/state/adopt-specialized.tsv"
+printf 'surface\t.claude/rules/db.md\trule\tclaude\tpaths\tsrc/db/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: s\n' > "$WFS/state/adopt-specialized.tsv"
 eq "$(cls_first)" keep "workflow classify: a rule in its home judged facts is keep"
-printf 'surface\t.claude/rules/db.md\trule\tclaude\tglobs\tsrc/db/**\tclaude:every-session\trespell\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\ts\n' > "$WFS/state/adopt-specialized.tsv"
+printf 'surface\t.claude/rules/db.md\trule\tclaude\tglobs\tsrc/db/**\tclaude:every-session\trespell\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: s\n' > "$WFS/state/adopt-specialized.tsv"
 eq "$(cls_first)" move "workflow classify: a globs: rule is move"
 rm -f "$WFS/state/adopt-specialized.tsv"
 eq "$(cls_first)" escalate "workflow classify: a rule with no specialized record is unjudged, never keep"
@@ -3412,10 +3499,6 @@ shmutant_mut specialized-rule-arm-dropped \
     '        claude:.claude/rules/*.md|codex:.codex/rules.md|codex:.codex/rules/*.md|gemini:.gemini/rules.md|gemini:.gemini/rules/*.md)' \
     '        NEVERMATCHES)' \
     'scan: a project rule is a rule record'
-shmutant_mut specialized-key-spelling-dropped \
-    '    [ "$st" = respell ] && _ad_sp_rec key-spelling' \
-    '    false && _ad_sp_rec key-spelling' \
-    'carries a key-spelling finding naming paths'
 shmutant_mut specialized-nested-needs-manifest \
     '      S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag")' \
     '      _adb_has_project_manifest "$root/${rel%/*}" && { S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag"); }' \
@@ -3428,18 +3511,6 @@ shmutant_mut specialized-keeps-not-exact \
     '      if [ -z "${IDX[$kp]:-}" ]; then kprob=no-surface' \
     '      if false; then kprob=no-surface' \
     'the match is exact, never a prefix'
-shmutant_mut specialized-keeps-path-unchecked \
-    '        if (v ~ /^[A-Za-z0-9._\/-]+$/ && v !~ /^\// && v !~ /(^|\/)\.\.(\/|$)/ && v !~ /\/\//) { KV[nk] = v; KP[nk] = "-" }' \
-    '        if (v != "") { KV[nk] = v; KP[nk] = "-" }' \
-    'keeps: with a space in the path is refused'
-shmutant_mut specialized-fences-judged \
-    '    | adb_md_prose text 2>/dev/null' \
-    '    | cat' \
-    'a pointer inside a fenced block is not prose'
-shmutant_mut specialized-judgment-cover-unchecked \
-    '          [ "${JEND[$jp]:-0}" = "${LINES[$jp]}" ] || { jok=0; break; }' \
-    '          :' \
-    'a range that stops short of the last line is refused'
 shmutant_mut specialized-fence-only-workflow \
     "\$1 >= s && \$1 <= e { f = 1 } END { exit !f }" \
     'END { exit 0 }' \
@@ -3456,14 +3527,82 @@ shmutant_mut classify-specialized-arm-dropped \
     '  if [ "$kind" = rule ] || [ "$kind" = nested-doc ]; then' \
     '  if false; then' \
     'classify: a globs: rule is move (respell)'
+shmutant_mut specialized-key-spelling-dropped \
+    '    case "$st" in respell|extra-key) _ad_sp_rec key-spelling' \
+    '    case "$st" in NEVERMATCHES) _ad_sp_rec key-spelling' \
+    'carries a key-spelling finding naming paths'
+shmutant_mut specialized-keeps-path-unchecked \
+    '        if (v ~ /^[A-Za-z0-9._\/-]+$/ && v !~ /^\// && v !~ /\/$/ && v !~ /(^|\/)\.\.(\/|$)/ && v !~ /\/\//) { KV[nk] = v; KP[nk] = "-" }' \
+    '        if (v != "") { KV[nk] = v; KP[nk] = "-" }' \
+    'keeps: with a space in the path is refused'
+shmutant_mut specialized-fences-judged \
+    '  printf '"'"'%s\n'"'"' "$pre" | adb_md_prose text 2>/dev/null' \
+    '  printf '"'"'%s\n'"'"' "$pre"' \
+    'a pointer inside a fenced block is not prose'
+shmutant_mut specialized-judgment-cover-unchecked \
+    '          [ "${JEND[$jp]:-x}" = "${LINES[$jp]}" ] || { jok=0; break; }' \
+    '          :' \
+    'a range that stops short of the last line is refused'
+shmutant_mut specialized-empty-judgment-refused \
+    '{ [ -s "$t" ] && ! adb_bytes_whole "$t" "$max"; }' \
+    '! adb_bytes_whole "$t" "$max"' \
+    'an empty judgment file is not refused'
+shmutant_mut specialized-mirror-sources-by-agent \
+    '    [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"' \
+    '    _sp_sel "${S_AGENT[$i]}" || continue; [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"' \
+    'its source is found when only codex is asked about'
+shmutant_mut specialized-body-digest-adds-newline \
+    '  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf '"'"' %s'"'"' "${PIPESTATUS[0]}")" || return 1' \
+    '  out="$(LC_ALL=C awk -v n="$n" '"'"'NR > n'"'"' "$1" | adb_sha256_stdin; printf '"'"' %s'"'"' 0)" || return 1' \
+    'a body that adds a final newline is not the same bytes'
+shmutant_mut specialized-rules-links-not-followed \
+    'find -L "$f" -type f' \
+    'find "$f" -type f' \
+    'a symlinked rules directory is walked'
+shmutant_mut specialized-list-under-scalar-accepted \
+    '    /^[ \t]+-/ { if (sc != "") bad = 1' \
+    '    /^[ \t]+-/ { if (0) bad = 1' \
+    'a list item under a scalar is malformed'
+shmutant_mut specialized-dotdot-glob-accepted \
+    '|| v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }' \
+    ') { bad = 1; return }' \
+    'a glob with a .. component is refused'
+shmutant_mut specialized-crlf-frontmatter-is-prose \
+    '  LC_ALL=C awk '"'"'{ sub(/\r$/, "") }' \
+    '  LC_ALL=C awk '"'"'{ }' \
+    'CRLF frontmatter is not prose'
+shmutant_mut specialized-destination-unchecked \
+    '        case "$jdest" in rule:*|nested:*) _ad_sp_path_ok "${jdest#*:}" || { jok=0; break; } ;; esac' \
+    '        :' \
+    'a destination that leaves the repository is refused'
+shmutant_mut sclass-location-outranks-split \
+    '      if (jd == "mixed" || jd == "workflows") { print "split"; exit }' \
+    '      if (0) { print "split"; exit }' \
+    'a judged split outranks its location'
+shmutant_mut sclass-fields-unchecked \
+    '      if ($1 == "surface")' \
+    '      if ($1 == "surface") return 1; if (0)' \
+    'a record with garbage fields judges nothing'
+shmutant_mut specialized-keeps-bad-id-normalized \
+    '        if (badid) p = "bad-id"' \
+    '        if (0) p = "bad-id"' \
+    'an entry whose id is not a plain token is refused'
+shmutant_mut specialized-codex-override-ignored \
+    '[ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi' \
+    'false; then :; fi' \
+    'nested: AGENTS.md beside AGENTS.override.md is shadowed'
+shmutant_mut classify-rootdoc-split-kept \
+    '  if [ "$kind" = rootdoc ] && [ "$wclass" = split ]; then' \
+    '  if false; then' \
+    'a mixed root doc is move (split)'
+shmutant_mut specialized-package-beside-manifest-only \
+    '      if [ -n "$(_ad_sp_package "$root" "${rel%/*}")" ]; then st=homed;' \
+    '      if _adb_has_project_manifest "$root/${rel%/*}"; then st=homed;' \
+    'a doc anywhere inside a package is in its home'
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \
     "is never refused against the file's new text"
-shmutant_mut specialized-empty-judgment-refused \
-    '{ [ -s "$judg" ] && ! adb_bytes_whole "$judg" 16777216; }' \
-    '! adb_bytes_whole "$judg" 16777216' \
-    'an empty judgment file is not refused'
 shmutant_mut sclass-truncated-judged \
     '      if (bad || n != 1 || last != NR) { print "unjudged"; exit }' \
     '      if (0) { print "unjudged"; exit }' \

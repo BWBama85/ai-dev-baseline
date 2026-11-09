@@ -670,13 +670,21 @@ cmd_probe() {
   # same question one layer down: a rule or nested doc outside its home, or scoped by a key Claude
   # does not read, leaves the plan open. Judged by path and frontmatter only — the fact-vs-workflow
   # split is the adopt run's own step and has no durable record for this probe to read.
-  local sout src ssum sfind
+  # A workflows status this rung does not know is unknown BEFORE the two are combined, so a
+  # specialized finding can never turn a failed workflows read into a plain todo.
+  local wfail=""
+  case "$wrc" in 0|10|11) ;; *) wfail="$wrc"; wrc=11 ;; esac
+  local sout src ssum sfind sbl
   local -a sp_ag=()
   [ -z "${agents_given:-}" ] || sp_ag=(--agents "$agents")
+  # The installed baseline's superseded-name map, so a surface's prose pointer to a legacy skill is
+  # a finding here as it is in /adopt. With no baseline the workflows read is already unknown.
+  sbl="$(bash "$_AR_LIB_DIR/adopt-lib.sh" baseline 2>/dev/null)" || sbl=""
+  [ -z "$sbl" ] || sp_ag+=(--baseline "$sbl")
   sout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" specialized "$root" "${sp_ag[@]}" 2>/dev/null)"; src=$?
   ssum="$(printf '%s\n' "$sout" | awk -F'\t' '$1=="summary" {print $9; exit}')"
-  sfind="$(printf '%s\n' "$sout" | awk -F'\t' '($1=="surface" && ($8 ~ /^unhomed:/ || $8=="respell")) || $1=="exemption-refused" || $1=="unknown" {printf " %s %s (%s);", $1, $2, $8}')"
-  wsum="$wsum; ${ssum:-specialized: no summary}"
+  sfind="$(printf '%s\n' "$sout" | awk -F'\t' '($1=="surface" && ($8 ~ /^unhomed:/ || $8=="respell" || $8=="extra-key")) || $1=="exemption-refused" || $1=="pointer" || $1=="unknown" {printf " %s %s (%s);", $1, $2, $8}')"
+  wsum="$wsum; ${ssum:-specialized: no summary}${wfail:+; adopt-lib.sh workflows failed (exit $wfail)}"
   case "$src" in
     0)  : ;;
     10) [ "$wrc" -eq 11 ] || wrc=10; wfind="$wfind$sfind" ;;

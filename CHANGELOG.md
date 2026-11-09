@@ -16,11 +16,12 @@ only by a release it upgrades to. These entries are the notes for both.
   (retired) and names each fact's home: repo-wide in the root doc, one package's conventions in a
   nested root doc there, and paths that span the tree in `.claude/rules/<name>.md` with `paths:`.
   A per-package gate command is a custom gate (`test-api`) scoped by `[gates.scope]`, and
-  `agents.toml` carries no prose. `adopt-lib.sh specialized` inventories `.claude/rules/**/*.md`,
-  every tracked nested root doc (manifest or not) and `.codex/rules*`/`.gemini/rules*` hand
-  mirrors, by path and frontmatter only. It reports each one's scope, which agent loads it and
-  when, and where it belongs. It also reports a rule scoped with `globs:`, which Claude Code does
-  not read, so that rule loads every session. A mirror is proved by bytes. `/adopt` gains a
+  `agents.toml` carries no prose. `adopt-lib.sh specialized` inventories the root docs,
+  `.claude/rules/**/*.md` (through links), every tracked nested root doc (manifest or not) and
+  `.codex/rules*`/`.gemini/rules*` hand mirrors, by path and frontmatter only. It reports each
+  one's scope, which agent loads it and when, and where it belongs. It also reports a rule scoped
+  with `globs:`, which Claude Code does not read, so that rule loads every session (witnessed on
+  Claude Code 2.1.319). A mirror is proved by its exact bytes. `/adopt` gains a
   judgment step: the agent marks each range fact or workflow from `adopt-lib.sh prose` scaffolds,
   and the library refuses a judgment that does not cover the current file or calls a fenced block
   a workflow. These surfaces are now `rule` and `nested-doc` scan records, never `other`, and a

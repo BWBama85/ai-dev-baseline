@@ -222,7 +222,7 @@ debug        = "claude"     # owns root-cause investigations.
 # test      = "pnpm test"
 # format    = "pnpm format:check"
 # build     = "pnpm build"          # a custom gate — blocks like the built-in four
-# test-api  = "pnpm test --filter api"   # a per-package command: a custom gate named for the
+# test-api  = "pnpm --filter api test"   # a per-package command: a custom gate named for the
 #                                        # package, scoped below in [gates.scope]
 #
 # agents.toml carries CONFIGURATION only — commands, scopes, roles. A project fact ("migrations

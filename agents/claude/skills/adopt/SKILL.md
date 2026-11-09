@@ -248,22 +248,28 @@ the owner approve it. The completion contract's `conformance` rung (step 12) re-
 `adopt-specialized.tsv` (#552) is
 `<class>TAB<path>TAB<kind>TAB<agent>TAB<key>TAB<scope>TAB<reach>TAB<status>TAB<judged>`, ending in
 one `summary` whose last field counts every class, zeros included:
-`specialized: rules=… nested=… mirrors=… facts=… mixed=… workflows=… unhomed=… …`. It covers a
-project's `.claude/rules/**/*.md`, the hand-mirror locations `.codex/rules.md`, `.codex/rules/`,
-`.gemini/rules.md` and `.gemini/rules/`, and every **tracked** root doc below the top level, with or
-without a manifest beside it. `base/practices/handling-the-unknown.md` ("Facts and workflows") is
+`specialized: rootdocs=… rules=… nested=… mirrors=… facts=… mixed=… workflows=… unhomed=… …`. It
+covers the top-level root docs (always in their home, judged so a mixed one can be split), a
+project's `.claude/rules/**/*.md` (followed through links, as Claude follows them), the hand-mirror
+locations `.codex/rules.md`, `.codex/rules/`, `.gemini/rules.md` and `.gemini/rules/`, and every
+**tracked** root doc below the top level, with or without a manifest beside it. Every agent's
+surfaces are read so a mirror's source is found; only the agents asked about are reported. `base/practices/handling-the-unknown.md` ("Facts and workflows") is
 the rule it applies:
 
 - `surface` — one per file. `key` is the frontmatter key that scopes a rule (`paths`, `globs`,
   `both`, `none`), `scope` its globs, and `reach` which agent loads it and when
-  (`claude:on-path-match`, `claude:every-session`, `claude:on-demand`, `codex:cwd-at-or-below`,
-  `gemini:subdir-scan`, `none`). `status` is the home: `homed`; `unhomed:rootdoc` (an unscoped
-  rule, so repo-wide facts); `unhomed:nested:<package>` (every glob lies in one package);
-  `unhomed:rules` (a nested doc outside a package, or a mirror location that copies nothing);
-  `respell`; `mirror:<source>` (byte-identical to a Claude rule or nested doc, whole or body);
-  `exempt`.
-- `key-spelling` — a rule scoped with `globs:`, which Claude Code does not read, so it loads at
-  every session start. Report the documented spelling, `paths:`. Never rewrite it yourself.
+  (`claude:on-path-match`, `claude:every-session`, `claude:on-demand`, `codex:every-session`,
+  `codex:cwd-at-or-below`, `codex:shadowed` (an `AGENTS.md` beside an `AGENTS.override.md`, which
+  Codex reads instead), `gemini:every-session`, `gemini:on-access` (Gemini CLI 0.35+ loads a nested
+  `GEMINI.md` when a tool touches that directory), `none`). `status` is the home: `homed`;
+  `unhomed:rootdoc` (an unscoped rule, so repo-wide facts); `unhomed:nested:<package>` (every glob
+  lies in one package); `unhomed:rules` (a nested doc outside every package, or a mirror location
+  that copies nothing); `respell` (scoped only by `globs:`); `extra-key` (scoped by `paths:`, with a
+  stray `globs:` beside it); `mirror:<source>` (byte-identical to a Claude rule or a root doc, whole
+  or body); `exempt`.
+- `key-spelling` — a rule carrying `globs:`, which Claude Code does not read (witnessed: Claude
+  Code 2.1.319 loaded a `globs:`-only rule at `session_start`). With `globs:` alone the rule loads
+  every session: rename the key to `paths:`. Beside `paths:`, delete it. Never edit it yourself.
 - `pointer` — `<file>:<line>` of a prose line in a surface invoking a legacy or project skill.
   Fenced blocks are not prose. It is an input to the split in step 3b.
 - `exempt` / `exemption-refused` — a `project-delta` entry's `keeps:` line in the decision log.
@@ -307,8 +313,8 @@ that boundary; the scan does not cross it.
 
 Whether a range says *what is true of this code* (a fact) or *what steps to run, or which skill to
 invoke* (a workflow) is a judgment over prose, so it is yours. It is not the library's. Make it
-for every `surface` record that is not a `mirror`, and write it to the state dir; the library
-validates it and never trusts it.
+for every `surface` record that is not a `mirror`, root docs included, and write it to the state
+dir; the library validates it and never trusts it.
 
 ```bash
 # ADB-SNIPPET: specialized-scaffold
@@ -321,8 +327,9 @@ awk -F'\t' '$1=="surface" && $8 !~ /^mirror:/ {print $2}' ".claude/state/adopt-s
 
 Write `.claude/state/adopt-split.tsv`, one row per range,
 `<path>TAB<sha256>TAB<start>TAB<end>TAB<fact|workflow>TAB<destination>`. The ranges for a file are
-contiguous, cover lines 1 to its last line in order, and carry the digest `prose` printed. A
-`fact` range's destination is `keep`, `rootdoc`, `rule:<path>` or `nested:<dir>`. A `workflow`
+contiguous, cover lines 1 to its last line in order, and carry the digest `prose` printed; an empty
+file is one `0 0` row. A `fact` range's destination is `keep`, `rootdoc`, `rule:<path>` or
+`nested:<dir>`, a plain repository path. A `workflow`
 range's is `retire` or `baseline-issue`, and it must hold a prose line: a fence is never judged. A
 `pointer` record's line is a workflow range unless the owner says otherwise. Then re-run:
 
@@ -384,8 +391,8 @@ while IFS="$TABC" read -r kind rel name agent; do
   case "$kind" in
     skill|other|override)
       wclass="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" wclass ".claude/state/adopt-workflows.tsv" "$rel" "$agent")" || wclass=unjudged ;;
-    # A rule or nested doc (#552) carries its `specialized` class instead.
-    rule|nested-doc)
+    # A rule, nested doc or root doc (#552) carries its `specialized` class instead.
+    rule|nested-doc|rootdoc)
       wclass="$(bash "$HOME/.claude/scripts/lib/adopt-lib.sh" sclass ".claude/state/adopt-specialized.tsv" "$rel" "$agent")" || wclass=unjudged ;;
   esac
   case "$kind:$wclass" in
@@ -394,6 +401,7 @@ while IFS="$TABC" read -r kind rel name agent; do
     other:competes:*|other:shadows|other:duplicates|other:project-specific|other:exempt) ;;   # a legacy command, a pinned skill's extra file
     override:project-specific) ;;
     rule:*|nested-doc:*) ;;   # sclass prints only its own words; anything else becomes unjudged there
+    rootdoc:split) ;;          # a prescribed home: only a judged split changes it
     *) wclass=- ;;
   esac
   coll=no;  [ -n "$src" ] && coll=yes
@@ -859,7 +867,10 @@ its evidence (the `[reviewers]` line names the pull requests it was read from, a
 read), and whether the interview ran, with the answers it recorded or why it was skipped; every
 hygiene finding, including any axis that could not look; every conformance finding with its
 remedy, every deviation with its id, and the conformance summary's files and rules; every
-`escalate` as a question for the owner; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
+`escalate` as a question for the owner; every fact surface with its reach and home, every
+key-spelling and pointer finding, and the approved split proposal — each row of `adopt-split.tsv`
+(path, digest, range, fact or workflow, destination), since `--apply` carries it out from this
+report once the state dir is swept; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
 with its outstanding and undetermined rungs. The scratch files under `.claude/state` are swept, so
 this report is the only copy of that evidence a later reader will have. Every value in it that came
 from the scanned project or from GitHub — a gate command, a login, a path, a proposal line — is

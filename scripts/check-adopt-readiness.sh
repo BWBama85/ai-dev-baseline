@@ -536,10 +536,13 @@ always.
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}todo" "probe: an unscoped project rule makes the workflows rung todo"
 has "$out" "surface .claude/rules/general.md (unhomed:rootdoc)" "probe: ...naming the surface and its home"
-has "$out" "specialized: rules=1" "probe: ...with the specialized counts visible"
+has "$out" "specialized: rootdocs=0 rules=1 " "probe: ...with the specialized counts visible"
 printf -- '---\npaths: "src/**"\n---\nfacts\n' > "$d/.claude/rules/general.md"
 out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}ok" "probe: a paths: rule in its home leaves the workflows rung ok"
+printf -- '---\npaths: "src/**"\n---\nRun /implement 12 here.\n' > "$d/.claude/rules/general.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "pointer .claude/rules/general.md:4 (implement)" "probe: a rule routing work to a legacy skill keeps the workflows rung open"
 # THE CONFORMANCE RUNG (#301): adopt-lib.sh conformance, translated — a same-model review is todo,
 # a recorded DEVIATION makes it ok and is named, and an unreadable review rung is unknown.
 d="$WORK/p-conf"; mkrepo "$d"; printf '[roles]\nprimary = "claude"\nreview = ["claude"]\n' > "$d/agents.toml"
@@ -1598,6 +1601,10 @@ shmutant_mut workflows-findings-read-ok \
     '    10) _ar_emit workflows todo' \
     '    10) _ar_emit workflows ok' \
     'probe: a competing project skill makes the workflows rung todo'
+shmutant_mut workflows-specialized-no-pointers \
+    '  [ -z "$sbl" ] || sp_ag+=(--baseline "$sbl")' \
+    '  :' \
+    'a rule routing work to a legacy skill keeps the workflows rung open'
 shmutant_mut workflows-specialized-not-folded \
     '    10) [ "$wrc" -eq 11 ] || wrc=10; wfind="$wfind$sfind" ;;' \
     '    10) : ;;' \

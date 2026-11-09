@@ -891,8 +891,8 @@ cmd_classify() {
     competes:*) wtarget="${wclass#competes:}"; wclass=competes
                 case "$wtarget" in ''|-*|*[!a-z0-9-]*) die "classify: competes:<target> needs a workflow name [a-z0-9-]" ;; esac ;;
     -|shadows|duplicates|project-specific|exempt|unjudged) ;;
-    homed|mirror|split|respell|unhomed:rootdoc|unhomed:rules|unhomed:nested|pending|none)
-      case "$1" in rule|nested-doc) ;; *) die "classify: <class> $wclass applies only to a rule or nested-doc" ;; esac ;;
+    homed|mirror|split|respell|extra-key|unhomed:rootdoc|unhomed:rules|unhomed:nested|pending|none)
+      case "$1" in rule|nested-doc|rootdoc) ;; *) die "classify: <class> $wclass applies only to a rule, nested-doc or rootdoc" ;; esac ;;
     *) die "classify: <workflows-class> must be -|competes:<target>|shadows|duplicates|project-specific|exempt|unjudged, or a specialized class (sclass): $wclass" ;;
   esac
   case "$collision"  in yes|no) ;;              *) die "classify: <collision> must be yes|no: $collision" ;; esac
@@ -933,12 +933,18 @@ cmd_classify() {
   # A SPECIALIZED SURFACE (#552) — a project rule, a nested root doc, or a hand mirror — carries the
   # class `sclass` read from `specialized`: where its facts belong, and whether it was judged fact
   # or workflow. Never `other`, so never the generic escalation; only an unjudged one escalates.
+  # A ROOT DOC is a prescribed home, so only a judged split changes its verdict.
+  if [ "$kind" = rootdoc ] && [ "$wclass" = split ]; then
+    printf 'move%sholds workflow ranges — split it per the judgment (adopt-split.tsv): the fact ranges stay, the workflow ranges retire as baseline issues\n' "$TAB"
+    return 0
+  fi
   if [ "$kind" = rule ] || [ "$kind" = nested-doc ]; then
     case "$wclass" in
       homed)  printf 'keep%sproject facts in their home (handling-the-unknown.md) — judged facts only, so it stays as it is\n' "$TAB" ;;
       exempt) printf 'keep%skept outside its home by a project-delta keeps: entry in the decision log — judged facts only\n' "$TAB" ;;
       mirror) printf 'keep%sa hand mirror, byte-identical to the Claude rule or nested doc it copies — keep it in step until the baseline carries rules to Codex and Gemini; never a competing skill\n' "$TAB" ;;
-      split)  printf 'move%sholds workflow ranges — split it per the judgment (adopt-split.tsv): the fact ranges stay, the workflow ranges retire as baseline issues\n' "$TAB" ;;
+      split)  printf 'move%sholds workflow ranges — split it per the judgment (adopt-split.tsv): each fact range goes to the destination its row names, the workflow ranges retire as baseline issues\n' "$TAB" ;;
+      extra-key) printf 'move%sscoped by paths:, which Claude Code reads, beside a globs: key it ignores — delete the globs: line (the owner approves the edit; nothing rewrites it)\n' "$TAB" ;;
       respell) printf 'move%sscoped with a key Claude Code does not read (globs:), so it loads at every session start — rename the key to paths: (the owner approves the edit; nothing rewrites it)\n' "$TAB" ;;
       unhomed:rootdoc) printf 'move%san unscoped rule loads every session, so its facts are repo-wide — move them into the root doc\n' "$TAB" ;;
       unhomed:rules)   printf 'move%sfacts outside their home — move them to a .claude/rules/<name>.md scoped with paths: (a subtree that is not a package, or a hand-mirror location that copies nothing)\n' "$TAB" ;;
@@ -3011,10 +3017,13 @@ cmd_wclass() {
 #   adopt-lib.sh sclass      <specialized-tsv> <relpath> <agent>   # one surface's class, for classify
 #   adopt-lib.sh prose       <project-root> <relpath>              # the scaffold a judgment fills
 #
-# THE SURFACES: a project's `.claude/rules/**/*.md` (kind `rule`, Claude); `.codex/rules.md`,
-# `.codex/rules/**/*.md` and the `.gemini/` equivalents (kind `rule`, a hand-mirror location); and
-# every TRACKED root doc below the top level (kind `nested-doc`: CLAUDE.md, AGENTS.md,
-# AGENTS.override.md, GEMINI.md), whether or not a manifest sits beside it (owner, 2026-10-17).
+# THE SURFACES: the top-level root docs (kind `rootdoc`, always in their home, judged so a mixed one
+# can be split); a project's `.claude/rules/**/*.md` (kind `rule`, Claude), followed through links
+# as Claude follows them; `.codex/rules.md`, `.codex/rules/**/*.md` and the `.gemini/` equivalents
+# (kind `rule`, a hand-mirror location); and every TRACKED root doc below the top level (kind
+# `nested-doc`: CLAUDE.md, AGENTS.md, AGENTS.override.md, GEMINI.md), whether or not a manifest
+# sits beside it (owner, 2026-10-17). Every agent's surfaces are read, so a mirror's source is found
+# whichever agents are asked about; only the asked-about agents' surfaces are reported.
 #
 # DECIDED BY PATH AND FRONTMATTER ONLY. The fact-vs-workflow judgment is prose, so it is the
 # agent's, made in /adopt and written to the `--judgment` file this command VALIDATES; nothing here
@@ -3024,9 +3033,9 @@ cmd_wclass() {
 # stdout: `<class>TAB<path>TAB<kind>TAB<agent>TAB<key>TAB<scope>TAB<reach>TAB<status>TAB<judged>`
 #   surface            one per surface. key paths|globs|both|none (- for a doc); scope the globs,
 #                      space-joined (-); reach which agent loads it and when; status homed |
-#                      unhomed:rootdoc | unhomed:rules | unhomed:nested:<package> | respell |
-#                      mirror:<source> | exempt; judged facts|mixed|workflows|stale|unjudged (- for
-#                      a mirror, or when no --judgment was given)
+#                      unhomed:rootdoc | unhomed:rules | unhomed:nested:<package> | respell (only
+#                      globs:) | extra-key (paths: and globs:) | mirror:<source> | exempt; judged
+#                      facts|mixed|workflows|stale|unjudged (- for a mirror, or with no --judgment)
 #   key-spelling       a rule scoped by a key Claude Code does not read; status names `paths`
 #   pointer            <file>:<line> of a prose line invoking a project or legacy skill; status names it
 #   exempt             a decisions.md `keeps:` line explaining where a surface lives; status is its site
@@ -3041,25 +3050,30 @@ _ad_sp_rec() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
 
 # _ad_sp_path_ok <relpath> — a repository path in the closed charset, with no `..` component.
 _ad_sp_path_ok() {
-  case "$1" in ''|/*|*[!A-Za-z0-9._/-]*|..|../*|*/..|*/../*|*//*) return 1 ;; esac
+  case "$1" in ''|/*|*[!A-Za-z0-9._/-]*|..|../*|*/..|*/../*|*//*|*/) return 1 ;; esac
   return 0
 }
 
-# _ad_sp_reach <kind> <agent> <key> <basename> — which agent loads the surface, and when (vendor
-# docs, 2026-11-09: code.claude.com memory; codex-rs agents_md.rs; gemini-cli configuration.md).
+# _ad_sp_reach <kind> <agent> <key> <basename> — which agent loads the surface, and when. Vendor
+# docs, 2026-11-09: code.claude.com memory (rules, nested CLAUDE.md) and a live InstructionsLoaded
+# probe on Claude Code 2.1.319; codex-rs agents_md.rs (root to working directory, one file per
+# directory, the override first); gemini-cli docs/cli/gemini-md.md (just-in-time on tool access,
+# v0.35.0). A nested AGENTS.md beside an AGENTS.override.md is `codex:shadowed` (set by the caller).
 _ad_sp_reach() {
   case "$1:$2:$3:$4" in
+    rootdoc:claude:*)             printf 'claude:every-session' ;;
+    rootdoc:codex:*)              printf 'codex:every-session' ;;
+    rootdoc:gemini:*)             printf 'gemini:every-session' ;;
     rule:claude:paths:*|rule:claude:both:*) printf 'claude:on-path-match' ;;
     rule:claude:*)                printf 'claude:every-session' ;;
-    rule:*)                       printf 'none' ;;
     nested-doc:*:*:CLAUDE.md)     printf 'claude:on-demand' ;;
     nested-doc:*:*:AGENTS*.md)    printf 'codex:cwd-at-or-below' ;;
-    nested-doc:*:*:GEMINI.md)     printf 'gemini:subdir-scan' ;;
+    nested-doc:*:*:GEMINI.md)     printf 'gemini:on-access' ;;
     *)                            printf 'none' ;;
   esac
 }
 
-# _ad_sp_doc_agent <basename> — the agent a nested root doc speaks to.
+# _ad_sp_doc_agent <basename> — the agent a root doc speaks to.
 _ad_sp_doc_agent() {
   case "$1" in
     CLAUDE.md) printf claude ;; AGENTS.md|AGENTS.override.md) printf codex ;; GEMINI.md) printf gemini ;;
@@ -3067,34 +3081,63 @@ _ad_sp_doc_agent() {
   esac
 }
 
+# _ad_sp_fm_lines <file> — how many lines the frontmatter block takes (0 when the first line is not
+# `---`, or the block never closes). A `\r` before the newline is the same delimiter, for every
+# reader of the block: the scope, the body digest and the prose scaffold.
+_ad_sp_fm_lines() {
+  LC_ALL=C awk '{ sub(/\r$/, "") }
+    NR == 1 { if ($0 != "---") { print 0; done = 1; exit }; next }
+    $0 == "---" { print NR; done = 1; exit }
+    END { if (!done) print 0 }' "$1"
+}
+
 # _ad_sp_scope <file> — the rule's frontmatter scope: `<key>TAB<globs, space-joined, or ->`.
 # rc 1 = malformed: an unclosed block, a key given twice, an empty list, a value outside the glob
-# charset, or a line YAML would not read as one of ours. Malformed is never "unscoped".
-# `paths:` takes a YAML list or a comma-separated string (code.claude.com/docs/en/memory);
-# `globs:` is read the same way so its intended scope can be reported.
+# charset, a `..` component, text after a closing quote, or an indented line under a scalar or under
+# no key YAML would accept. Malformed is never "unscoped". `paths:` takes a YAML list or a
+# comma-separated string (code.claude.com/docs/en/memory); `globs:` is read the same way so its
+# intended scope can be reported. An empty file has no frontmatter.
 _ad_sp_scope() {
   LC_ALL=C awk '
-    function unq(v,  f, l) {
-      f = substr(v, 1, 1); l = substr(v, length(v), 1)
-      if (length(v) >= 2 && f == l && (f == "\"" || f == Q)) v = substr(v, 2, length(v) - 2)
-      return v
-    }
     BEGIN { Q = sprintf("%c", 39) }
+    function trim(v) { sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); return v }
+    # one YAML scalar: a quoted one ends at its quote (only a comment may follow); a plain one
+    # ends at " #".
+    function val(v,  f, i) {
+      v = trim(v); f = substr(v, 1, 1)
+      if (f == "\"" || f == Q) {
+        i = index(substr(v, 2), f); if (i == 0) { bad = 1; return "" }
+        rest = trim(substr(v, i + 2)); if (rest != "" && rest !~ /^#/) bad = 1
+        return substr(v, 2, i - 1)
+      }
+      sub(/[ \t]+#.*$/, "", v); return trim(v)
+    }
     function item(k, v) {
-      v = unq(v); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
-      if (v == "" || v !~ /^[A-Za-z0-9._\/*?{},!@+-]+$/) { bad = 1; return }
+      v = trim(v)
+      if (v == "" || v !~ /^[A-Za-z0-9._\/*?{},!@+\[\]-]+$/ || v ~ /^\// || v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }
       G[k] = G[k] (G[k] == "" ? "" : " ") v; n[k]++
     }
-    function scalar(k, v,  i, c, d, cur) {
-      if (v ~ /^\[/) { if (v !~ /\]$/) { bad = 1; return }; v = substr(v, 2, length(v) - 2) }
-      else v = unq(v)
-      d = 0; cur = ""
+    function splitc(k, v,  i, c, d, q, cur) {   # commas at brace depth 0 and outside quotes
+      d = 0; q = ""; cur = ""
       for (i = 1; i <= length(v); i++) {
         c = substr(v, i, 1)
+        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+        if (c == "\"" || c == Q) { q = c; cur = cur c; continue }
         if (c == "{") d++; else if (c == "}") d--
-        if (c == "," && d == 0) { item(k, cur); cur = "" } else cur = cur c
+        if (c == "," && d == 0) { item(k, val(cur)); cur = "" } else cur = cur c
       }
-      item(k, cur)
+      if (q != "") bad = 1
+      item(k, val(cur))
+    }
+    function scalar(k, v,  j) {
+      v = trim(v)
+      if (substr(v, 1, 1) == "[") {
+        j = index(v, "]"); while (j > 0 && index(substr(v, j + 1), "]") > 0) j += index(substr(v, j + 1), "]")
+        if (j == 0) { bad = 1; return }
+        rest = trim(substr(v, j + 1)); if (rest != "" && rest !~ /^#/) { bad = 1; return }
+        splitc(k, substr(v, 2, j - 2)); return
+      }
+      splitc(k, val(v))
     }
     { sub(/\r$/, "") }
     NR == 1 { if ($0 != "---") { nofm = 1; exit } ; next }
@@ -3102,21 +3145,23 @@ _ad_sp_scope() {
     $0 == "---" { closed = 1; next }
     NR > 400 { exit }
     /^[A-Za-z_][A-Za-z0-9_-]*[ \t]*:/ {
-      k = $0; sub(/[ \t]*:.*/, "", k); v = $0; sub(/^[^:]*:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
-      cur = ""
+      k = $0; sub(/[ \t]*:.*/, "", k); v = $0; sub(/^[^:]*:[ \t]*/, "", v); v = trim(v)
+      cur = ""; sc = ""
       if (k == "paths" || k == "globs") {
         if (k in seen) bad = 1
-        seen[k] = 1; cur = k
-        if (v != "") { scalar(k, v); cur = "" }
+        seen[k] = 1
+        if (v != "" && v !~ /^#/) { scalar(k, v); sc = k } else cur = k
       }
       next
     }
     /^[ \t]*(#.*)?$/ { next }
-    /^[ \t]+-/ { if (cur != "") { v = $0; sub(/^[ \t]+-[ \t]*/, "", v); sub(/[ \t]+$/, "", v); item(cur, v) }; next }
-    /^[ \t]/ { if (cur != "") bad = 1; next }
+    /^[ \t]+-/ { if (sc != "") bad = 1
+                 else if (cur != "") { v = $0; sub(/^[ \t]+-/, "", v); item(cur, val(v)) }
+                 next }
+    /^[ \t]/ { if (cur != "" || sc != "") bad = 1; next }
     { bad = 1 }
     END {
-      if (nofm) { print "none\t-"; exit 0 }
+      if (NR == 0 || nofm) { print "none\t-"; exit 0 }
       if (!closed || bad) exit 1
       for (k in seen) if (n[k] == 0) exit 1
       if (("paths" in seen) && ("globs" in seen)) { print "both\t" G["paths"]; exit 0 }
@@ -3126,42 +3171,58 @@ _ad_sp_scope() {
     }' "$1"
 }
 
-# _ad_sp_package <root> <glob> — the package (a directory below the root holding its own manifest)
-# that every match of <glob> lies inside, or nothing. The glob's literal leading components name
-# the deepest directory every match shares; its nearest ancestor with a manifest is the package.
+# _ad_sp_package <root> <dir> — the nearest directory at or above <dir>, below the root, that holds
+# its own manifest (a package), or nothing.
 _ad_sp_package() {
-  local root="$1" g="$2" dir="" comp rest
-  rest="$g"
-  while [ -n "$rest" ]; do
-    comp="${rest%%/*}"
-    case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
-    case "$comp" in *[\*\?\{\}\!]*|'') break ;; esac
-    [ -n "$rest" ] || break                      # the last component names a file, not a directory
-    dir="${dir:+$dir/}$comp"
-  done
-  while [ -n "$dir" ]; do
+  local root="$1" dir="$2"
+  while [ -n "$dir" ] && [ "$dir" != . ]; do
     if [ -d "$root/$dir" ] && _adb_has_project_manifest "$root/$dir"; then printf '%s' "$dir"; return 0; fi
     case "$dir" in */*) dir="${dir%/*}" ;; *) dir="" ;; esac
   done
   return 0
 }
 
-# _ad_sp_body_digest <file> — the SHA-256 of the file with its frontmatter block removed, so a
-# mirror that copied only a rule's body is still proved by bytes.
-_ad_sp_body_digest() {
-  LC_ALL=C awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next } !fm' "$1" | adb_sha256_stdin
+# _ad_sp_glob_dir <glob> — the deepest directory every match of <glob> shares: its literal leading
+# components, the last one dropped when it names a file. The glob was refused a `..` component.
+_ad_sp_glob_dir() {
+  local rest="$1" dir="" comp
+  while [ -n "$rest" ]; do
+    comp="${rest%%/*}"
+    case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
+    case "$comp" in *[\*\?\{\}\!\[\]]*|''|.) break ;; esac
+    [ -n "$rest" ] || break
+    dir="${dir:+$dir/}$comp"
+  done
+  printf '%s' "$dir"
 }
 
-# _ad_sp_prose_lines <file> — the numbers of its non-blank PROSE lines: frontmatter, fenced blocks
-# and HTML comments are not prose (adb_md_prose keeps line numbers). rc 1 = could not be read.
-_ad_sp_prose() {
-  LC_ALL=C awk 'NR == 1 && $0 == "---" { fm = 1; print ""; next } fm { if ($0 == "---") fm = 0; print ""; next } { print }' "$1" \
-    | adb_md_prose text 2>/dev/null
+# _ad_sp_body_digest <file> — the SHA-256 of the file's EXACT bytes after its frontmatter block, so
+# a mirror that copied only a rule's body is proved by bytes (tail keeps a final line's missing
+# newline missing). Every producer's status reaches the caller.
+_ad_sp_body_digest() {
+  local n out
+  n="$(_ad_sp_fm_lines "$1")" || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  if [ "$n" -eq 0 ]; then adb_sha256 "$1"; return; fi
+  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf ' %s' "${PIPESTATUS[0]}")" || return 1
+  [ "${out##* }" = 0 ] || return 1
+  printf '%s' "${out% *}"
 }
+
+# _ad_sp_prose <file> — the file with frontmatter blanked, through the shared prose filter (fenced
+# blocks and HTML comments blanked too, line numbers kept). rc 1 = could not be read.
+_ad_sp_prose() {
+  local n pre
+  n="$(_ad_sp_fm_lines "$1")" || return 1
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  pre="$(LC_ALL=C awk -v n="$n" 'NR <= n { print ""; next } { print }' "$1")" || return 1
+  printf '%s\n' "$pre" | adb_md_prose text 2>/dev/null
+}
+# _ad_sp_prose_lines <file> — the numbers of its non-blank PROSE lines.
 _ad_sp_prose_lines() {
   local p
   p="$(_ad_sp_prose "$1")" || return 1
-  printf '%s\n' "$p" | LC_ALL=C awk '$0 ~ /[^ \t]/ { print NR }'
+  printf '%s\n' "$p" | LC_ALL=C awk '$0 ~ /[^ \t\r]/ { print NR }'
 }
 
 # _ad_sp_lines <file> — how many lines the file has (a final line without a newline counts).
@@ -3169,48 +3230,64 @@ _ad_sp_lines() {
   LC_ALL=C awk 'END { print NR }' "$1"
 }
 
-# _ad_sp_readable <root> <relpath> — a regular file the scan may read: through no link above it,
-# at most 1 MiB, and NUL-free.
+# _ad_sp_readable <root> <relpath> — a regular file the scan may read, at most 1 MiB and NUL-free.
+# Links are followed, as the agents that load these files follow them.
 _ad_sp_readable() {
   local f="$1/$2"
   [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f"
 }
 
-# _ad_sp_keeps <decisions-file> — one `<line>TAB<path|->TAB<problem|->TAB<id>` per `keeps:` line in a
+# _ad_sp_snapshot <file> <max-bytes> — a private copy of a regular, non-link <file>, at most
+# <max-bytes> long and whole (or empty), on stdout as its path; the caller validates and parses THAT
+# copy, so nothing can change between the check and the read. rc 1 = refused or not copied.
+_ad_sp_snapshot() {
+  local f="$1" max="$2" t
+  [ -f "$f" ] && [ ! -L "$f" ] || return 1
+  t="$(mktemp "${TMPDIR:-/tmp}/adopt-sp.XXXXXX")" || return 1
+  if ! head -c "$((max + 1))" "$f" > "$t" 2>/dev/null || { [ -s "$t" ] && ! adb_bytes_whole "$t" "$max"; }; then
+    rm -f "$t"; return 1
+  fi
+  printf '%s' "$t"
+}
+
+# _ad_sp_keeps <decisions-file> — one `<line>TAB<path|->TAB<problem|->` per `keeps:` line in a
 # decision-log entry, read from PROSE (an example in a fence keeps nothing). An entry's fields are the
-# `- key:` lines directly under its `## <id> — <title>` heading. Problems: `not-project-delta`,
-# `twice`, `bad-path`. rc 1 = the file could not be read whole.
+# `- key:` lines directly under its `## <id> — <title>` heading. Problems: `bad-id` (the heading's
+# id is not a plain token), `twice` (any field given twice, `keeps` included), `not-project-delta`,
+# `bad-path`. A malformed entry is refused, never normalized into an exemption. rc 1 = unreadable.
 _ad_sp_keeps() {
   local f="$1" prose
   [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f" || return 1
-  prose="$(adb_md_prose text < "$f" 2>/dev/null)" || return 1
+  prose="$(adb_md_prose text 2>/dev/null < "$f")" || return 1
   printf '%s\n' "$prose" | LC_ALL=C awk '
     function flush(  i, p) {
       for (i = 1; i <= nk; i++) {
         p = KP[i]
-        if (F["category"] != "project-delta") print KL[i] "\t" (KV[i] == "" ? "-" : KV[i]) "\tnot-project-delta\t" id
-        else if (nk > 1) print KL[i] "\t" (KV[i] == "" ? "-" : KV[i]) "\ttwice\t" id
-        else print KL[i] "\t" (KV[i] == "" ? "-" : KV[i]) "\t" p "\t" id
+        if (badid) p = "bad-id"
+        else if (twice) p = "twice"
+        else if (F["category"] != "project-delta") p = "not-project-delta"
+        print KL[i] "\t" (KV[i] == "" ? "-" : KV[i]) "\t" p
       }
-      id = ""; nk = 0; started = 0; delete F; delete KL; delete KV; delete KP
+      id = ""; badid = 0; twice = 0; nk = 0; started = 0; delete F; delete KL; delete KV; delete KP
     }
     /^##? / { flush()
               h = $0; sub(/^##? /, "", h)
-              if (match(h, /^[^ ]+ (—|-) /)) { id = h; sub(/ .*/, "", id); if (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) id = "-" }
+              if (match(h, /^[^ ]+ (—|-) /)) { id = h; sub(/ .*/, "", id); badid = (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) }
               next }
     id != "" && /^- [a-z-]+:/ {
       started = 1
       k = $0; sub(/^- /, "", k); sub(/:.*/, "", k)
       v = $0; sub(/^- [a-z-]+:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
       if (k == "keeps") {
+        if (nk > 0) twice = 1
         nk++; KL[nk] = NR
-        if (v ~ /^[A-Za-z0-9._\/-]+$/ && v !~ /^\// && v !~ /(^|\/)\.\.(\/|$)/ && v !~ /\/\//) { KV[nk] = v; KP[nk] = "-" }
+        if (v ~ /^[A-Za-z0-9._\/-]+$/ && v !~ /^\// && v !~ /\/$/ && v !~ /(^|\/)\.\.(\/|$)/ && v !~ /\/\//) { KV[nk] = v; KP[nk] = "-" }
         else { KV[nk] = ""; KP[nk] = "bad-path" }
-      } else if (!(k in F)) F[k] = v
+      } else { if (k in F) twice = 1; F[k] = v }
       next
     }
     id != "" && !started && /^[ \t]*$/ { next }
-    id != "" { flush() }
+    id != "" { flush(); next }
     END { flush() }'
 }
 
@@ -3234,34 +3311,42 @@ cmd_specialized() {
   local nunk=0 nested_txt="" a rel f
   local -a S_PATH=() S_KIND=() S_AGENT=()
   local _ad_owned
+  local -A OVR=()
   _ad_owned="$(adb_pinned_owned "$root")"
+  _sp_sel() { case ",$agents," in *",$1,"*) return 0 ;; esac; return 1; }
+  # _sp_unk <agent|-> <path> <kind> <reason> — an unknown, counted only for an agent asked about.
+  _sp_unk() {
+    [ "$1" = - ] || _sp_sel "$1" || return 0
+    nunk=$((nunk + 1))
+    if _ad_sp_path_ok "$2"; then _ad_sp_rec unknown "$2" "$3" "$1" - - - "$4" -
+    else _ad_sp_rec unknown - "$3" "$1" - - - "$4" -; fi
+  }
 
-  # --- enumerate: rules and hand-mirror locations, from the filesystem (as `scan` reads .<agent>/) --
-  local -a found=()
-  for a in ${agents//,/ }; do
-    local -a starts=()
+  # --- enumerate: root docs, rules and hand-mirror locations, from the filesystem -------------------
+  for f in CLAUDE.md AGENTS.md AGENTS.override.md GEMINI.md; do
+    [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
+    S_PATH+=("$f"); S_KIND+=(rootdoc); S_AGENT+=("$(_ad_sp_doc_agent "$f")")
+    [ "$f" = AGENTS.override.md ] && OVR[.]=1
+  done
+  local -a found=() starts=()
+  for a in claude codex gemini; do
     case "$a" in
       claude) starts=(.claude/rules) ;;
-      codex|gemini) starts=(".$a/rules.md" ".$a/rules") ;;
-      *) continue ;;
+      *)      starts=(".$a/rules.md" ".$a/rules") ;;
     esac
     for f in "${starts[@]}"; do
-      if ! _ad_parents_searchable "$root" "$f"; then
-        nunk=$((nunk + 1)); _ad_sp_rec unknown "$f" rule "$a" - - - unsearchable -; continue
-      fi
+      if ! _ad_parents_searchable "$root" "$f"; then _sp_unk "$a" "$f" rule unsearchable; continue; fi
       [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
-      if [ -L "$root/.$a" ]; then
-        nunk=$((nunk + 1)); _ad_sp_rec unknown ".$a" rule "$a" - - - linked-agent-dir -; continue
-      fi
+      if test -L "$root/.$a"; then _sp_unk "$a" ".$a" rule linked-agent-dir; continue; fi
       found=()
+      # -L: a linked rules directory, or a linked rule, is walked as Claude walks it. A loop or a
+      # dangling link is a failed walk, never an empty one.
       mapfile -d '' -t found < <(
         cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
-        find "$f" \( -type f -o -type l \) -name '*.md' -print0 2>/dev/null | LC_ALL=C sort -z
+        find -L "$f" -type f -name '*.md' -print0 2>/dev/null | LC_ALL=C sort -z
         _sp_ps=("${PIPESTATUS[@]}")
         printf '\0%s' "$(( _sp_ps[0] | _sp_ps[1] ))")
-      if [ "${#found[@]}" -eq 0 ] || [ "${found[-1]}" != 0 ]; then
-        nunk=$((nunk + 1)); _ad_sp_rec unknown "$f" rule "$a" - - - not-walked-in-full -
-      fi
+      if [ "${#found[@]}" -eq 0 ] || [ "${found[-1]}" != 0 ]; then _sp_unk "$a" "$f" rule not-walked-in-full; fi
       [ "${#found[@]}" -eq 0 ] || unset 'found[-1]'
       for rel in "${found[@]}"; do
         [ -n "$rel" ] || continue
@@ -3272,21 +3357,19 @@ cmd_specialized() {
   done
 
   # --- enumerate: every TRACKED nested root doc (the index is the authority, as for `mirror`) -------
-  local gout=""
+  local gout="" ent mode b ag
   local -a idx=()
   if ! command -v git >/dev/null 2>&1; then
-    nested_txt="nested=not-judged"; nunk=$((nunk + 1)); _ad_sp_rec unknown - nested-doc - - - - git-not-found -
+    nested_txt="nested=not-judged"; _sp_unk - - nested-doc git-not-found
   elif ! gout="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" || [ "$gout" != true ]; then
-    nested_txt="nested=not-judged"; nunk=$((nunk + 1)); _ad_sp_rec unknown - nested-doc - - - - not-a-git-repository -
+    nested_txt="nested=not-judged"; _sp_unk - - nested-doc not-a-git-repository
   else
     mapfile -d '' -t idx < <(git -C "$root" ls-files -s -z 2>/dev/null; printf '\0%s' "$?")
     if [ "${#idx[@]}" -eq 0 ] || [ "${idx[-1]}" != 0 ]; then
-      nested_txt="nested=not-judged"; nunk=$((nunk + 1)); _ad_sp_rec unknown - nested-doc - - - - index-unreadable -
-      idx=()
+      nested_txt="nested=not-judged"; _sp_unk - - nested-doc index-unreadable; idx=()
     else
       unset 'idx[-1]'
     fi
-    local ent mode b ag
     for ent in "${idx[@]}"; do
       [ -n "$ent" ] || continue
       rel="${ent#*$'\t'}"; mode="${ent%% *}"
@@ -3295,104 +3378,100 @@ cmd_specialized() {
       case "$_AD_SP_DOCS" in *" $b "*) ;; *) continue ;; esac
       case "/$rel" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
       ag="$(_ad_sp_doc_agent "$b")"
-      case ",$agents," in *",$ag,"*) ;; *) continue ;; esac
       _ad_owns "$_ad_owned" "$rel" && continue
-      if [ "$mode" = 120000 ]; then
-        nunk=$((nunk + 1)); _ad_sp_rec unknown "$rel" nested-doc "$ag" - - - linked-doc -; continue
-      fi
+      if [ "$mode" = 120000 ]; then _sp_unk "$ag" "$rel" nested-doc linked-doc; continue; fi
+      [ "$b" = AGENTS.override.md ] && OVR["${rel%/*}"]=1
       S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag")
     done
   fi
 
-  # --- per-surface facts: key, scope, reach, home ---------------------------------------------------
+  # --- per-surface facts: key, scope, reach, digests ---------------------------------------------------
   local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=()
   local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st
-  local -a garr=()
-  local -a ok_i=()
+  local -a garr=() ok_i=()
   for ((i = 0; i < n; i++)); do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"
-    if ! _ad_sp_path_ok "$rel"; then
-      nunk=$((nunk + 1)); _ad_sp_rec unknown - "$kind" "$a" - - - path-outside-charset -; continue
-    fi
+    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi
     if [ -n "${IDX[$rel]:-}" ]; then continue; fi
-    if ! _ad_sp_readable "$root" "$rel"; then
-      nunk=$((nunk + 1)); _ad_sp_rec unknown "$rel" "$kind" "$a" - - - unreadable -; continue
-    fi
+    if ! _ad_sp_readable "$root" "$rel"; then _sp_unk "$a" "$rel" "$kind" unreadable; continue; fi
     key=-; scope=-
     if [ "$kind" = rule ] && [ "$a" = claude ]; then
-      if ! ks="$(_ad_sp_scope "$root/$rel")"; then
-        nunk=$((nunk + 1)); _ad_sp_rec unknown "$rel" rule claude - - - malformed-frontmatter -; continue
-      fi
+      if ! ks="$(_ad_sp_scope "$root/$rel")"; then _sp_unk "$a" "$rel" rule malformed-frontmatter; continue; fi
       key="${ks%%$'\t'*}"; scope="${ks#*$'\t'}"
     fi
     # A DIGEST THAT COULD NOT BE TAKEN is not judged: an empty one would read as "no mirror" and
     # "the judgment is stale", two confident answers about bytes nobody read.
     if ! WHOLE["$rel"]="$(adb_sha256 "$root/$rel")" || ! BODY["$rel"]="$(_ad_sp_body_digest "$root/$rel")" \
        || ! LINES["$rel"]="$(_ad_sp_lines "$root/$rel")"; then
-      nunk=$((nunk + 1)); _ad_sp_rec unknown "$rel" "$kind" "$a" - - - not-digested -; continue
+      _sp_unk "$a" "$rel" "$kind" not-digested; continue
     fi
     IDX["$rel"]="$i"; ok_i+=("$i")
     KEY["$rel"]="$key"; SCOPE["$rel"]="$scope"
     REACH["$rel"]="$(_ad_sp_reach "$kind" "$a" "$key" "${rel##*/}")"
+    # Codex reads one document per directory, the override first.
+    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi
+    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -n "${OVR[.]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi
   done
-  # Mirror sources: every Claude rule and nested doc, by whole-file and body digest.
+  # Mirror sources: every Claude rule, root doc and nested doc, by whole-file and body digest —
+  # whichever agents are asked about.
   local -A SRC=()
   for i in "${ok_i[@]}"; do
     rel="${S_PATH[$i]}"
     [ "${S_KIND[$i]}" = rule ] && [ "${S_AGENT[$i]}" != claude ] && continue
-    [ -n "${WHOLE[$rel]}" ] && { [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"; }
-    [ -n "${BODY[$rel]}" ] && { [ -n "${SRC[${BODY[$rel]}]:-}" ] || SRC["${BODY[$rel]}"]="$rel"; }
+    [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"
+    [ -n "${SRC[${BODY[$rel]}]:-}" ] || SRC["${BODY[$rel]}"]="$rel"
   done
   for i in "${ok_i[@]}"; do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"
-    if [ "$kind" = rule ] && [ "$a" != claude ]; then
+    if [ "$kind" = rootdoc ]; then
+      st=homed
+    elif [ "$kind" = rule ] && [ "$a" != claude ]; then
       # A HAND MIRROR IS PROVED BY BYTES, never by name: its whole file, or its body, equals a Claude
-      # rule's or a nested doc's (the one proof `duplicates` has). Anything else in that location is
-      # a fact surface outside its home.
-      if [ -n "${WHOLE[$rel]}" ] && [ -n "${SRC[${WHOLE[$rel]}]:-}" ]; then st="mirror:${SRC[${WHOLE[$rel]}]}"
-      elif [ -n "${BODY[$rel]}" ] && [ -n "${SRC[${BODY[$rel]}]:-}" ]; then st="mirror:${SRC[${BODY[$rel]}]}"
+      # rule's, a root doc's or a nested doc's (the one proof `duplicates` has). Anything else in that
+      # location is a fact surface outside its home.
+      if [ -n "${SRC[${WHOLE[$rel]}]:-}" ]; then st="mirror:${SRC[${WHOLE[$rel]}]}"
+      elif [ -n "${SRC[${BODY[$rel]}]:-}" ]; then st="mirror:${SRC[${BODY[$rel]}]}"
       else st="unhomed:rules"; fi
     elif [ "$kind" = rule ]; then
       case "${KEY[$rel]}" in
-        none) st="unhomed:rootdoc" ;;
-        globs|both) st=respell ;;
+        none)  st="unhomed:rootdoc" ;;
+        globs) st=respell ;;
+        both)  st=extra-key ;;
         paths)
           # One package holding every glob → that package's nested root doc. Anything else spans
           # the tree, which is what a rules file is for.
-          pkgs=""; pkg=""
+          pkgs=""
           read -r -a garr <<< "${SCOPE[$rel]}"
           for g in "${garr[@]}"; do
-            pkg="$(_ad_sp_package "$root" "$g")"
+            pkg="$(_ad_sp_package "$root" "$(_ad_sp_glob_dir "$g")")"
             [ -n "$pkg" ] || { pkgs="-"; break; }
             case " $pkgs " in *" $pkg "*) ;; *) pkgs="${pkgs:+$pkgs }$pkg" ;; esac
           done
           case "$pkgs" in ''|-|*" "*) st=homed ;; *) st="unhomed:nested:$pkgs" ;; esac ;;
       esac
     else
-      if _adb_has_project_manifest "$root/${rel%/*}"; then st=homed; else st="unhomed:rules"; fi
+      # A nested doc anywhere inside a package is in its home.
+      if [ -n "$(_ad_sp_package "$root" "${rel%/*}")" ]; then st=homed; else st="unhomed:rules"; fi
     fi
     ST["$rel"]="$st"
   done
 
-  # --- exemptions: a `keeps:` line in the decision log explains where a surface lives ------------------
-  local dlog="$root/.ai-dev-baseline/decisions.md" kl kp kprob nref=0 nexm=0
-  local keeps=""
+  # --- exemptions: a `keeps:` line in the decision log explains where a surface lives -----------------
+  local dlog="$root/.ai-dev-baseline/decisions.md" kl kp kprob nref=0 nexm=0 keeps=""
   local -A KEPT=()
-  if ! _ad_parents_searchable "$root" .ai-dev-baseline/decisions.md; then
-    nunk=$((nunk + 1)); _ad_sp_rec unknown .ai-dev-baseline/decisions.md - - - - - unsearchable -
+  if ! _ad_parents_searchable "$root" ".ai-dev-baseline/decisions.md"; then
+    _sp_unk - .ai-dev-baseline/decisions.md - unsearchable
   elif [ -e "$dlog" ] || [ -L "$dlog" ]; then
-    if ! keeps="$(_ad_sp_keeps "$dlog")"; then
-      nunk=$((nunk + 1)); _ad_sp_rec unknown .ai-dev-baseline/decisions.md - - - - - unreadable -; keeps=""
-    fi
+    keeps="$(_ad_sp_keeps "$dlog")" || { _sp_unk - .ai-dev-baseline/decisions.md - unreadable; keeps=""; }
   fi
-  while IFS="$TAB" read -r kl kp kprob _; do
+  while IFS="$TAB" read -r kl kp kprob; do
     [ -n "$kl" ] || continue
     if [ "$kprob" = - ]; then
       if [ -z "${IDX[$kp]:-}" ]; then kprob=no-surface
       elif [ -n "${KEPT[$kp]:-}" ]; then kprob=duplicate
-      # It explains a LOCATION. A `globs:` rule's defect is its key and a mirror's is #6's, so
-      # neither is a location an entry can explain.
-      else case "${ST[$kp]}" in respell) kprob="key-not-location" ;; mirror:*) kprob="mirror" ;; esac; fi
+      # It explains a LOCATION. A rule's key, a mirror (#6's) and a root doc (already home) are not
+      # locations an entry can explain.
+      else case "${ST[$kp]}" in respell|extra-key) kprob="key-not-location" ;; mirror:*) kprob="mirror" ;; homed) [ "${S_KIND[${IDX[$kp]}]}" = rootdoc ] && kprob="rootdoc" ;; esac; fi
     fi
     if [ "$kprob" != - ]; then
       nref=$((nref + 1)); _ad_sp_rec exemption-refused "decisions.md:$kl" - - - - - "$kprob" -; continue
@@ -3401,35 +3480,42 @@ cmd_specialized() {
   done <<< "$keeps"
 
   # --- the judgment: the agent's fact/workflow ranges, validated, never trusted -----------------------
-  local jgiven="" jok=1 jrows="" jp jd js je jc prev_p="" prev_e=0 pl
+  local jgiven="" jok=1 jrows="" jsnap="" jp jd js je jc jdest prev_p="" prev_e=0 pl
   local -A JSEEN=() JHAS_F=() JHAS_W=() JBAD=() JEND=() PLC=()
   if [ -n "$judg" ]; then
     jgiven=1
-    # An EMPTY judgment is a valid one (nothing to judge); anything else must be whole.
-    if [ ! -f "$judg" ] || [ -L "$judg" ] || { [ -s "$judg" ] && ! adb_bytes_whole "$judg" 16777216; }; then
+    # ONE private snapshot is validated and parsed. An EMPTY judgment is a valid one.
+    if ! jsnap="$(_ad_sp_snapshot "$judg" 16777216)"; then
       jok=0
     elif ! jrows="$(LC_ALL=C awk -F'\t' '
         NF != 6 { exit 1 }
         $2 !~ /^[0-9a-f]+$/ || length($2) != 64 { exit 1 }
-        $3 !~ /^[1-9][0-9]*$/ || $4 !~ /^[1-9][0-9]*$/ || $3 + 0 > $4 + 0 { exit 1 }
-        $5 == "fact"     && $6 !~ /^(keep|rootdoc|rule:[A-Za-z0-9._\/-]+|nested:[A-Za-z0-9._\/-]+)$/ { exit 1 }
+        $3 !~ /^(0|[1-9][0-9]*)$/ || $4 !~ /^(0|[1-9][0-9]*)$/ || $3 + 0 > $4 + 0 { exit 1 }
+        ($3 == 0) != ($4 == 0) { exit 1 }
+        $5 == "fact"     && $6 !~ /^(keep|rootdoc|rule:.+|nested:.+)$/ { exit 1 }
         $5 == "workflow" && $6 !~ /^(retire|baseline-issue)$/ { exit 1 }
         $5 != "fact" && $5 != "workflow" { exit 1 }
-        { print }' "$judg")"; then
+        { print }' "$jsnap")"; then
       jok=0
     fi
+    [ -z "$jsnap" ] || rm -f "$jsnap"
     if [ "$jok" -eq 1 ]; then
-      while IFS="$TAB" read -r jp jd js je jc _; do
+      while IFS="$TAB" read -r jp jd js je jc jdest; do
         [ -n "$jp" ] || continue
-        # A row for a path that is not a judged surface, a path whose rows are not contiguous, or a
-        # range that does not continue the one before it refuses the WHOLE file.
+        # A row for a path that is not a judged surface, a destination that leaves the repository, a
+        # path whose rows are not contiguous, or a range that does not continue the one before it
+        # refuses the WHOLE file.
         if [ -z "${IDX[$jp]:-}" ]; then jok=0; break; fi
         case "${ST[$jp]}" in mirror:*) jok=0; break ;; esac
+        case "$jdest" in rule:*|nested:*) _ad_sp_path_ok "${jdest#*:}" || { jok=0; break; } ;; esac
         if [ "$jp" != "$prev_p" ]; then
-          [ -n "$prev_p" ] && JEND["$prev_p"]="$prev_e"
+          if [ -n "$prev_p" ] && [ "$prev_e" -ge 0 ]; then JEND["$prev_p"]="$prev_e"; fi
           [ -z "${JSEEN[$jp]:-}" ] || { jok=0; break; }
           JSEEN["$jp"]="$jd"; prev_p="$jp"; prev_e=0
+          # An EMPTY file is judged by one row, 0 0.
+          if [ "$js" -eq 0 ]; then JEND["$jp"]=0; prev_e=-1; JHAS_F["$jp"]=1; continue; fi
         fi
+        [ "$prev_e" -ge 0 ] || { jok=0; break; }
         [ "$jd" = "${JSEEN[$jp]}" ] || { jok=0; break; }
         [ "$js" -eq $((prev_e + 1)) ] || { jok=0; break; }
         prev_e="$je"
@@ -3440,8 +3526,7 @@ cmd_specialized() {
           if [ -z "${PLC[$jp]+x}" ]; then
             if pl="$(_ad_sp_prose_lines "$root/$jp")"; then PLC["$jp"]="$pl"; else JBAD["$jp"]=1; continue; fi
           fi
-          pl="${PLC[$jp]}"
-          if printf '%s\n' "$pl" | LC_ALL=C awk -v s="$js" -v e="$je" '$1 >= s && $1 <= e { f = 1 } END { exit !f }'; then
+          if printf '%s\n' "${PLC[$jp]}" | LC_ALL=C awk -v s="$js" -v e="$je" '$1 >= s && $1 <= e { f = 1 } END { exit !f }'; then
             JHAS_W["$jp"]=1
           else
             jok=0; break
@@ -3450,18 +3535,18 @@ cmd_specialized() {
           JHAS_F["$jp"]=1
         fi
       done <<< "$jrows"
-      [ -n "$prev_p" ] && [ "$jok" -eq 1 ] && JEND["$prev_p"]="$prev_e"
+      if [ "$jok" -eq 1 ] && [ -n "$prev_p" ] && [ "$prev_e" -ge 0 ]; then JEND["$prev_p"]="$prev_e"; fi
       # A judgment of the file as it is now must cover every line of it; one that stops short or
       # runs past the end is refused, never read as complete.
       if [ "$jok" -eq 1 ]; then
         for jp in "${!JSEEN[@]}"; do
           [ "${JSEEN[$jp]}" = "${WHOLE[$jp]}" ] || continue
-          [ "${JEND[$jp]:-0}" = "${LINES[$jp]}" ] || { jok=0; break; }
+          [ "${JEND[$jp]:-x}" = "${LINES[$jp]}" ] || { jok=0; break; }
         done
       fi
     fi
     if [ "$jok" -eq 0 ]; then
-      nunk=$((nunk + 1)); _ad_sp_rec unknown - - - - - - judgment-refused -
+      _sp_unk - - - judgment-refused
       JSEEN=(); JHAS_F=(); JHAS_W=(); JBAD=()
     fi
   fi
@@ -3477,48 +3562,54 @@ cmd_specialized() {
   done
 
   # --- pointer names: legacy names the baseline supersedes, and the project's own skills --------------
-  local names="" ptxt="" npt=0 wtmp nm
+  local names="" ptxt="" npt=0 wtmp wsnap
   if [ -n "$broot" ]; then
     if wtmp="$(cmd_supersedes "$broot" 2>/dev/null)"; then
       names="$(printf '%s\n' "$wtmp" | LC_ALL=C awk -F'\t' '$1 ~ /^[A-Za-z0-9._-]+$/ {printf "%s ", $1}')"
     else
-      nunk=$((nunk + 1)); _ad_sp_rec unknown - - - - - - superseded-map-unreadable -; ptxt="pointers=not-judged"
+      _sp_unk - - - superseded-map-unreadable; ptxt="pointers=not-judged"
     fi
   fi
   if [ -n "$wf" ]; then
-    if [ -f "$wf" ] && [ ! -L "$wf" ] && [ "$(cmd_wclass "$wf" - - 2>/dev/null)" = none ]; then
+    if wsnap="$(_ad_sp_snapshot "$wf" 1073741824)" && [ -s "$wsnap" ] && [ "$(cmd_wclass "$wsnap" - - 2>/dev/null)" = none ]; then
       names="$names$(LC_ALL=C awk -F'\t' '$1 ~ /^(competes|shadows|duplicates|project-specific|exempt)$/ {
-        n = $2; sub(/.*\//, "", n); sub(/\.md$/, "", n); if (n ~ /^[A-Za-z0-9._-]+$/) printf "%s ", n }' "$wf")"
+        n = $2; sub(/.*\//, "", n); sub(/\.md$/, "", n); if (n ~ /^[A-Za-z0-9._-]+$/) printf "%s ", n }' "$wsnap")"
     else
-      nunk=$((nunk + 1)); _ad_sp_rec unknown - - - - - - workflows-record-not-whole -; ptxt="pointers=not-judged"
+      _sp_unk - - - workflows-record-not-whole; ptxt="pointers=not-judged"
     fi
+    [ -z "${wsnap:-}" ] || rm -f "$wsnap"
   fi
   [ -n "$broot$wf" ] || ptxt="pointers=not-evaluated"
   # shellcheck disable=SC2086  # word-split on purpose; every name is in [A-Za-z0-9._-], so no glob
   names="$(printf '%s\n' $names | LC_ALL=C sort -u | tr '\n' ' ')"
   names="${names% }"
 
-  # --- emit ------------------------------------------------------------------------------------------
-  local nrule=0 nnest=0 nmir=0 nfact=0 nmix=0 nwf=0 nun=0 nresp=0 nunj=0 hits pln pnm prose
+  # --- emit: the asked-about agents' surfaces --------------------------------------------------------
+  local nroot=0 nrule=0 nnest=0 nmir=0 nfact=0 nmix=0 nwf=0 nun=0 nresp=0 nunj=0 hits pln pnm prose jw
   for i in "${ok_i[@]}"; do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"; st="${ST[$rel]}"
+    _sp_sel "$a" || continue
     _ad_sp_rec surface "$rel" "$kind" "$a" "${KEY[$rel]}" "${SCOPE[$rel]}" "${REACH[$rel]}" "$st" "${JUD[$rel]}"
-    case "$st" in
+    case "$st:$kind" in
       mirror:*) nmir=$((nmir + 1)) ;;
-      *) if [ "$kind" = rule ]; then nrule=$((nrule + 1)); else nnest=$((nnest + 1)); fi ;;
+      *:rootdoc) nroot=$((nroot + 1)) ;;
+      *:rule) nrule=$((nrule + 1)) ;;
+      *) nnest=$((nnest + 1)) ;;
     esac
-    case "$st" in unhomed:*) nun=$((nun + 1)) ;; respell) nresp=$((nresp + 1)) ;; exempt) nexm=$((nexm + 1)) ;; esac
-    case "${JUD[$rel]}" in
+    case "$st" in unhomed:*) nun=$((nun + 1)) ;; respell|extra-key) nresp=$((nresp + 1)) ;; exempt) nexm=$((nexm + 1)) ;; esac
+    jw="${JUD[$rel]}"
+    case "$jw" in
       facts) nfact=$((nfact + 1)) ;; mixed) nmix=$((nmix + 1)) ;; workflows) nwf=$((nwf + 1)) ;;
       unjudged|stale) nunj=$((nunj + 1)) ;;
     esac
-    [ "$st" = respell ] && _ad_sp_rec key-spelling "$rel" rule "$a" "${KEY[$rel]}" "${SCOPE[$rel]}" "${REACH[$rel]}" paths -
+    case "$st" in respell|extra-key) _ad_sp_rec key-spelling "$rel" rule "$a" "${KEY[$rel]}" "${SCOPE[$rel]}" "${REACH[$rel]}" paths - ;; esac
     [ "$st" = exempt ] && _ad_sp_rec exempt "$rel" "$kind" "$a" - - - "${KEPT[$rel]}" -
-    # Pointers: a prose line of a kept surface routing work to a project or legacy skill.
-    case "$st" in mirror:*) continue ;; esac
+    # Pointers: a prose line of a kept surface routing work to a project or legacy skill. A root
+    # doc's are `workflows`' stale-pointer records already.
+    case "$st:$kind" in mirror:*|*:rootdoc) continue ;; esac
     [ -n "$names" ] || continue
     if ! prose="$(_ad_sp_prose "$root/$rel")" || ! hits="$(printf '%s\n' "$prose" | _ad_pointer_hits "$names")"; then
-      nunk=$((nunk + 1)); _ad_sp_rec unknown "$rel" "$kind" "$a" - - - pointers-not-judged -; continue
+      _sp_unk "$a" "$rel" "$kind" pointers-not-judged; continue
     fi
     while IFS="$TAB" read -r pln pnm; do
       [ -n "$pln" ] || continue
@@ -3528,7 +3619,9 @@ cmd_specialized() {
   done
   [ -n "$nested_txt" ] || nested_txt="nested=$nnest"
   [ -n "$ptxt" ] || ptxt="pointers=$npt"
-  _ad_sp_rec summary - - - - - - - "specialized: rules=$nrule $nested_txt mirrors=$nmir facts=$nfact mixed=$nmix workflows=$nwf unhomed=$nun respell=$nresp exempt=$nexm refused=$nref unjudged=$nunj $ptxt unknown=$nunk judgment=${jgiven:+given}${jgiven:-not-given}"
+  local jtxt=not-given
+  [ -z "$jgiven" ] || jtxt=given
+  _ad_sp_rec summary - - - - - - - "specialized: rootdocs=$nroot rules=$nrule $nested_txt mirrors=$nmir facts=$nfact mixed=$nmix workflows=$nwf unhomed=$nun respell=$nresp exempt=$nexm refused=$nref unjudged=$nunj $ptxt unknown=$nunk judgment=$jtxt"
   [ "$nunk" -eq 0 ] || return 11
   local nfind=$((nun + nresp + nref + npt))
   [ -z "$jgiven" ] || nfind=$((nfind + nmix + nwf + nunj))
@@ -3538,41 +3631,56 @@ cmd_specialized() {
 
 # --- sclass --------------------------------------------------------------------------------------
 # One surface's class, for `classify`'s fifth argument (#552), read from a WHOLE `specialized` file:
-#   homed · exempt · mirror · split (judged mixed or workflows) · respell · unhomed:rootdoc ·
-#   unhomed:rules · unhomed:nested · pending (not judged yet, or the file changed since) ·
-#   unjudged (no record, an unknown record for the path, or the file is not whole)
-# Whole means adb_bytes_whole, nine fields a line, a known class, exactly one summary and it last,
-# and no surface listed twice. Exit 0, or 2 on usage.
+#   split (judged mixed or workflows — whatever its location, since the judgment's destinations
+#   carry where each fact range goes) · homed · exempt · mirror · respell · extra-key ·
+#   unhomed:rootdoc · unhomed:rules · unhomed:nested · pending (not judged yet, or the file changed
+#   since) · none (no record) · unjudged (an unknown record for the path, or the file is not whole)
+# Whole means one private snapshot that is adb_bytes_whole, nine fields a line, every field in its
+# grammar for its class, exactly one summary and it last, and no surface listed twice. Exit 0, or 2.
 cmd_sclass() {
   [ "$#" -eq 3 ] || die "sclass: needs <specialized-tsv> <relpath> <agent>"
-  local f="$1" rel="$2" agent="$3" out
-  if ! adb_bytes_whole "$f" 1073741824; then printf 'unjudged\n'; return 0; fi
+  local f="$1" rel="$2" agent="$3" out snap
+  if ! snap="$(_ad_sp_snapshot "$f" 1073741824)" || [ ! -s "$snap" ]; then
+    [ -z "${snap:-}" ] || rm -f "$snap"; printf 'unjudged\n'; return 0
+  fi
   out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" '
-    BEGIN { split("surface key-spelling pointer exempt exemption-refused unknown summary", C, " ")
-            for (i in C) known[C[i]] = 1 }
-    NF != 9 || !($1 in known) { bad = 1 }
+    function pth(x) { return x ~ /^[A-Za-z0-9._\/-]+$/ }
+    function rowok(  k) {
+      if (NF != 9) return 0
+      k = ($3 ~ /^(rootdoc|rule|nested-doc)$/); ag = ($4 ~ /^(claude|codex|gemini)$/)
+      if ($1 == "summary") return ($2 $3 $4 $5 $6 $7 $8 == "-------" && $9 ~ /^specialized: /)
+      if ($1 == "surface")
+        return (pth($2) && k && ag && $5 ~ /^(paths|globs|both|none|-)$/ && $6 != "" \
+                && $7 ~ /^(none|claude:(every-session|on-path-match|on-demand)|codex:(every-session|cwd-at-or-below|shadowed)|gemini:(every-session|on-access))$/ \
+                && $8 ~ /^(homed|exempt|respell|extra-key|unhomed:(rootdoc|rules)|unhomed:nested:[A-Za-z0-9._\/-]+|mirror:[A-Za-z0-9._\/-]+)$/ \
+                && $9 ~ /^(facts|mixed|workflows|stale|unjudged|-)$/)
+      if ($1 == "key-spelling") return (pth($2) && $3 == "rule" && $8 == "paths" && $9 == "-")
+      if ($1 == "pointer") return ($2 ~ /^[A-Za-z0-9._\/-]+:[0-9]+$/ && k && $8 ~ /^[A-Za-z0-9._-]+$/ && $9 == "-")
+      if ($1 == "exempt") return (pth($2) && k && $8 ~ /^decisions\.md:[0-9]+$/ && $9 == "-")
+      if ($1 == "exemption-refused") return ($2 ~ /^decisions\.md:[0-9]+$/ && $8 ~ /^[a-z-]+$/ && $9 == "-")
+      if ($1 == "unknown") return (($2 == "-" || pth($2)) && $8 ~ /^[a-z-]+$/ && $9 == "-")
+      return 0
+    }
+    !rowok() { bad = 1; next }
     $1 == "summary" { n++; last = NR }
-    $1 == "surface" { if ($2 in seen) bad = 1; seen[$2] = 1
-                      if ($2 !~ /^[A-Za-z0-9._\/-]+$/) bad = 1
+    $1 == "surface" { if (($2 SUBSEP $4) in seen) bad = 1; seen[$2, $4] = 1
                       if ($2 == r && $4 == g) { st = $8; jd = $9 } }
     $1 == "unknown" && $2 == r { unk = 1 }
     END {
       if (bad || n != 1 || last != NR) { print "unjudged"; exit }
-      if (unk || st == "") { print (unk ? "unjudged" : "none"); exit }
+      if (unk) { print "unjudged"; exit }
+      if (st == "") { print "none"; exit }
       if (st ~ /^mirror:/) { print "mirror"; exit }
-      if (st == "respell") { print "respell"; exit }
+      if (jd == "mixed" || jd == "workflows") { print "split"; exit }
+      if (st == "respell" || st == "extra-key") { print st; exit }
       if (st ~ /^unhomed:nested:/) { print "unhomed:nested"; exit }
       if (st == "unhomed:rootdoc" || st == "unhomed:rules") { print st; exit }
-      if (st == "exempt" || st == "homed") {
-        if (jd == "mixed" || jd == "workflows") print "split"
-        else if (jd == "facts") print st
-        else print "pending"
-        exit
-      }
-      print "unjudged"
-    }' "$f")" || out=unjudged
+      if (jd == "facts") { print st; exit }
+      print "pending"
+    }' "$snap")" || out=unjudged
+  rm -f "$snap"
   case "$out" in
-    homed|exempt|mirror|split|respell|unhomed:rootdoc|unhomed:rules|unhomed:nested|pending|none) printf '%s\n' "$out" ;;
+    homed|exempt|mirror|split|respell|extra-key|unhomed:rootdoc|unhomed:rules|unhomed:nested|pending|none) printf '%s\n' "$out" ;;
     *) printf 'unjudged\n' ;;
   esac
 }
@@ -3581,7 +3689,8 @@ cmd_sclass() {
 # The scaffold a judgment fills (#552): `file<TAB><relpath><TAB><sha256><TAB><lines>`, then one
 # `prose<TAB><start><TAB><end>` per run of prose lines. Frontmatter, fenced blocks and HTML comments
 # are not prose, so they are never judged; a judgment range may hold them, but a range is a workflow
-# only through a prose line. No line's text is printed. Exit 0, or 2 on usage or an unreadable file.
+# only through a prose line. An empty file (0 lines) is judged by one `0 0` row. No line's text is
+# printed. Exit 0, or 2 on usage or an unreadable file.
 cmd_prose() {
   [ "$#" -eq 2 ] || die "prose: needs <project-root> <relpath>"
   local root="$1" rel="$2" sha lines pl
@@ -3589,7 +3698,7 @@ cmd_prose() {
   _ad_sp_path_ok "$rel" || die "prose: <relpath> must be a plain repository path"
   _ad_sp_readable "$root" "$rel" || die "prose: cannot read $rel (missing, over 1 MiB, or holding a NUL byte)"
   sha="$(adb_sha256 "$root/$rel")" || die "prose: could not digest $rel"
-  lines="$(_ad_sp_lines "$root/$rel")"
+  lines="$(_ad_sp_lines "$root/$rel")" || die "prose: could not count the lines of $rel"
   pl="$(_ad_sp_prose_lines "$root/$rel")" || die "prose: could not read $rel as prose"
   printf 'file\t%s\t%s\t%s\n' "$rel" "$sha" "$lines"
   printf '%s\n' "$pl" | LC_ALL=C awk '

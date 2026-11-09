@@ -47,7 +47,7 @@ The test that separates them:
 
 - A **fact** says *what is true of this code*: "migrations under `src/db/` are append-only",
   "UI under `src/components/` must meet WCAG 2.1 AA", "the API package runs
-  `pnpm test --filter api`". It is kept, in its home from the table above.
+  `pnpm --filter api test`". It is kept, in its home from the table above.
 - A **workflow** says *what steps to run* or *which skill to invoke*: "to ship, run `/deploy`",
   "for a new handler, follow these nine steps". It is retired: its delta becomes a baseline
   issue, and the baseline's own workflow runs instead.
@@ -67,9 +67,10 @@ home is the root doc.
 
 **Reach is reported, never assumed.** Claude loads a `paths:` rule when it touches a matching
 file, and a nested `CLAUDE.md` once it touches a file in that directory. Codex reads `AGENTS.md`
-only from the project root down to its working directory, so a session started at the root
-never sees `apps/api/AGENTS.md`. Gemini scans subdirectories below its working directory for
-`GEMINI.md`. Nothing but Claude reads `.claude/rules/`, so carrying a kept rule to Codex and
+only from the project root down to its working directory, one file per directory with
+`AGENTS.override.md` first, so a session started at the root never sees `apps/api/AGENTS.md`.
+Gemini CLI (0.35 and later) loads a nested `GEMINI.md` when a tool touches that directory. Nothing
+but Claude reads `.claude/rules/`, so carrying a kept rule to Codex and
 Gemini is the cross-agent mirror's job, not something a project improvises per file.
 
 **`agents.toml` carries configuration, never prose**: commands, scopes, roles. A fact lives in

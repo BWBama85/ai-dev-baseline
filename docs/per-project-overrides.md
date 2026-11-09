@@ -65,14 +65,16 @@ Migrations under src/db are append-only.
 
 `paths:` is the only frontmatter key Claude Code reads from a rule, as a YAML list or a
 comma-separated string ([code.claude.com/docs/en/memory](https://code.claude.com/docs/en/memory)).
-A rule scoped with `globs:` is not scoped at all: it loads at every session start. `/adopt`
+A rule scoped with `globs:` is not scoped at all: it loads at every session start (witnessed with
+an `InstructionsLoaded` hook on Claude Code 2.1.319). `/adopt`
 reports it with the `paths:` spelling and never rewrites it.
 
 **Which agent loads what.** Claude loads a `paths:` rule when it touches a matching file, and a
 nested `CLAUDE.md` once it touches a file in that directory. Codex reads `AGENTS.md` only from
 the project root down to its working directory, so `apps/api/AGENTS.md` reaches a Codex session
-started in `apps/api/`, not one started at the root. Gemini scans subdirectories below its working
-directory for `GEMINI.md`. Only Claude reads `.claude/rules/`.
+started in `apps/api/`, not one started at the root; an `AGENTS.override.md` beside it is read
+instead. Gemini CLI (0.35 and later) loads a nested `GEMINI.md` when a tool touches that directory.
+Only Claude reads `.claude/rules/`.
 
 `/adopt` inventories all of it (`adopt-lib.sh specialized`): every rules file, every tracked
 nested root doc, and any `.codex/rules*` or `.gemini/rules*` hand mirror. It reports where each
@@ -292,8 +294,8 @@ and log, so two packages run two commands and neither hides the other:
 ```toml
 [gates]
 test     = ""                              # no repo-wide test run
-test-api = "pnpm test --filter api"
-test-web = "pnpm test --filter web"
+test-api = "pnpm --filter api test"
+test-web = "pnpm --filter web test"
 
 [gates.scope]
 test-api = "apps/api/**"
