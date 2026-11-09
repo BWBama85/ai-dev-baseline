@@ -3905,7 +3905,8 @@ fi
 
 # ---- adb_skill_collisions (#540): keyed by DIRECTORY name; frontmatter aliases are not evaluated ----
 sk540="$work/sk540"; TAB="$(printf '\t')"
-sk_run() { HOME="$sk540/h" CODEX_HOME="$sk540/cx" bash -c '. scripts/lib/common.sh; adb_skill_collisions "$1" "$2"' _ "$sk540/p" "$1"; }
+SK_CFG=""   # the CLAUDE_CONFIG_DIR a case runs under; empty, never the caller's own
+sk_run() { HOME="$sk540/h" CODEX_HOME="$sk540/cx" CLAUDE_CONFIG_DIR="$SK_CFG" bash -c '. scripts/lib/common.sh; adb_skill_collisions "$1" "$2"' _ "$sk540/p" "$1"; }
 mkdir -p "$sk540/h/.claude/skills" "$sk540/real-demo" "$sk540/p/.claude/skills/demo"
 : > "$sk540/real-demo/SKILL.md"; ln -s "$sk540/real-demo" "$sk540/h/.claude/skills/demo"
 : > "$sk540/p/.claude/skills/demo/SKILL.md"
@@ -3979,9 +3980,22 @@ out="$(sk_run claude)"; rc=$?
 eq "$rc:$out" "10:collides${TAB}demo" "skill-collisions: a non-skill folder with a space in its name is not undecidable"
 rmdir "$sk540/p/.claude/skills/notes archive"
 chmod 111 "$sk540/h/.claude/skills"
-out="$(sk_run claude)"; rc=$?
-eq "$rc" 10 "skill-collisions: an unlistable but searchable user root is probed by name (10)"
+if [ -r "$sk540/h/.claude/skills" ]; then
+  check_note "SKIP: this user can list a mode-111 directory (root?); the unlistable-user-root case is unexercised"
+else
+  out="$(sk_run claude)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unlistable user root is undecidable (11) — Claude discovers nothing there"
+fi
 chmod 755 "$sk540/h/.claude/skills"
+mkdir -p "$sk540/p/.claude/skills/.hidden" "$sk540/h/.claude/skills/.hidden" "$sk540/p/.claude/skills/-"
+: > "$sk540/p/.claude/skills/.hidden/SKILL.md"; : > "$sk540/h/.claude/skills/.hidden/SKILL.md"; : > "$sk540/p/.claude/skills/-/SKILL.md"
+out="$(sk_run claude)"; rc=$?
+has "$out" "collides${TAB}.hidden" "skill-collisions: a dot-prefixed skill folder is compared too"
+hasnt "$out" "outside [A-Za-z0-9._-]" "skill-collisions: a folder named '-' is a valid name, not an undecidable one"
+rm -rf "$sk540/p/.claude/skills/.hidden" "$sk540/h/.claude/skills/.hidden" "$sk540/p/.claude/skills/-"
+SK_CFG="$sk540/cfg"; out="$(sk_run claude)"; rc=$?; SK_CFG=""
+eq "$rc" 11 "skill-collisions: a CLAUDE_CONFIG_DIR naming another root is not evaluated, so undecidable (11)"
+has "$out" "CLAUDE_CONFIG_DIR names another personal root" "skill-collisions: …and says so"
 for lk in "$sk540/p/.claude" "$sk540/p"; do
   chmod 000 "$lk"
   if [ -x "$lk" ]; then

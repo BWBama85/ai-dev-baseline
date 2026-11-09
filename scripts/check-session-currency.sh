@@ -146,7 +146,7 @@ run_hook() {
   local source="$1" cwd="${2:-$work}" input
   input="$(jq -cn --arg s "$source" --arg c "$cwd" \
     '{session_id:"t", hook_event_name:"SessionStart", source:$s, cwd:$c}')"
-  OUT="$(printf '%s' "$input" | env HOME="$fh" \
+  OUT="$(printf '%s' "$input" | env -u CLAUDE_CONFIG_DIR HOME="$fh" \
       XDG_CACHE_HOME="$work/cache" XDG_CONFIG_HOME="$XDG_CONFIG_ENV" \
       ADB_SESSION_UPDATE="$MODE_ENV" ADB_SESSION_UPDATE_INTERVAL_SECS="$INTERVAL_ENV" \
       bash "$HOOK" 2>/dev/null)"

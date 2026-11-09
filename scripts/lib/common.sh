@@ -2252,13 +2252,14 @@ adb_parents_searchable() {
 #   collides <name>          <user-root>/<name>/SKILL.md is readable
 #   unknown  <name> <why>    it could not be decided: a dangling link, an unreadable entry, root or
 #                            ancestor, or a name outside the closed charset (<name> is then `-`)
-# Each name is reported once.
+# Each name is reported once. The question per name is existential: one readable personal copy in
+# any user root is a collision, even when another root's entry for that name could not be decided.
 # Returns: 0 no finding · 10 collisions only · 11 something could not be decided (wins over 10)
 # · 2 usage. An agent with no project skill discovery (gemini) has nothing to collide: 0.
 adb_skill_collisions() {
   local root="${1:-}" agent="${2:-}"
   [ -n "$root" ] && [ -n "$agent" ] || return 2
-  local rc=0 pdir d n nd uroot u why found seen=" "
+  local rc=0 pdir d n nd nok uroot u why found anyskill="" seen=" "
   [ -n "$(adb_agent_project_skill_dirs "$agent")" ] || return 0
   if [ ! -d "$root" ] || [ ! -x "$root" ]; then
     printf 'unknown\t-\tthe project root is not a searchable directory\n'; return 11
@@ -2271,14 +2272,15 @@ adb_skill_collisions() {
     if [ ! -d "$root/$pdir" ] || [ ! -r "$root/$pdir" ]; then
       printf 'unknown\t-\tproject skill root %s is unreadable\n' "$pdir"; rc=11; continue
     fi
-    for d in "$root/$pdir"/*; do
+    for d in "$root/$pdir"/* "$root/$pdir"/.[!.]* "$root/$pdir"/..?*; do
       # Only a directory can be a skill; a dangling link might have been one, so it is not skipped.
+      # The three globs cover dot-prefixed names too; an unmatched one is skipped here.
       [ -d "$d" ] || { [ -L "$d" ] && [ ! -e "$d" ]; } || continue
       n="${d##*/}"
       # The name is judged only once the entry is known to be (or might be) a skill, and a name is
       # marked seen only when it is reported, so an empty same-named folder in one root never hides
       # the skill in another.
-      nd="$n"; case "$n" in *[!A-Za-z0-9._-]*) nd=- ;; esac
+      nd="$n"; nok=1; case "$n" in *[!A-Za-z0-9._-]*) nd=-; nok="" ;; esac
       if [ "$agent" = claude ]; then
         case "$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')" in synced|anthropic-skills) continue ;; esac
       fi
@@ -2294,16 +2296,18 @@ adb_skill_collisions() {
         continue
       elif [ ! -r "$d/SKILL.md" ]; then
         why="project $nd/SKILL.md is unreadable"
-      elif [ "$nd" = - ]; then
+      elif [ -z "$nok" ]; then
         why="a project skill name outside [A-Za-z0-9._-] was not judged"
       fi
-      [ "$nd" = - ] || seen="$seen$n "
+      anyskill=1
+      [ -z "$nok" ] || seen="$seen$n "
       if [ -n "$why" ]; then printf 'unknown\t%s\t%s\n' "$nd" "$why"; rc=11; continue; fi
       found=""; why=""
       while IFS= read -r -d '' uroot; do
         if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi
         if [ ! -e "$uroot" ] && [ ! -L "$uroot" ]; then continue; fi
-        if [ ! -d "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
+        # Listing is required, not only search: the harness discovers skills by listing the root.
+        if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
         u="$uroot/$n"
         if [ -f "$u/SKILL.md" ]; then
           if [ "$agent" = claude ] && [ "$u" -ef "$d" ]; then continue; fi
@@ -2324,6 +2328,12 @@ adb_skill_collisions() {
       fi
     done
   done
+  # Claude reads personal skills from $CLAUDE_CONFIG_DIR/skills when that is set; the baseline
+  # installs under $HOME/.claude only, so a different configured root is reported, never assumed empty.
+  if [ "$agent" = claude ] && [ -n "$anyskill" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] \
+     && ! [ "$CLAUDE_CONFIG_DIR" -ef "$HOME/.claude" ]; then
+    printf 'unknown\t-\tCLAUDE_CONFIG_DIR names another personal root, which is not evaluated\n'; rc=11
+  fi
   return "$rc"
 }
 

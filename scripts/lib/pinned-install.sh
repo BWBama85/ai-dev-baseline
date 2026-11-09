@@ -9,7 +9,7 @@
 #
 # The global install is untouched by every path here, but the two are not supported together for
 # Claude (#540): Claude runs a personal skill over a same-named project one, so a global install's
-# skills outrank every vendored one. `install` warns about that and `status` names each colliding
+# skills outrank each vendored skill they share a name with. `install` warns about that and `status` names each colliding
 # skill (adb_skill_collisions) rather than trying to arbitrate it.
 #
 # THIS CODE WRITES INTO SOMEBODY ELSE'S REPOSITORY, which is why the refusals below are the

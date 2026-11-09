@@ -100,6 +100,7 @@ REAL_BACKUPS="${HOME:+$HOME/.claude/backups}"
 real_before=(); real_listable=1
 if [ -n "$REAL_BACKUPS" ]; then pinned_backups "$REAL_BACKUPS" real_before || real_listable=0; fi
 export HOME="$work/home" CODEX_HOME="$work/home/.codex"
+unset CLAUDE_CONFIG_DIR   # a caller's own would make every collision case undecidable (#540)
 mkdir -p "$work/home/.codex" || { echo "check-pinned-install: could not create the suite's home" >&2; exit 1; }
 
 # --- the fixture artifact ----------------------------------------------------------------------

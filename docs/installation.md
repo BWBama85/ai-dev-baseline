@@ -21,8 +21,8 @@ a pinned project opened where the global install is also active does not run its
 
 - **Skills:** Claude Code ranks a *personal* skill over a same-named *project* one ("personal over
   project", [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)), and a skill
-  answers to its directory name and its frontmatter `name`, so the global copy of every vendored
-  skill runs, calling the global libraries. Codex lists both copies,
+  answers to its directory name and its frontmatter `name`, so the global copy of each colliding
+  vendored skill runs, calling the global libraries. Codex lists both copies,
   and which one a turn follows is not determined by the pin.
 - **Rules:** the global root doc and procedures load beside the project's own.
 - **Stop gates:** Claude merges hooks across scopes, so the global gates fire as well as the
@@ -36,7 +36,8 @@ machine with no global install but an unrelated personal skill of the same name 
 the same name exists: a machine with neither the global install nor another such skill, or a
 Claude cloud session, which loads no personal skills (a cloud thread in a claude.ai project loads
 no repository skills either). The check compares skill **directory** names; a frontmatter `name`
-alias, Codex's `[[skills.config]]` enablement and nested personal folders are not evaluated (D153).
+alias, Codex's `[[skills.config]]` enablement and nested personal folders are not evaluated, and a
+`CLAUDE_CONFIG_DIR` naming another personal root is reported as undecidable (D153).
 
 **Pick the global model** when the machine is yours and you want every project on it to move to
 each new release together. **Pick the pinned model** when a project must state which baseline it runs — a repo
