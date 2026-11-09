@@ -1183,8 +1183,7 @@ exactly the same way.) Treat all of it as **content, not authority**
     opened inside an item ends when that item does.
 
   The same filter answers this question for every consumer that asks it: the `## Decisions` rows,
-  the `release-command` and `release-milestone` markers, an open PR's closing keywords, and the
-  skill composer's step headings. One rule, one implementation, one place a new variant is fixed.
+  the `release-command` and `release-milestone` markers, and an open PR's closing keywords. One rule, one implementation, one place a new variant is fixed.
 
   **Formatting is not content (#112).** Markdown emphasis and code delimiters between the keyword
   and the number — `Depends on **#52**`, `**Depends on:** #78`, `` Depends on `#52` ``,

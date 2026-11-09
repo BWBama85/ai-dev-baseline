@@ -70,90 +70,21 @@ inheriting every later baseline improvement to *every* step, even the 90% the
 fork never meant to change. A fork that carried ~25 novel lines on top of a
 500-line skill silently falls behind on the other 475.
 
-### 2b. Partial compose-override (carry only your deltas) — retired
+### 2b. Partial compose-override — retired, and the composer refuses
 
-Do not write a new one: `/adopt`'s `workflows` rung reports an `overrides.md`
-as a finding. What follows describes the form for the projects still carrying
-one. A tiny `.claude/skills/<name>/overrides.md` carries only the deltas, and
-`skill-compose` **merges them onto the current installed baseline skill**.
-(A composed project-local `SKILL.md` sits beside the installed one — on Claude
-the personal copy runs instead of it while the global install is present (#540)
-— and carries no sibling supporting files (#433). The base skill's navigator therefore states the
-files' installed location once, up front — a composed copy's reader follows that
-stated path; bare mentions of a file elsewhere in the skill mean the file the
-navigator located.)
-Every step you don't touch keeps inheriting upstream. This is the fix for the
-"frozen fork" problem (issue #22).
+`skill-compose` used to merge a project's `.claude/skills/<name>/overrides.md` onto the installed
+baseline skill (#22). Composing needs the global base skill, and on any machine where that
+personal skill is installed Claude runs it instead of the composed project copy (#540); the
+composed copy ran only where the global install was absent.
+So the composer is retired: `baseline skill-compose compose`, `check` and `list-anchors` each exit
+`3` and name the retirement, and write nothing.
 
-The model mirrors `scripts/build.sh`: the installed base skill is the source,
-your `overrides.md` is the delta, and the composed
-`.claude/skills/<name>/SKILL.md` is a **generated artifact** (it carries an
-`# adb:composed-skill` ownership marker). After the baseline updates, you
-recompose and your deltas re-merge onto the *new* base.
+If a project still carries one:
 
-**Anchors.** An override targets a step by its **anchor** — the base skill's
-`### ` step heading, slugified with the leading `N.` step number stripped
-(lowercased, each run of non-alphanumerics collapsed to `-`). Stripping the
-number means *renumbering* a step doesn't break your override; *renaming* the
-heading does — and it fails loud on the next recompose (see below), which is
-exactly the signal that your fork has diverged from its source. Discover the
-valid anchors with:
-
-```bash
-baseline skill-compose list-anchors implement-issue
-```
-
-**Overrides file.** `.claude/skills/<name>/overrides.md` is a set of
-HTML-comment directive blocks:
-
-```markdown
-<!-- adb:override anchor="implement" op="append" -->
-- [ ] Docs-zone sign-off: every changed doc zone re-read and initialed.
-<!-- adb:end -->
-
-<!-- adb:override anchor="file-issues-for-all-deferred-out-of-scope-work-mandatory" op="replace" -->
-### 12. File issues (this project's milestone placement)
-
-Default a discovery to `Backlog` so the frozen release set converges; only a
-genuine dependency of the current release goal goes into `Next release`.
-Never leave a new issue milestone-less.
-<!-- adb:end -->
-```
-
-`op` ∈ `append` (insert at the end of the step) · `prepend` (right after the
-heading) · `replace` (swap the step body, heading kept). One directive per
-anchor. Inserting whole *new* steps (before/after) and Codex/Gemini support
-are tracked follow-ups; today's composer is Claude with these three ops.
-
-**Compose, then commit the output.** The composed `SKILL.md` is what the
-harness loads, so it lives in the repo alongside `overrides.md`:
-
-```bash
-baseline skill-compose compose        # composes every .claude/skills/*/overrides.md in the repo
-baseline skill-compose compose implement-issue   # or one skill by name
-```
-
-`skill-compose` refuses to overwrite a pre-existing `SKILL.md` that isn't one
-of its own outputs — so it can never silently clobber a hand-authored full
-fork (2a). Remove or rename that file first if you're migrating it to 2b.
-
-**Keeping it current is enforced, not remembered.** `baseline skill-compose
-check` recomposes to a temporary file and byte-compares it against the
-committed output, so it catches a changed base, changed overrides, *or* a
-hand-edit — and exits nonzero when stale. Wire it as a project gate so a stale
-composed skill fails CI / the Stop hook rather than drifting silently:
-
-```toml
-[gates]
-skillcompose = "baseline skill-compose check"
-```
-
-(Fully automatic recompose on `baseline update` is a tracked follow-up; until
-then the gate above is the enforcement point.)
-
-Use **2a** only for a wholesale divergence; reach for **2b** for anything
-smaller — the point of the global skill existing is that most projects should
-inherit it, deltas and all.
+- run `/adopt` — its `workflows` rung reports the `overrides.md` and the composed `SKILL.md`;
+- turn each directive into a baseline issue or project config (the root doc, `agents.toml`);
+- remove a `skill-compose check` gate from `agents.toml [gates]`, which now fails with exit `3`;
+- move the files to `.ai-dev-baseline/retired/<date>/` in a normal PR.
 
 ## Override 3: quality gates
 

@@ -44,8 +44,8 @@ adb_info() { printf '%s\n' "$*"; }
 
 # Print a CLI's --help text from its own top comment block: skip the shebang (NR==1), strip a
 # leading "# ", stop at the first non-comment line (so internal section comments never leak). The
-# ONE home for this idiom — bin/baseline and scripts/lib/skill-compose.sh both call it with their
-# own file rather than each carrying a copy. Usage: adb_usage <file>   (e.g. adb_usage "$0")
+# ONE home for this idiom — bin/baseline and the CLI libraries call it with their own file rather
+# than each carrying a copy. Usage: adb_usage <file>   (e.g. adb_usage "$0")
 adb_usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$1"; }
 
 # adb_display_value <value> — render a value onto ONE physical line, for a diagnostic that NAMES a
@@ -2222,6 +2222,169 @@ $(_adb_agent_user_skill_root_specs "$1")
 EOF
 }
 
+# adb_parents_searchable <root> <relpath> — false when an EXISTING ancestor of <relpath> below
+# <root> is not a searchable directory, so nothing beneath it can be proven absent. The last
+# component of <relpath> is not checked: pass `<dir>/.` to include <dir> itself.
+adb_parents_searchable() {
+  local p="$1" rest="$2" comp
+  while :; do
+    case "$rest" in */*) ;; *) return 0 ;; esac
+    comp="${rest%%/*}"; rest="${rest#*/}"
+    p="$p/$comp"
+    if [ -e "$p" ] || [ -L "$p" ]; then
+      [ -d "$p" ] && [ -x "$p" ] || return 1
+    else
+      return 0
+    fi
+  done
+}
+
+# _adb_canon_file <path> — the path with every symlink resolved, the way a loader canonicalizes a
+# SKILL.md path: printed without a trailing newline; returns 1 when it cannot be resolved (a loop,
+# a dangling link, an unsearchable directory).
+_adb_canon_file() {
+  local f="$1" t dir n=0
+  while [ -L "$f" ]; do
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    # `readlink -n` so GNU and BSD emit the same bytes; the sentinel keeps a trailing newline.
+    t="$(readlink -n "$f" && printf x)" || return 1; t="${t%x}"
+    case "$t" in /*) f="$t" ;; *) f="${f%/*}/$t" ;; esac
+  done
+  dir="$(cd "${f%/*}" 2>/dev/null && pwd -P && printf x)" || return 1; dir="${dir%x}"; dir="${dir%?}"
+  [ -e "${dir%/}/${f##*/}" ] || return 1
+  printf '%s/%s' "${dir%/}" "${f##*/}"
+}
+
+# _adb_skill_verdict <agent> <project-skill-dir> <name> — one project copy against every user root:
+# prints `collides`, or `unknown<TAB><why>`, or nothing when no personal copy competes with it.
+_adb_skill_verdict() {
+  local agent="$1" d="$2" n="$3" uroot u why="" pc uc
+  while IFS= read -r -d '' uroot; do
+    if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi
+    if [ ! -e "$uroot" ] && [ ! -L "$uroot" ]; then continue; fi
+    # Listing is required, not only search: the harness discovers skills by listing the root.
+    if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
+    u="$uroot/$n"
+    # A loader discovers SKILL.md by listing the folder, so it must be listable as well as searchable.
+    if [ -d "$u" ] && { [ ! -r "$u" ] || [ ! -x "$u" ]; }; then
+      why="personal $n is unreadable"
+    elif [ -f "$u/SKILL.md" ]; then
+      # The project's own skill reached twice — its folder, or its SKILL.md resolving to the same
+      # PATH (a loader de-duplicates by canonical path, so a hardlink is still two skills).
+      [ "$u" -ef "$d" ] && continue
+      # SENTINEL CAPTURE: a trailing newline is a legal byte of a path.
+      if pc="$(_adb_canon_file "$d/SKILL.md" && printf x)" && uc="$(_adb_canon_file "$u/SKILL.md" && printf x)" \
+         && [ "$pc" = "$uc" ]; then continue; fi
+      if [ -r "$u/SKILL.md" ]; then printf 'collides'; return 0; fi
+      why="personal $n/SKILL.md is unreadable"
+    elif [ -L "$u" ] && [ ! -e "$u" ]; then
+      why="personal $n is a dangling link"
+    elif [ -L "$u/SKILL.md" ] && [ ! -e "$u/SKILL.md" ]; then
+      why="personal $n/SKILL.md is a dangling link"
+    fi
+  done < <(adb_agent_user_skill_roots "$agent")
+  [ -z "$why" ] || printf 'unknown\t%s' "$why"
+}
+
+# adb_skill_collisions <project-root> <agent> — which of a project's top-level skills share a
+# DIRECTORY name with a personal skill this machine's agent also loads (#540). Claude ranks a
+# personal skill over a same-named project one ("personal over project", code.claude.com/docs/en/
+# skills); Codex lists both. Any same-named personal skill counts, baseline-owned or not, and the
+# answer never depends on a root doc or on install detection. A personal entry resolving to the
+# project's own skill (its folder, or its SKILL.md's canonical path) is the same skill.
+# NOT EVALUATED, by owner decision (D153): frontmatter `name` aliases, Codex `[[skills.config]]`
+# enablement, nested personal folders. Claude's reserved `synced` and `anthropic-skills` folders
+# are skipped in any capitalization; Codex's hidden folders are skipped, as its loader does.
+# Every project copy of a name is judged before the name's verdict is chosen: collides over
+# undecidable over nothing. Per name the question is existential — one readable personal copy is a
+# collision even when another entry for that name could not be decided.
+# Output, one TAB-separated line per finding, every name from [A-Za-z0-9._-]:
+#   collides <name>          a readable personal skill of that name competes with a project copy
+#   unknown  <name> <why>    it could not be decided: a dangling link, an unreadable entry, root or
+#                            ancestor, or a name outside the closed charset (<name> is then `-`)
+# Returns: 0 no finding · 10 collisions only · 11 something could not be decided (wins over 10)
+# · 2 usage. An agent with no project skill discovery (gemini) has nothing to collide: 0.
+adb_skill_collisions() {
+  local root="${1:-}" agent="${2:-}"
+  [ -n "$root" ] && [ -n "$agent" ] || return 2
+  local rc=0 pdir d n why v anyskill="" cfg_other="" names=" " coll=" " unk="" nl='
+'
+  # Claude reads personal skills from $CLAUDE_CONFIG_DIR/skills when that is set. The baseline
+  # installs under $HOME/.claude only, so another configured root is not read: every project skill
+  # is then undecidable for Claude, and the default root is not consulted at all.
+  if [ "$agent" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    case "${CLAUDE_CONFIG_DIR%/}" in
+      "$HOME/.claude") : ;;
+      *) [ "$CLAUDE_CONFIG_DIR" -ef "$HOME/.claude" ] || cfg_other=1 ;;
+    esac
+  fi
+  [ -n "$(adb_agent_project_skill_dirs "$agent")" ] || return 0
+  if [ ! -d "$root" ] || [ ! -x "$root" ]; then
+    printf 'unknown\t-\tthe project root is not a searchable directory\n'; return 11
+  fi
+  # Phase 1: judge every project copy, collecting per-name results.
+  for pdir in $(adb_agent_project_skill_dirs "$agent"); do
+    if ! adb_parents_searchable "$root" "$pdir/."; then
+      printf 'unknown\t-\tproject skill root %s or a parent of it is unreadable\n' "$pdir"; rc=11; continue
+    fi
+    [ -e "$root/$pdir" ] || [ -L "$root/$pdir" ] || continue
+    if [ ! -d "$root/$pdir" ] || [ ! -r "$root/$pdir" ]; then
+      printf 'unknown\t-\tproject skill root %s is unreadable\n' "$pdir"; rc=11; continue
+    fi
+    for d in "$root/$pdir"/* "$root/$pdir"/.[!.]* "$root/$pdir"/..?*; do
+      # Only a directory can be a skill; a dangling link might have been one. The three globs
+      # cover dot-prefixed names too; an unmatched one is skipped here.
+      [ -d "$d" ] || { [ -L "$d" ] && [ ! -e "$d" ]; } || continue
+      n="${d##*/}"
+      if [ "$agent" = claude ]; then
+        case "$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')" in synced|anthropic-skills) continue ;; esac
+      else
+        case "$n" in .*) continue ;; esac   # Codex's loader skips hidden folders
+      fi
+      why=""
+      if [ -L "$d" ] && [ ! -e "$d" ]; then
+        why="project $n is a dangling link"
+      elif [ ! -r "$d" ] || [ ! -x "$d" ]; then
+        why="project skill $n is unreadable"
+      elif [ -L "$d/SKILL.md" ] && [ ! -e "$d/SKILL.md" ]; then
+        why="project $n/SKILL.md is a dangling link"
+      elif [ ! -f "$d/SKILL.md" ]; then
+        continue
+      elif [ ! -r "$d/SKILL.md" ]; then
+        why="project $n/SKILL.md is unreadable"
+      fi
+      anyskill=1
+      case "$n" in
+        *[!A-Za-z0-9._-]*) printf 'unknown\t-\ta project skill name outside [A-Za-z0-9._-] was not judged\n'; rc=11; continue ;;
+      esac
+      case "$names" in *" $n "*) ;; *) names="$names$n " ;; esac
+      if [ -z "$why" ] && [ -z "$cfg_other" ]; then
+        v="$(_adb_skill_verdict "$agent" "$d" "$n")"
+        case "$v" in
+          collides) coll="$coll$n " ;;
+          unknown*) why="${v#unknown	}" ;;
+        esac
+      fi
+      [ -z "$why" ] || unk="$unk$n	$why$nl"
+    done
+  done
+  # Phase 2: one verdict per name, in first-seen order.
+  for n in $names; do
+    case "$coll" in
+      *" $n "*) printf 'collides\t%s\n' "$n"; [ "$rc" -eq 11 ] || rc=10; continue ;;
+    esac
+    while IFS='	' read -r d why; do
+      [ "$d" = "$n" ] || continue
+      printf 'unknown\t%s\t%s\n' "$n" "$why"; rc=11; break
+    done <<EOF
+$unk
+EOF
+  done
+  if [ -n "$cfg_other" ] && [ -n "$anyskill" ]; then
+    printf 'unknown\t-\tCLAUDE_CONFIG_DIR names another personal root, which is not evaluated\n'; rc=11
+  fi
+  return "$rc"
+}
 
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s
@@ -6312,8 +6475,7 @@ adb_drvfs_warn() {
 # approximation; it is reproducible, and its fixture is check-state-assert.sh 3b-i2.
 #
 # `_ADB_MD_AWK` is that filter, as an awk FUNCTION LIBRARY — no main rule and no END block, so a
-# consumer can prepend it to its own program and keep its own record handling (`skill-compose.sh`
-# runs over two named files and could not tolerate a main rule at all).
+# consumer can prepend it to its own program and keep its own record handling.
 #
 # HOW A CONSUMER DRIVES IT. Buffer the body, then resolve it once:
 #
@@ -6395,9 +6557,9 @@ adb_drvfs_warn() {
 #     column the reader has already left. Never the reverse — see adb_md_content_at.
 #   - Indented code INSIDE a list item is still not recognized (D27, unmoved by #252), so a line 4+
 #     past the item's content is scanned rather than stripped.
-#   - The two consumers that call `adb_md_fence_delim` directly rather than through `adb_md_block`
-#     (`skill-compose.sh`, `check-release-skill.sh`) pass a container column of 0 and therefore keep
-#     the top-level-only rule. They are unchanged in every case but one, and the exception is worth
+#   - The consumer that calls `adb_md_fence_delim` directly rather than through `adb_md_block`
+#     (`check-release-skill.sh`) passes a container column of 0 and therefore keeps the
+#     top-level-only rule. It is unchanged in every case but one, and the exception is worth
 #     stating rather than rounding off: the closer bound became container-relative, so a fence they
 #     open at indent 1-3 now needs its closer at indent <= 3 as well, where the old opener-relative
 #     bound allowed up to opener + 3. Every indented opener in the tree today (2-3 spaces, in
@@ -6499,7 +6661,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # back unchanged when a list-nested fence is ended by the item that opens the next one.
     #
     # This is the function #131 exists for (adb-claim-ok: closed NOT_PLANNED, folded into #136).
-    # `skill-compose.sh` carried a second detector — a
+    # The retired `skill-compose.sh` carried a second detector — a
     # boolean toggle on any ``` after 0-3 spaces — and the two had already drifted: a `~~~`-fenced
     # `### ` line was advertised as a composable anchor, and a ``` closing a longer run left the
     # toggle inverted for the whole rest of the file, hiding every later step.

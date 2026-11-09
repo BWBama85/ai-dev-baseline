@@ -1266,6 +1266,32 @@ fact retired-main-delivery 'absent:fast-forwards? the install-source clone' \
   'fires:baseline update            # fast-forward the install-source clone + self-heal links' -- \
   docs/installation.md README.md bin/baseline scripts/lib/pinned-install.sh templates/agents.toml \
   agents/claude/scripts/session-currency.sh
+# The precedence #540 retired: Claude runs a PERSONAL skill over a same-named project one, so no
+# file may say the project's copy wins. D153 keeps the history.
+_prec_files="docs/per-project-overrides.md docs/installation.md docs/roles-and-agents.md
+  docs/philosophy.md docs/design-principles.md base/practices/handling-the-unknown.md
+  agents/claude/reference/handling-the-unknown.md agents/codex/reference/handling-the-unknown.md
+  agents/gemini/reference/handling-the-unknown.md scripts/lib/pinned-install.sh
+  scripts/lib/skill-compose.sh scripts/build.sh README.md CONTRIBUTING.md"
+# shellcheck disable=SC2086  # the list is word-split on purpose
+fact retired-project-precedence 'absent:most specific wins' \
+  'fires:# project-local composed skill ahead of the global one ("most specific wins", the' -- $_prec_files
+# shellcheck disable=SC2086
+fact retired-project-precedence 'absent:vendored skills shadow it' \
+  "fires:This project's vendored skills shadow it (docs/per-project-overrides.md, Override 2)." -- $_prec_files
+# shellcheck disable=SC2086
+fact retired-project-precedence 'absent:resolves (the project.s copy|a project.s own skills) (first|ahead)' \
+  "fires:# active the agent harness already resolves the project's copy first (docs/per-project-overrides.md," \
+  "fires:the agent harness resolves a project's own skills ahead of the user-global ones" -- $_prec_files
+# shellcheck disable=SC2086
+fact retired-project-precedence 'absent:ahead of (the|a same-named) (global|skill installed globally)' \
+  'fires:Claude resolves the project skill ahead of a same-named skill installed globally' -- $_prec_files
+# shellcheck disable=SC2086
+fact retired-project-precedence 'absent:(shadowing (any same-named|the global)|shadows the (global|installed) (one|skill))' \
+  'fires:vendored skills, shadowing any same-named global skill' \
+  'fires:a project-scoped skill shadowing the global one' \
+  'fires:a composed SKILL.md shadows the installed one' -- $_prec_files
+
 # The event this hook binds to. The settings entry, the script's own source gate, and the docs
 # must name the SAME trigger: a matcher the script did not also enforce would let a `/clear` or
 # a `compact` swap tooling mid-session.
@@ -1879,10 +1905,9 @@ fact wsl-smoke-doc-distro 'fixed:Ubuntu-26.04'   -- $_wsl_smoke_docs
 
 # --- FACT: the WSL job runs the FRAMEWORK as a non-root user (#271, D39) ------------------------
 #
-# Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot deny it a write — and the offline suite
-# has one assertion that depends on exactly that (`scripts/check-skill-compose.sh:329-330` chmods a
-# directory 555 and requires the next compose to FAIL). Run the suite as root and that assertion
-# INVERTS: the job goes red on a fixture that passes everywhere a normal user runs it. The smoke job
+# Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot deny it a read — and the offline suite's
+# unreadable-directory cases (`check-adopt.sh`'s mode-000 skill roots) depend on exactly that. Run
+# the suite as root and they SKIP: the job proves less than it says. The smoke job
 # is weekly, so it is far too slow to be the only thing standing between a future edit and that
 # state; this is the guard that catches it in the same run that writes it.
 #

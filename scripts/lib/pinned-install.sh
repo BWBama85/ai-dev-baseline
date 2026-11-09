@@ -7,9 +7,10 @@
 # the project records the version it is on, a machine with no clone can install it, and a
 # breaking change upstream reaches nothing until someone upgrades on purpose.
 #
-# Both models coexist. The global install is untouched by every path here, and where both are
-# active the agent harness already resolves the project's copy first (docs/per-project-overrides.md,
-# Override 2) — `status` reports the overlap rather than trying to arbitrate it.
+# The global install is untouched by every path here, but the two are not supported together for
+# Claude (#540): Claude runs a personal skill over a same-named project one, so a global install's
+# skills outrank each vendored skill they share a name with. `install` warns about that and `status` names each colliding
+# skill (adb_skill_collisions) rather than trying to arbitrate it.
 #
 # THIS CODE WRITES INTO SOMEBODY ELSE'S REPOSITORY, which is why the refusals below are the
 # load-bearing half and why every destructive step is keyed to a digest rather than to a path.
@@ -31,8 +32,10 @@
 #                              tool is missing · 13 fetch failed · 14 publish/removal failed · 2 usage
 #   status                     0 pinned and current · 10 pinned, a newer release exists
 #                              · 11 not pinned · 20 pinned but the payload is missing, altered or
-#                              unverifiable · 30 the newest stable release could not be resolved
-#                              (or none is published)
+#                              unverifiable · 21 the payload is intact, but a project skill shares
+#                              its name with a personal skill on this machine, or that could not be
+#                              decided · 30 the newest stable release could not be resolved
+#                              (or none is published). Precedence: 20 over 21 over 10 over 30.
 #   verify                     0 verified · 10 no usable record for that filename · 11 digest
 #                              mismatch · 12 no usable sha256 tool / unreadable input
 #   payload/reanchor           0 ok · 1 a root or member this manifest cannot represent · 2 usage
@@ -1657,6 +1660,12 @@ EOF
   done
 
   _pi_say "pinned to $ver — commit .ai-dev-baseline/ and the vendored .<agent>/ payload"
+  # Advisory: the install succeeded, and the collision is a fact about this machine, not the tree.
+  _pi_report_collisions "$p" "$(printf '%s,' "${agents[@]}")" || :
+  if [ -n "$_PI_CLAUDE_COLLIDES" ]; then
+    _pi_say "warning: a personal skill outranks a vendored one here; pinned and global installs are not supported"
+    _pi_say "         together for Claude (docs/installation.md, #540)."
+  fi
   rm -rf "$work"; trap - EXIT
   return 0
 }
@@ -1769,14 +1778,14 @@ EOF
   fi
   _pi_say "payload: intact ($records files)"
 
-  # Coexistence is REPORTED, not arbitrated: the harness already resolves the project's copy ahead
-  # of the global one, and saying which one wins is more useful than pretending to choose.
   if adb_install_source "$HOME" >/dev/null 2>&1; then
-    _pi_say "note:    a GLOBAL symlink install is also active on this machine."
-    _pi_say "         This project's vendored skills shadow it (docs/per-project-overrides.md, Override 2)."
+    _pi_say "note:    a GLOBAL symlink install is also active on this machine — pinned and global are"
+    _pi_say "         not supported together for Claude (docs/installation.md, #540)."
   fi
+  local coll=0
+  _pi_report_collisions "$p" "$agents" || coll=21
 
-  [ "$offline" -eq 1 ] && return 0
+  [ "$offline" -eq 1 ] && return "$coll"
 
   local latest
   if latest="$(adb_latest_release_tag "$src")"; then
@@ -1788,12 +1797,42 @@ EOF
       _pi_say "  gh release view v$latest -R $src"
       _pi_say "then, if you want it:"
       _pi_say "  bash $(_pi_cmd_path "$p") upgrade --to $latest"
+      [ "$coll" -eq 0 ] || return "$coll"
       return 10
     fi
-    return 0
+    return "$coll"
   fi
   _pi_say "latest:  unknown (could not read $src's releases)"
+  [ "$coll" -eq 0 ] || return "$coll"
   return 30
+}
+
+# _pi_report_collisions <project-root> <agents-csv> — print a `note:` per agent naming each project
+# skill that shares its name with a personal skill here, and what that agent then runs.
+# Returns 0 nothing to report · 1 a collision, or one that could not be decided, was reported.
+# Sets _PI_CLAUDE_COLLIDES non-empty when a Claude collision was established (not merely undecided).
+_PI_CLAUDE_COLLIDES=""
+_pi_report_collisions() {
+  local p="$1" agents="$2" ag out rc any=0 names unk
+  _PI_CLAUDE_COLLIDES=""
+  for ag in $(printf '%s' "$agents" | tr ',' ' '); do
+    out="$(adb_skill_collisions "$p" "$ag")"; rc=$?
+    [ "$rc" -eq 0 ] && continue
+    any=1
+    names="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "collides" {printf "%s%s", sep, $2; sep = ", "}')"
+    if [ -n "$names" ]; then
+      [ "$ag" != claude ] || _PI_CLAUDE_COLLIDES=1
+      _pi_say "note:    $ag skill(s) here share a name with a personal skill on this machine: $names"
+      case "$ag" in
+        claude) _pi_say "         Claude Code ranks the PERSONAL copy over this project's (personal over project); this pin does not govern them." ;;
+        *)      _pi_say "         Codex lists both copies; which one a turn follows is not determined by the pin." ;;
+      esac
+      _pi_say "         (compared by directory name; frontmatter name aliases and Codex skill config are not evaluated)"
+    fi
+    unk="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "unknown" {printf "%s%s: %s", sep, $2, $3; sep = "; "}')"
+    [ -z "$unk" ] || _pi_say "note:    $ag skill collisions could not be decided — $unk"
+  done
+  [ "$any" -eq 0 ]
 }
 
 # cmd_notice — the report `baseline update` prints in a pinned project.
@@ -1817,8 +1856,15 @@ cmd_notice() {
   ver="$(_pi_pin_get "$p" version)"
   src="$(_pi_pin_source "$p")" || return 20
   agents="$(_pi_pin_agents "$p" | tr '\n' ',')"
-  printf 'baseline: this project runs a PINNED baseline payload (%s) — the global install does not govern it.\n' \
-    "${ver:-version unrecorded}" >&2
+  printf 'baseline: this project runs a PINNED baseline payload (%s).\n' "${ver:-version unrecorded}" >&2
+  # Claude ranks a personal skill over a vendored one, so the pin governs a skill only where no
+  # personal skill shares its name (#540).
+  local ag_
+  for ag_ in $(printf '%s' "$agents" | tr ',' ' '); do
+    adb_skill_collisions "$p" "$ag_" >/dev/null 2>&1 && continue
+    printf 'baseline:   %s: a personal skill here shares a name with a vendored one, or that could not be decided — run: bash %s status\n' \
+      "$ag_" "$(_pi_cmd_path "$p")" >&2
+  done
   rp="$(_pi_receipt_path "$p")"
   if [ -f "$rp" ]; then
     counts="$(_pi_verify_tree "$p" "$rp")"

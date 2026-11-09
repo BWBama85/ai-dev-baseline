@@ -1021,21 +1021,8 @@ cmd_classify() {
 # orchestrates agent CLIs, and a scan that classified it would be recommending changes to the
 # product. `hygiene` reports on that boundary; `scan` simply does not cross it.
 
-# _ad_parents_searchable <root> <relpath> — false when an EXISTING ancestor of <relpath> below
-# <root> is not a searchable directory, so nothing beneath it can be proven absent.
-_ad_parents_searchable() {
-  local p="$1" rest="$2" comp
-  while :; do
-    case "$rest" in */*) ;; *) return 0 ;; esac
-    comp="${rest%%/*}"; rest="${rest#*/}"
-    p="$p/$comp"
-    if [ -e "$p" ] || [ -L "$p" ]; then
-      [ -d "$p" ] && [ -x "$p" ] || return 1
-    else
-      return 0
-    fi
-  done
-}
+# _ad_parents_searchable <root> <relpath> — common.sh's adb_parents_searchable, under this file's name.
+_ad_parents_searchable() { adb_parents_searchable "$@"; }
 
 # _ad_size_ok <file> <max-bytes> — true only for a size that was READ and is within the bound; a
 # failed read is not small.

@@ -100,6 +100,7 @@ REAL_BACKUPS="${HOME:+$HOME/.claude/backups}"
 real_before=(); real_listable=1
 if [ -n "$REAL_BACKUPS" ]; then pinned_backups "$REAL_BACKUPS" real_before || real_listable=0; fi
 export HOME="$work/home" CODEX_HOME="$work/home/.codex"
+unset CLAUDE_CONFIG_DIR   # a caller's own would make every collision case undecidable (#540)
 mkdir -p "$work/home/.codex" || { echo "check-pinned-install: could not create the suite's home" >&2; exit 1; }
 
 # --- the fixture artifact ----------------------------------------------------------------------
@@ -526,6 +527,36 @@ rm -f "$gh539/.claude/scripts/lib"; ln -s "$work/nowhere/CLAUDE.md" "$gh539/.cla
 out="$(HOME="$gh539" bash "$PI" status --project "$P" --offline 2>&1)"
 hasnt "$out" "a GLOBAL symlink install is also active" "status: a root-doc symlink naming no clone is not a global install"
 
+# A VENDORED SKILL OUTRANKED BY A PERSONAL ONE IS NOT "PINNED AND CURRENT" (#540). Keyed by skill
+# name: these homes carry no root doc and no install-source, so nothing but the name can fire it.
+out="$(HOME="$gh539" CODEX_HOME="$gh539/.codex" bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
+eq "$rc" 0 "status: no shared skill name exits 0"
+hasnt "$out" "share a name with a personal skill" "status: …and prints no collision note"
+co540="$work/co540"; mkdir -p "$co540/.claude/skills/cleanup" "$co540/real-ii"
+: > "$co540/.claude/skills/cleanup/SKILL.md"; : > "$co540/real-ii/SKILL.md"
+ln -s "$co540/real-ii" "$co540/.claude/skills/implement-issue"
+out="$(HOME="$co540" CODEX_HOME="$co540/.codex" bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
+eq "$rc" 21 "status: a vendored skill sharing a name with a personal one exits 21, never 0"
+has "$out" "claude skill(s) here share a name with a personal skill on this machine: cleanup, implement-issue" \
+    "status: …naming every colliding skill, the linked one followed through its link"
+has "$out" "Claude Code ranks the PERSONAL copy over this project's" "status: …and saying which copy Claude ranks first"
+hasnt "$out" "Codex lists both" "status: …and no Codex line when no Codex root collides"
+printf '%s\n' '[{"tagName":"v10.0.0","isLatest":true}]' > "$work/pigh.json"
+HOME="$co540" CODEX_HOME="$co540/.codex" PATH="$pigh:$PATH" bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?
+eq "$rc" 21 "status: a collision outranks a newer release (21 over 10)"
+printf '%s\n' '[]' > "$work/pigh.json"
+HOME="$co540" CODEX_HOME="$co540/.codex" PATH="$pigh:$PATH" bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?
+eq "$rc" 21 "status: a collision outranks an unresolvable release list (21 over 30)"
+cx540="$work/cx540"; mkdir -p "$cx540/.agents/skills/cleanup"; : > "$cx540/.agents/skills/cleanup/SKILL.md"
+out="$(HOME="$cx540" CODEX_HOME="$cx540/.codex" bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
+eq "$rc" 21 "status: a Codex user-root collision exits 21"
+has "$out" "codex skill(s) here share a name with a personal skill on this machine: cleanup" "status: …naming it for codex"
+has "$out" "Codex lists both copies" "status: …with the Codex line"
+dg540="$work/dg540"; mkdir -p "$dg540/.claude/skills"; ln -s "$work/nowhere-540" "$dg540/.claude/skills/cleanup"
+out="$(HOME="$dg540" CODEX_HOME="$dg540/.codex" bash "$PI" status --project "$P" --offline 2>&1)"; rc=$?
+eq "$rc" 21 "status: a dangling personal link is undecidable, never 'no collision' (21, not 0)"
+has "$out" "could not be decided — cleanup: personal cleanup is a dangling link" "status: …and says which and why"
+
 # A PIN THAT CANNOT BE READ NEVER DEFAULTS (PR #429). `adb_toml_get` returns 3 for a NUL byte, and
 # the pin readers discarded it — so `source = "private/fork"` with a NUL appended read as no
 # source, and `status`/`upgrade` consulted the public default in its place.
@@ -583,6 +614,9 @@ eq "${#out}" 0 "notice: … and prints nothing at all"
 out="$(bash "$PI" notice --project "$P" 2>&1)"; rc=$?
 yes "$rc" "notice: reports a pinned project"
 has "$out" "PINNED baseline payload" "notice: … naming the model"
+hasnt "$out" "does not govern" "notice: … never claiming the global install does not govern it (#540)"
+out="$(HOME="$co540" CODEX_HOME="$co540/.codex" bash "$PI" notice --project "$P" 2>&1)"
+has "$out" "claude: a personal skill here shares a name with a vendored one" "notice: a Claude collision is named (#540)"
 
 # ================================ upgrade =======================================================
 

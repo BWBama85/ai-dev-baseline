@@ -11,6 +11,15 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Added
 
+- **`baseline pinned status` names each skill a personal one outranks (#540).** Claude runs a
+  personal skill over a same-named project one, so on a machine with the global install a pinned
+  project's vendored skills do not run. `status` now names each colliding skill per agent, says
+  which copy Claude runs (Codex lists both), and exits `21` instead of `0`; a dangling or unreadable
+  personal entry is reported as undecidable, also `21`. Precedence is `20` over `21` over `10` over
+  `30`. `pinned install` warns on a collision, and where the global install's SessionStart hook runs,
+  a new session in such a project names the skills on the operator channel. The docs now say pinned and global installs are not supported together
+  for Claude.
+
 - **`/adopt` audits a project's own instructions against the baseline (#301, decidable half).**
   `adopt-lib.sh conformance` reports `same-model-review` (`[roles] review` names only the agent
   that drives, judged from the configured review rung so installed CLIs do not change the answer)
@@ -52,6 +61,12 @@ only by a release it upgrades to. These entries are the notes for both.
   in Claude's directory-qualified form (`/apps/web:implement`) is a `stale-pointer` too.
 
 ### Changed
+
+- **`skill-compose` is retired (#540).** `baseline skill-compose compose`, `check` and
+  `list-anchors` now exit `3`, name the retirement and write nothing. Composing needed the global
+  base skill, and on any machine with that installed Claude runs the personal base skill over the
+  composed copy. Remove a
+  `skill-compose check` gate from `agents.toml [gates]`; `/adopt` reports any `overrides.md` left.
 
 - **A project carries no skills of its own (`policy:one-baseline`, D148).** A project skill — a
   fork, a composed override, a superseded legacy workflow or a project-specific skill — is now a

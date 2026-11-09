@@ -87,11 +87,12 @@ the baseline accepts, and only while the baseline ships no `release` skill of
 its own (D7; #541 tracks the generic one) — `/adopt`'s `workflows` rung reports
 it `exempt` and every other project skill as a finding (`policy:one-baseline`).
 For Claude the path is `.claude/skills/release/SKILL.md` (see
-[per-project-overrides.md](per-project-overrides.md)). Codex and Gemini
-project-local skill placement is **not** verified end-to-end yet
-(`scripts/lib/skill-compose.sh` is Claude-only in v1, and Gemini's skills
-install under a different root); if your primary is one of those, check
-follow-up #62 rather than assuming the symmetric path works.
+[per-project-overrides.md](per-project-overrides.md)). It runs only because
+the baseline ships no `release` skill: Claude runs a personal skill over a
+same-named project one (#540). Codex loads project skills from `.codex/skills`
+and `.agents/skills`. Antigravity documents project skills in `.agents/skills`
+too, but the baseline does not yet integrate Gemini project skills (pinned mode
+refuses `--agent gemini`), so check before relying on one there.
 
 **2. Have that skill honor `[roles].release` itself.** Setting
 

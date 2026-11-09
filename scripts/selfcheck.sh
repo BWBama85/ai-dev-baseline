@@ -440,7 +440,7 @@ step_install_dry_run() {
   [ -e "$FAKE/.claude/scripts/lib/role-dispatch.sh" ] || ok=0
   [ -e "$FAKE/.codex/scripts/lib/role-dispatch.sh" ] || ok=0
   [ -e "$FAKE/.gemini/scripts/lib/role-dispatch.sh" ] || ok=0
-  # The skill-override composer rides the same scripts/lib symlink (#22).
+  # The retired composer still rides the scripts/lib symlink, so a gate calling it gets its refusal.
   [ -e "$FAKE/.claude/scripts/lib/skill-compose.sh" ] || ok=0
   # /cleanup's predicates ride it too — and must resolve for EVERY agent, since the rendered
   # {{CLEANUP_LIB}} step points each agent's skill at its own copy of the path (#106/#84).
@@ -639,8 +639,7 @@ inputs pr-threads-mutation      scripts/check-pr-threads.sh scripts/check-lib.sh
 # argument validation, and the three narrating workflows' wiring to it.
 add state-assert        bash scripts/check-state-assert.sh
 
-# Unit tests for the partial skill override composer (scripts/lib/skill-compose.sh, #22):
-# ops, anchor slugging, inherit-on-recompose, byte-exact currency check, and the safety guards.
+# The retired composer's refusal contract (scripts/lib/skill-compose.sh, retired by #540).
 add skill-compose       bash scripts/check-skill-compose.sh
 
 # Unit tests for the pattern ledger (scripts/lib/pattern-ledger.sh, #421): the threshold boundary

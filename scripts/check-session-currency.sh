@@ -146,7 +146,7 @@ run_hook() {
   local source="$1" cwd="${2:-$work}" input
   input="$(jq -cn --arg s "$source" --arg c "$cwd" \
     '{session_id:"t", hook_event_name:"SessionStart", source:$s, cwd:$c}')"
-  OUT="$(printf '%s' "$input" | env HOME="$fh" \
+  OUT="$(printf '%s' "$input" | env -u CLAUDE_CONFIG_DIR HOME="$fh" \
       XDG_CACHE_HOME="$work/cache" XDG_CONFIG_HOME="$XDG_CONFIG_ENV" \
       ADB_SESSION_UPDATE="$MODE_ENV" ADB_SESSION_UPDATE_INTERVAL_SECS="$INTERVAL_ENV" \
       bash "$HOOK" 2>/dev/null)"
@@ -169,6 +169,39 @@ OUT="$(printf 'not json' | env HOME="$fh" XDG_CACHE_HOME="$work/cache" XDG_CONFI
         ADB_SESSION_UPDATE="" ADB_SESSION_UPDATE_INTERVAL_SECS="" bash "$HOOK" 2>/dev/null)"; RC=$?
 eq "$RC" "0" "malformed event → exit 0"
 eq "$OUT" "" "malformed event → silence"
+
+# --- a project skill a personal one outranks (#540) ------------------------------
+# Claude runs the personal `demo` over the project's, so a session there is told so — by name, on
+# the operator channel, even though the install itself is current and currency has nothing to say.
+reset_src
+pj540="$work/proj540"; mkdir -p "$pj540/.claude/skills/demo"; : > "$pj540/.claude/skills/demo/SKILL.md"
+git init -q "$pj540"
+run_hook startup "$pj540"
+eq "$RC" "0" "colliding project skill → exit 0"
+has "$OUT" "this project's skill(s) demo share a name with a personal skill" "colliding project skill → named"
+has "$OUT" '"systemMessage"' "colliding project skill → on the operator channel"
+printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 && ok || bad "collision line must be valid JSON"
+mv "$pj540/.claude/skills/demo" "$pj540/.claude/skills/solo"
+reset_src
+run_hook startup "$pj540"
+eq "$OUT" "" "no shared skill name → silence"
+rm -f "$fh/.claude/skills/solo"; ln -s "$work/nowhere-540" "$fh/.claude/skills/solo"
+reset_src
+run_hook startup "$pj540"
+has "$OUT" "could not be decided" "a dangling personal link → reported as undecidable, never silence"
+has "$OUT" "solo: personal solo is a dangling link" "…naming the skill and why, not only pointing elsewhere"
+rm -f "$fh/.claude/skills/solo"
+# A project outside any git repository is still a project: the root falls back to the cwd.
+ng540="$work/nogit540"; mkdir -p "$ng540/.claude/skills/demo"; : > "$ng540/.claude/skills/demo/SKILL.md"
+reset_src
+run_hook startup "$ng540"
+has "$OUT" "this project's skill(s) demo share a name" "a colliding skill outside git → still named"
+# A session directory whose name ends in a newline keeps that byte.
+nl540="$work/nl540
+"; mkdir -p "$nl540/.claude/skills/demo"; : > "$nl540/.claude/skills/demo/SKILL.md"
+reset_src
+run_hook startup "$nl540"
+has "$OUT" "this project's skill(s) demo share a name" "a session cwd ending in a newline → still named"
 
 # --- the source gate: only a genuinely new session ---------------------------
 # clear/compact happen MID-session, fork runs beside a live parent, resume continues a

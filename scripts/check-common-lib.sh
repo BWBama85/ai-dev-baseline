@@ -2673,7 +2673,7 @@ eq "${ cls "foo bar" "$N" "$N" "${ printf '[{"user":{"login":"foo bar"},"content
    "classify: a whitespace-bearing login matches its OWN evidence under the TAB grammar"
 
 # --- adb_md_prose: THE shared CommonMark prose filter (#136) ------------------
-# The primitive's own unit home. `check-roadmap.sh` and `check-skill-compose.sh` exercise it
+# The primitive's own unit home. `check-roadmap.sh` exercises it
 # THROUGH their consumers, which is where the interesting inputs live — but a shared primitive gets
 # tested here too, so a break is attributed to the filter rather than to whichever consumer noticed.
 #
@@ -3902,5 +3902,162 @@ if [ "${1:-}" = "--mutation" ]; then
   printf 'check-common-lib --mutation: PASS\n'
   exit 0
 fi
+
+# ---- adb_skill_collisions (#540): keyed by DIRECTORY name; frontmatter aliases are not evaluated ----
+sk540="$work/sk540"; TAB="$(printf '\t')"
+SK_CFG=""   # the CLAUDE_CONFIG_DIR a case runs under; empty, never the caller's own
+sk_run() { HOME="$sk540/h" CODEX_HOME="$sk540/cx" CLAUDE_CONFIG_DIR="$SK_CFG" bash -c '. scripts/lib/common.sh; adb_skill_collisions "$1" "$2"' _ "$sk540/p" "$1"; }
+mkdir -p "$sk540/h/.claude/skills" "$sk540/real-demo" "$sk540/p/.claude/skills/demo"
+: > "$sk540/real-demo/SKILL.md"; ln -s "$sk540/real-demo" "$sk540/h/.claude/skills/demo"
+: > "$sk540/p/.claude/skills/demo/SKILL.md"
+mkdir -p "$sk540/h/.claude/skills/pers"; : > "$sk540/h/.claude/skills/pers/SKILL.md"
+mkdir -p "$sk540/p/.claude/skills/other"
+printf -- '---\nname: pers\n---\n' > "$sk540/p/.claude/skills/other/SKILL.md"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 10 "skill-collisions: a personal link sharing a project skill's directory name collides (10)"
+eq "$out" "collides${TAB}demo" "skill-collisions: …by name, once — and a frontmatter-only alias is not evaluated"
+out="$(sk_run gemini)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: an agent with no project skill discovery has nothing to collide"
+( set -u; . scripts/lib/common.sh; adb_skill_collisions ) >/dev/null 2>&1; rc=$?
+eq "$rc" 2 "skill-collisions: no arguments under set -u is usage (2), not an abort"
+# The same skill reached two ways is not a collision.
+rm -f "$sk540/h/.claude/skills/demo"; ln -s "$sk540/p/.claude/skills/demo" "$sk540/h/.claude/skills/demo"
+out="$(sk_run claude)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: a personal link to the project's own skill is the same skill (0)"
+rm -f "$sk540/h/.claude/skills/demo"; mkdir -p "$sk540/h/.claude/skills/demo"
+ln -s "$sk540/none" "$sk540/h/.claude/skills/demo/SKILL.md"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 11 "skill-collisions: a dangling personal SKILL.md is undecidable (11), never no collision"
+has "$out" "unknown${TAB}demo${TAB}personal demo/SKILL.md is a dangling link" "skill-collisions: …naming it"
+rm -f "$sk540/h/.claude/skills/demo/SKILL.md"; : > "$sk540/h/.claude/skills/demo/SKILL.md"
+ln -s "$sk540/none" "$sk540/p/.claude/skills/broken"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 11 "skill-collisions: a dangling project skill link is undecidable (11), never absent"
+has "$out" "unknown${TAB}broken${TAB}project broken is a dangling link" "skill-collisions: …naming it"
+rm -f "$sk540/p/.claude/skills/broken"
+mkdir -p "$sk540/p/.claude/skills/synced" "$sk540/h/.claude/skills/synced"
+: > "$sk540/p/.claude/skills/synced/SKILL.md"; : > "$sk540/h/.claude/skills/synced/SKILL.md"
+out="$(sk_run claude)"
+hasnt "$out" "synced" "skill-collisions: Claude's reserved synced folder loads no authored skill, so it never collides"
+rm -rf "$sk540/p/.claude/skills/synced" "$sk540/h/.claude/skills/synced"
+for rs in SYNCED Anthropic-Skills; do
+  mkdir -p "$sk540/p/.claude/skills/$rs" "$sk540/h/.claude/skills/$rs"
+  : > "$sk540/p/.claude/skills/$rs/SKILL.md"; : > "$sk540/h/.claude/skills/$rs/SKILL.md"
+done
+out="$(sk_run claude)"
+hasnt "$out" "SYNCED" "skill-collisions: the reserved folder is skipped in any capitalization"
+hasnt "$out" "Anthropic-Skills" "skill-collisions: …anthropic-skills too"
+rm -rf "$sk540/p/.claude/skills/SYNCED" "$sk540/h/.claude/skills/SYNCED" \
+       "$sk540/p/.claude/skills/Anthropic-Skills" "$sk540/h/.claude/skills/Anthropic-Skills"
+printf 'notes\n' > "$sk540/p/.claude/skills/README notes.md"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 10 "skill-collisions: a plain file in a skill root is no skill, never undecidable"
+rm -f "$sk540/p/.claude/skills/README notes.md"
+mkdir -p "$sk540/p/.claude/skills/locked"; : > "$sk540/p/.claude/skills/locked/SKILL.md"
+chmod 000 "$sk540/p/.claude/skills/locked/SKILL.md"
+if [ -r "$sk540/p/.claude/skills/locked/SKILL.md" ]; then
+  check_note "SKIP: this user can read a mode-000 file (root?); the unreadable-project-SKILL.md case is unexercised"
+else
+  out="$(sk_run claude)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unreadable project SKILL.md is undecidable (11)"
+  has "$out" "unknown${TAB}locked${TAB}project locked/SKILL.md is unreadable" "skill-collisions: …naming it"
+fi
+chmod 644 "$sk540/p/.claude/skills/locked/SKILL.md"; rm -rf "$sk540/p/.claude/skills/locked"
+mkdir -p "$sk540/p/.codex/skills" "$sk540/p/.agents/skills"
+ln -s "$sk540/none" "$sk540/p/.codex/skills/twice"; ln -s "$sk540/none" "$sk540/p/.agents/skills/twice"
+out="$(sk_run codex)"
+eq "$(printf '%s\n' "$out" | grep -c twice)" 1 "skill-collisions: a name undecided in two roots is reported once"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents"
+# An empty same-named folder in one Codex root must not hide the skill in the other.
+mkdir -p "$sk540/p/.codex/skills/both" "$sk540/p/.agents/skills/both" "$sk540/h/.agents/skills/both"
+: > "$sk540/p/.agents/skills/both/SKILL.md"; : > "$sk540/h/.agents/skills/both/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}both" "skill-collisions: an empty folder in .codex/skills does not hide a collision in .agents/skills"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
+# A folder that holds no skill is never judged by its name.
+mkdir -p "$sk540/p/.claude/skills/notes archive"
+out="$(sk_run claude)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}demo" "skill-collisions: a non-skill folder with a space in its name is not undecidable"
+rmdir "$sk540/p/.claude/skills/notes archive"
+chmod 111 "$sk540/h/.claude/skills"
+if [ -r "$sk540/h/.claude/skills" ]; then
+  check_note "SKIP: this user can list a mode-111 directory (root?); the unlistable-user-root case is unexercised"
+else
+  out="$(sk_run claude)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unlistable user root is undecidable (11) — Claude discovers nothing there"
+fi
+chmod 755 "$sk540/h/.claude/skills"
+mkdir -p "$sk540/p/.claude/skills/.hidden" "$sk540/h/.claude/skills/.hidden" "$sk540/p/.claude/skills/-"
+: > "$sk540/p/.claude/skills/.hidden/SKILL.md"; : > "$sk540/h/.claude/skills/.hidden/SKILL.md"; : > "$sk540/p/.claude/skills/-/SKILL.md"
+out="$(sk_run claude)"; rc=$?
+has "$out" "collides${TAB}.hidden" "skill-collisions: a dot-prefixed skill folder is compared too"
+hasnt "$out" "outside [A-Za-z0-9._-]" "skill-collisions: a folder named '-' is a valid name, not an undecidable one"
+rm -rf "$sk540/p/.claude/skills/.hidden" "$sk540/h/.claude/skills/.hidden" "$sk540/p/.claude/skills/-"
+SK_CFG="$sk540/cfg"; out="$(sk_run claude)"; rc=$?; SK_CFG=""
+eq "$rc" 11 "skill-collisions: a CLAUDE_CONFIG_DIR naming another root is not evaluated, so undecidable (11)"
+has "$out" "CLAUDE_CONFIG_DIR names another personal root" "skill-collisions: …and says so"
+hasnt "$out" "collides" "skill-collisions: …and the unused default root claims no collision"
+mv "$sk540/h/.claude" "$sk540/h/.claude-away"
+SK_CFG="$sk540/h/.claude"; out="$(sk_run claude)"; rc=$?; SK_CFG=""
+eq "$rc:$out" "0:" "skill-collisions: CLAUDE_CONFIG_DIR spelled as the default root, absent, is the default (0)"
+mv "$sk540/h/.claude-away" "$sk540/h/.claude"
+mkdir -p "$sk540/p/.agents/skills/own" "$sk540/h/.agents/skills"; : > "$sk540/p/.agents/skills/own/SKILL.md"
+ln -s "$sk540/p/.agents/skills/own" "$sk540/h/.agents/skills/own"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: a Codex personal link to the project's own skill is the same skill (0)"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+# A self-linked copy in one Codex root leaves the name open for a distinct copy in the other.
+mkdir -p "$sk540/p/.codex/skills/dual" "$sk540/p/.agents/skills/dual" "$sk540/h/.agents/skills"
+: > "$sk540/p/.codex/skills/dual/SKILL.md"; : > "$sk540/p/.agents/skills/dual/SKILL.md"
+ln -s "$sk540/p/.codex/skills/dual" "$sk540/h/.agents/skills/dual"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}dual" "skill-collisions: a self-linked copy does not hide a distinct copy in the other Codex root"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
+mkdir -p "$sk540/p/.agents/skills/.hid" "$sk540/h/.agents/skills/.hid" "$sk540/p/.agents/skills/viafile" "$sk540/h/.agents/skills/viafile"
+: > "$sk540/p/.agents/skills/.hid/SKILL.md"; : > "$sk540/h/.agents/skills/.hid/SKILL.md"
+: > "$sk540/p/.agents/skills/viafile/SKILL.md"; ln -s "$sk540/p/.agents/skills/viafile/SKILL.md" "$sk540/h/.agents/skills/viafile/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: Codex skips hidden folders, and a SKILL.md linked to the project's is one skill"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+# A hardlinked SKILL.md is two paths, so two skills to a loader that de-duplicates by path.
+mkdir -p "$sk540/p/.agents/skills/hard" "$sk540/h/.agents/skills/hard"
+: > "$sk540/p/.agents/skills/hard/SKILL.md"; ln "$sk540/p/.agents/skills/hard/SKILL.md" "$sk540/h/.agents/skills/hard/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}hard" "skill-collisions: a hardlinked personal SKILL.md is a distinct path, so a collision"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+# An undecidable copy in one root never hides a confirmed collision in the other.
+mkdir -p "$sk540/p/.codex/skills" "$sk540/p/.agents/skills/both2" "$sk540/h/.agents/skills/both2"
+ln -s "$sk540/none" "$sk540/p/.codex/skills/both2"
+: > "$sk540/p/.agents/skills/both2/SKILL.md"; : > "$sk540/h/.agents/skills/both2/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}both2" "skill-collisions: a confirmed collision wins over an undecidable copy of the same name"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
+mkdir -p "$sk540/p/.agents/skills/shut" "$sk540/h/.agents/skills/shut"
+: > "$sk540/p/.agents/skills/shut/SKILL.md"; : > "$sk540/h/.agents/skills/shut/SKILL.md"; chmod 111 "$sk540/h/.agents/skills/shut"
+if [ -r "$sk540/h/.agents/skills/shut" ]; then
+  check_note "SKIP: this user can list a mode-111 directory (root?); the unlistable-personal-skill case is unexercised"
+else
+  out="$(sk_run codex)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unlistable personal skill folder is undecidable (11), not a collision"
+fi
+chmod 755 "$sk540/h/.agents/skills/shut"; rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+mkdir -p "$sk540/p/.agents/skills/nl" "$sk540/h/.agents/skills/nl" "$sk540/tg"
+: > "$sk540/tg/body"; : > "$sk540/tg/body
+"
+ln -s "$sk540/tg/body" "$sk540/p/.agents/skills/nl/SKILL.md"; ln -s "$sk540/tg/body
+" "$sk540/h/.agents/skills/nl/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}nl" "skill-collisions: targets differing only by a trailing newline are two skills"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents" "$sk540/tg"
+for lk in "$sk540/p/.claude" "$sk540/p"; do
+  chmod 000 "$lk"
+  if [ -x "$lk" ]; then
+    check_note "SKIP: this user can search a mode-000 directory (root?); the unreadable-${lk##*/} case is unexercised"
+  else
+    out="$(sk_run claude)"; rc=$?
+    eq "$rc" 11 "skill-collisions: an unsearchable ${lk##*/} is undecidable (11), never 0"
+  fi
+  chmod 755 "$lk"
+done
 
 check_summary "common-lib"
