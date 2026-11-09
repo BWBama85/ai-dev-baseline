@@ -12,7 +12,8 @@ From `base/practices/00-index.md`, in order:
 
 1. **Explicit instructions in the current task** win over everything.
 2. **Project-specific rules** — the repo's own `CLAUDE.md` / `AGENTS.md` /
-   `GEMINI.md`, and its `agents.toml` — override the baseline where they
+   `GEMINI.md`, its nested root docs and `.claude/rules/` files for the paths
+   they scope, and its `agents.toml` — override the baseline where they
    conflict. A project is free to be stricter, or to opt out of a rule
    entirely.
 3. **The baseline** (`base/practices/*.md`, rendered into the global root
@@ -36,6 +37,48 @@ conventions (ORM/schema rules, ID formats, a milestone/release-goal system, a
 cost-safety policy for a particular cloud) that have nothing to do with — and
 never restate — the baseline's shell-portability or CI-discipline rules. Both
 apply at once: the project doc adds, the baseline remains in force underneath.
+
+### 1a. Where project content lives
+
+A project keeps its **facts** and gives up its own **workflows** (`policy:one-baseline`). A fact
+says what is true of this code; a workflow says what steps to run or which skill to invoke. The
+rule and its test are in `base/practices/handling-the-unknown.md` ("Facts and workflows"). Each
+kind of fact has one home:
+
+| Fact | Home |
+|---|---|
+| Holds repo-wide | the root doc (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`) |
+| One package's own conventions (a subtree with its own manifest) | a nested root doc inside that package, e.g. `apps/api/CLAUDE.md` |
+| Paths that span the tree, or a subtree that is not a package | `.claude/rules/<name>.md` with `paths:` frontmatter |
+| One package's gate command | a custom gate in `agents.toml [gates]`, scoped by `[gates.scope]` (3a) |
+
+`agents.toml` holds configuration only: commands, scopes, roles. A sentence of project
+knowledge goes in a root doc or a rules file.
+
+```markdown
+---
+paths:
+  - "src/db/**"
+---
+Migrations under src/db are append-only.
+```
+
+`paths:` is the only frontmatter key Claude Code reads from a rule, as a YAML list or a
+comma-separated string ([code.claude.com/docs/en/memory](https://code.claude.com/docs/en/memory)).
+A rule scoped with `globs:` is not scoped at all: it loads at every session start. `/adopt`
+reports it with the `paths:` spelling and never rewrites it.
+
+**Which agent loads what.** Claude loads a `paths:` rule when it touches a matching file, and a
+nested `CLAUDE.md` once it touches a file in that directory. Codex reads `AGENTS.md` only from
+the project root down to its working directory, so `apps/api/AGENTS.md` reaches a Codex session
+started in `apps/api/`, not one started at the root. Gemini scans subdirectories below its working
+directory for `GEMINI.md`. Only Claude reads `.claude/rules/`.
+
+`/adopt` inventories all of it (`adopt-lib.sh specialized`): every rules file, every tracked
+nested root doc, and any `.codex/rules*` or `.gemini/rules*` hand mirror. It reports where each
+belongs, and a mixed file is split by an owner-approved judgment. To keep a surface where it is,
+record a `project-delta` entry with a `keeps:` line naming the path in
+`.ai-dev-baseline/decisions.md`.
 
 ## Override 2: a project-scoped skill with the same name — retired
 
@@ -239,6 +282,28 @@ Scope is evaluated only when a change set is available — the Stop-hook
 skips a gate scoped to `apps/**` **without forking the gate script**.
 Standalone `project-gates.sh run` has no change set and runs scoped gates
 unconditionally (fail-safe).
+
+#### Per-package commands (a monorepo)
+
+A package that runs its own command is a **custom gate** named for it, scoped to its path. Every
+key in `[gates]` that is not one of the four built-ins is its own gate, with its own scope, cadence
+and log, so two packages run two commands and neither hides the other:
+
+```toml
+[gates]
+test     = ""                              # no repo-wide test run
+test-api = "pnpm test --filter api"
+test-web = "pnpm test --filter web"
+
+[gates.scope]
+test-api = "apps/api/**"
+test-web = "apps/web/**"
+```
+
+A turn that touches only `apps/api/` runs `test-api` and skips `test-web`, and says so. Keep a
+repo-wide `test` beside them when a change outside every package also needs a test run. This is
+the supported home for a per-package command; a project needs no gate script of its own to say
+it.
 
 #### Per-gate cadence (which caller a gate runs for)
 
@@ -493,8 +558,8 @@ be evaluated and every scoped gate runs unconditionally.
 
 **A repo whose `/implement-issue` needs one extra sign-off line, nothing
 else:** that is baseline work, not a project skill (`policy:one-baseline`):
-put a project fact in the repo's root doc or `agents.toml`, or file a
-baseline issue for the missing behaviour. Neither an `overrides.md` nor a
+put a project fact in the repo's root doc or a `.claude/rules/` file, put configuration in
+`agents.toml`, or file a baseline issue for the missing behaviour. Neither an `overrides.md` nor a
 shadow fork is the answer any more; `/adopt`'s `workflows` rung reports both.
 
 ## See also

@@ -71,7 +71,8 @@ empties for some agent — naming the file, and
 
 1. **Explicit instructions in the current task** win.
 2. **Project-specific rules** (the repo's own `CLAUDE.md` / `AGENTS.md` /
-   `GEMINI.md`, and its `agents.toml`) override these baselines where they
+   `GEMINI.md`, its nested root docs and `.claude/rules/` files for the paths
+   they scope, and its `agents.toml`) override these baselines where they
    conflict — a project is free to be stricter or to opt out of a rule.
 3. **These baselines** are the default everywhere else.
 

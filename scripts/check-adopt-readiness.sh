@@ -528,6 +528,18 @@ has "$out" "exempt=1" "probe: ...with the counts visible"
 out="$( HOME="$WORK/no-install-home" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}unknown" "probe: no installed baseline -> workflows unknown, never ok"
 has "$out" "could not read what the baseline ships" "probe: ...saying the baseline could not be read"
+# A FACT SURFACE OUTSIDE ITS HOME (#552) rides the same rung: an unscoped rule keeps it todo, naming
+# the surface and where it belongs, and the trailer carries the specialized counts.
+d="$WORK/p-rule"; mkrepo "$d"; mkdir -p "$d/.claude/rules"; printf '# Facts
+always.
+' > "$d/.claude/rules/general.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}todo" "probe: an unscoped project rule makes the workflows rung todo"
+has "$out" "surface .claude/rules/general.md (unhomed:rootdoc)" "probe: ...naming the surface and its home"
+has "$out" "specialized: rules=1" "probe: ...with the specialized counts visible"
+printf -- '---\npaths: "src/**"\n---\nfacts\n' > "$d/.claude/rules/general.md"
+out="$( HOME="$wfhome" ar probe "$d" --agents claude 2>/dev/null )"
+has "$out" "workflows${TAB}ok" "probe: a paths: rule in its home leaves the workflows rung ok"
 # THE CONFORMANCE RUNG (#301): adopt-lib.sh conformance, translated — a same-model review is todo,
 # a recorded DEVIATION makes it ok and is named, and an unreadable review rung is unknown.
 d="$WORK/p-conf"; mkrepo "$d"; printf '[roles]\nprimary = "claude"\nreview = ["claude"]\n' > "$d/agents.toml"
@@ -1586,6 +1598,10 @@ shmutant_mut workflows-findings-read-ok \
     '    10) _ar_emit workflows todo' \
     '    10) _ar_emit workflows ok' \
     'probe: a competing project skill makes the workflows rung todo'
+shmutant_mut workflows-specialized-not-folded \
+    '    10) [ "$wrc" -eq 11 ] || wrc=10; wfind="$wfind$sfind" ;;' \
+    '    10) : ;;' \
+    'probe: an unscoped project rule makes the workflows rung todo'
 
 # Width from `adb_pool_size` (min(cpu, 4)); `ADB_POOL_JOBS` is the operator/test seam. The cap is
 # 4 because that is what it already was — nothing measured justifies moving it (D66).

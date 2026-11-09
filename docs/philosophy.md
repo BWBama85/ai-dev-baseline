@@ -124,7 +124,8 @@ repo (see [installation.md](installation.md)). That's a deliberate choice:
   you at session start and after `/cleanup`), updates every project's practices, skills,
   and gates at once — no per-repo sync step.
 - A project layers its *own* needs on top without forking or editing the
-  baseline: its own root doc or `agents.toml` overrides — never a skill of its own
+  baseline: its facts in its root doc, nested root docs and path-scoped rules, its
+  configuration in `agents.toml` — never a skill of its own
   (`policy:one-baseline`; see
   [per-project-overrides.md](per-project-overrides.md)).
 - Because the baseline is agent-neutral and the workflow reads role

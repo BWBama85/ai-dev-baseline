@@ -198,8 +198,10 @@ debug        = "claude"     # owns root-cause investigations.
 ```
 
 `[gates]` is an open set — beyond overriding the built-in `typecheck` / `lint`
-/ `test` / `format`, you can add custom gates (e.g. `build`), declare a gate
-N/A via `[gates.state]`, or path-scope one via `[gates.scope]`. It is
+/ `test` / `format`, you can add custom gates (e.g. `build`, or a per-package
+`test-api`), declare a gate N/A via `[gates.state]`, or path-scope one via
+`[gates.scope]`. `agents.toml` carries configuration only, never prose: a project's
+facts live in its root doc and rules files. It is
 documented in full in [per-project-overrides.md](per-project-overrides.md).
 
 ## Resolution order
