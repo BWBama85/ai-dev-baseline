@@ -2258,7 +2258,7 @@ adb_parents_searchable() {
 adb_skill_collisions() {
   local root="${1:-}" agent="${2:-}"
   [ -n "$root" ] && [ -n "$agent" ] || return 2
-  local rc=0 pdir d n uroot u why found seen=" "
+  local rc=0 pdir d n nd uroot u why found seen=" "
   [ -n "$(adb_agent_project_skill_dirs "$agent")" ] || return 0
   if [ ! -d "$root" ] || [ ! -x "$root" ]; then
     printf 'unknown\t-\tthe project root is not a searchable directory\n'; return 11
@@ -2275,27 +2275,30 @@ adb_skill_collisions() {
       # Only a directory can be a skill; a dangling link might have been one, so it is not skipped.
       [ -d "$d" ] || { [ -L "$d" ] && [ ! -e "$d" ]; } || continue
       n="${d##*/}"
-      case "$n" in
-        *[!A-Za-z0-9._-]*) printf 'unknown\t-\ta project skill name outside [A-Za-z0-9._-] was not judged\n'; rc=11; continue ;;
-      esac
+      # The name is judged only once the entry is known to be (or might be) a skill, and a name is
+      # marked seen only when it is reported, so an empty same-named folder in one root never hides
+      # the skill in another.
+      nd="$n"; case "$n" in *[!A-Za-z0-9._-]*) nd=- ;; esac
       if [ "$agent" = claude ]; then
         case "$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')" in synced|anthropic-skills) continue ;; esac
       fi
       case "$seen" in *" $n "*) continue ;; esac
-      seen="$seen$n "
+      why=""
       if [ -L "$d" ] && [ ! -e "$d" ]; then
-        printf 'unknown\t%s\tproject %s is a dangling link\n' "$n" "$n"; rc=11; continue
+        why="project $nd is a dangling link"
+      elif [ ! -r "$d" ] || [ ! -x "$d" ]; then
+        why="project skill $nd is unreadable"
+      elif [ -L "$d/SKILL.md" ] && [ ! -e "$d/SKILL.md" ]; then
+        why="project $nd/SKILL.md is a dangling link"
+      elif [ ! -f "$d/SKILL.md" ]; then
+        continue
+      elif [ ! -r "$d/SKILL.md" ]; then
+        why="project $nd/SKILL.md is unreadable"
+      elif [ "$nd" = - ]; then
+        why="a project skill name outside [A-Za-z0-9._-] was not judged"
       fi
-      if [ ! -r "$d" ] || [ ! -x "$d" ]; then
-        printf 'unknown\t%s\tproject skill %s is unreadable\n' "$n" "$n"; rc=11; continue
-      fi
-      if [ -L "$d/SKILL.md" ] && [ ! -e "$d/SKILL.md" ]; then
-        printf 'unknown\t%s\tproject %s/SKILL.md is a dangling link\n' "$n" "$n"; rc=11; continue
-      fi
-      [ -f "$d/SKILL.md" ] || continue
-      if [ ! -r "$d/SKILL.md" ]; then
-        printf 'unknown\t%s\tproject %s/SKILL.md is unreadable\n' "$n" "$n"; rc=11; continue
-      fi
+      [ "$nd" = - ] || seen="$seen$n "
+      if [ -n "$why" ]; then printf 'unknown\t%s\t%s\n' "$nd" "$why"; rc=11; continue; fi
       found=""; why=""
       while IFS= read -r -d '' uroot; do
         if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi

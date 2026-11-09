@@ -3967,6 +3967,17 @@ ln -s "$sk540/none" "$sk540/p/.codex/skills/twice"; ln -s "$sk540/none" "$sk540/
 out="$(sk_run codex)"
 eq "$(printf '%s\n' "$out" | grep -c twice)" 1 "skill-collisions: a name undecided in two roots is reported once"
 rm -rf "$sk540/p/.codex" "$sk540/p/.agents"
+# An empty same-named folder in one Codex root must not hide the skill in the other.
+mkdir -p "$sk540/p/.codex/skills/both" "$sk540/p/.agents/skills/both" "$sk540/h/.agents/skills/both"
+: > "$sk540/p/.agents/skills/both/SKILL.md"; : > "$sk540/h/.agents/skills/both/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}both" "skill-collisions: an empty folder in .codex/skills does not hide a collision in .agents/skills"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
+# A folder that holds no skill is never judged by its name.
+mkdir -p "$sk540/p/.claude/skills/notes archive"
+out="$(sk_run claude)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}demo" "skill-collisions: a non-skill folder with a space in its name is not undecidable"
+rmdir "$sk540/p/.claude/skills/notes archive"
 chmod 111 "$sk540/h/.claude/skills"
 out="$(sk_run claude)"; rc=$?
 eq "$rc" 10 "skill-collisions: an unlistable but searchable user root is probed by name (10)"
