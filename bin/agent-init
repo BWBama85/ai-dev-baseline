@@ -252,8 +252,7 @@ case "$RUNG" in
     echo "independent in-session review — \`$RUNG_DETAIL\` reviews, and it did not write the code." ;;
   same-model)
     echo "SAME-MODEL only — \`review\` names \`$RUNG_DETAIL\`, which also writes the code."
-    echo "             That is the implementer checking itself. Point \`review\` at a different agent,"
-    echo "             or declare an async reviewer under [reviewers] bots." ;;
+    bash "$RD" rung-remedy same-model 2>/dev/null | fold -s -w 86 | sed 's/^/             /' ;;
   deferred)
     echo "no in-session reviewer is installed — review is DEFERRED to the PR layer."
     echo "             Declared async reviewer(s): $RUNG_DETAIL."

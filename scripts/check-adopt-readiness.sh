@@ -176,7 +176,7 @@ mkrepo() {  # <dir>
 # --- 1. the contract is DATA, and it is the single source the verdict reads ----------------------
 out="$(ar contract)"
 n="$(printf '%s\n' "$out" | grep -c .)"
-eq "$n" "14" "contract: 14 rungs"
+eq "$n" "15" "contract: 15 rungs"
 # Every count below is derived from the contract rather than restated, so the next rung moves one
 # literal (the line above) instead of six.
 NRUNGS="$n"
@@ -528,6 +528,31 @@ has "$out" "exempt=1" "probe: ...with the counts visible"
 out="$( HOME="$WORK/no-install-home" ar probe "$d" --agents claude 2>/dev/null )"
 has "$out" "workflows${TAB}unknown" "probe: no installed baseline -> workflows unknown, never ok"
 has "$out" "could not read what the baseline ships" "probe: ...saying the baseline could not be read"
+# THE CONFORMANCE RUNG (#301): adopt-lib.sh conformance, translated — a same-model review is todo,
+# a recorded DEVIATION makes it ok and is named, and an unreadable review rung is unknown.
+d="$WORK/p-conf"; mkrepo "$d"; printf '[roles]\nprimary = "claude"\nreview = ["claude"]\n' > "$d/agents.toml"
+out="$(ar probe "$d" --agents claude 2>/dev/null)"
+has "$out" "conformance${TAB}todo" "probe: review = primary makes the conformance rung todo"
+has "$out" "same-model-review at agents.toml" "probe: ...naming the rule and its file"
+{ cat "$WORK/wf-green.tsv" | grep -v "^conformance$TAB"; printf 'workflows\tok\tfixture\n'; printf '%s\n' "$out" | grep "^conformance$TAB"; } | ar verdict >/dev/null 2>&1; rc=$?
+eq "$rc" 10 "verdict: a todo conformance rung beside an otherwise green contract is exactly 10"
+mkdir -p "$d/.ai-dev-baseline"
+printf '## D7 — DEVIATION: one licence\n- date: 2026-11-01\n- category: deviation\n- baseline-rule: review is not primary\n- conflict: one licence\n- scope: agents.toml\n- reason: cost\n- audit-rule: same-model-review\n' > "$d/.ai-dev-baseline/decisions.md"
+out="$(ar probe "$d" --agents claude 2>/dev/null)"
+has "$out" "conformance${TAB}ok" "probe: a recorded DEVIATION makes the conformance rung ok"
+has "$out" "same-model-review (DEVIATION D7)" "probe: ...and names the deviation that cleared it"
+printf '[roles]\nprimary = "claude"\nreview = ["codex"]\n' > "$d/agents.toml"
+printf '## D8 — DEVIATION: keep a pointer\n- date: 2026-11-01\n- category: deviation\n- baseline-rule: x\n- conflict: y\n- scope: z\n- reason: r\n- audit-rule: root-doc-workflow\n' > "$d/.ai-dev-baseline/decisions.md"
+out="$(ar probe "$d" --agents claude 2>/dev/null)"
+has "$out" "conformance${TAB}ok" "probe: an independent review with a refused deviation is still ok"
+has "$out" "refused DEVIATION D8 (root-doc-workflow)" "probe: ...and the ok line keeps the refused deviation's evidence"
+printf '[roles]\nprimary = "claude"\nreview = ["nope"]\n' > "$d/agents.toml"
+out="$(ar probe "$d" --agents claude 2>/dev/null)"
+has "$out" "conformance${TAB}unknown" "probe: an unreadable review rung makes the conformance rung unknown, never ok"
+printf '[roles]\nprimary = "claude"\nreview = ["claude"]\n' > "$d/agents.toml"; printf 'x\000y\n' > "$d/.ai-dev-baseline/decisions.md"
+out="$(ar probe "$d" --agents claude 2>/dev/null)"
+has "$out" "conformance${TAB}unknown" "probe: an unreadable decision log makes the conformance rung unknown"
+has "$out" "found so far: same-model-review at agents.toml" "probe: ...and still names the finding it established"
 # A PINNED project with no global install (a CI runner, #537) is judged from its own pin (#535).
 d="$WORK/p-workflows-pinned"; mkrepo "$d"; mkdir -p "$d/.ai-dev-baseline" "$d/.claude/skills/implement"
 printf 'x\n' > "$d/.claude/skills/implement/SKILL.md"
@@ -1141,7 +1166,7 @@ case "$rc" in 10|11) ok ;; *) bad "status: an option-only invocation must still 
 # red WITH its reasons, and a fully adopted one green — through the real subcommands, not a
 # hand-written record set.
 d="$WORK/e2e"; mkrepo "$d"
-printf '[roles]\nprimary = "claude"\n[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
+printf '[roles]\nprimary = "claude"\nreview = ["codex"]\n[gates]\nbuild = "exit 0"\n' > "$d/agents.toml"
 mkdir -p "$d/.ai-dev-baseline"; printf '# decisions\n' > "$d/.ai-dev-baseline/decisions.md"
 ar receipt run "$d" >/dev/null 2>&1
 facts='{"release_milestone":"Next release","backlog_milestone":"Backlog","blocker_label":true,
@@ -1260,6 +1285,14 @@ shmutant_mut cdpath-not-unset \
 #
 # The witness is the assertion's FULL label, prefix included, and every literal is ONE line —
 # shmutant matches a literal within one line, so a two-line literal can never match (D68).
+shmutant_mut conformance-unknown-drops-findings \
+    '    11) _ar_emit conformance unknown "conformance not judged in full${cfind:+ (found so far:$cfind)}' \
+    '    11) _ar_emit conformance unknown "conformance not judged in full' \
+    'probe: ...and still names the finding it established'
+shmutant_mut conformance-todo-reads-ok \
+    '    10) _ar_emit conformance todo' \
+    '    10) _ar_emit conformance ok' \
+    'probe: review = primary makes the conformance rung todo'
 shmutant_mut missing-rung-is-skipped \
     'unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \
     'continue; unknowns+=("$rung${TAB}$owner${TAB}$title${TAB}not reported' \

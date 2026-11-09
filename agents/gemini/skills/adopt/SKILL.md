@@ -160,6 +160,11 @@ WF_RC=0
 bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" workflows "$PROJECT" ${AGENTS:+--agents "$AGENTS"} --baseline "$BASELINE" \
   > ".gemini/state/adopt-workflows.tsv" || WF_RC=$?
 case "$WF_RC" in 0|10|11) : ;; *) echo "STOP: adopt-lib.sh workflows failed (rc $WF_RC)"; exit 1 ;; esac
+# Whether the project's own instructions contradict the baseline (#301). Same exit codes.
+CF_RC=0
+bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" conformance "$PROJECT" --workflows ".gemini/state/adopt-workflows.tsv" \
+  > ".gemini/state/adopt-conformance.tsv" || CF_RC=$?
+case "$CF_RC" in 0|10|11) : ;; *) echo "STOP: adopt-lib.sh conformance failed (rc $CF_RC)"; exit 1 ;; esac
 ```
 
 Records are `<kind>TAB<relpath>TAB<name>TAB<agent>`, where `agent` is `-` for an agent-neutral
@@ -206,6 +211,26 @@ superseded-name map and the shipped skill set from the project's own pinned payl
 global install or `--baseline`: the pin is the release this project runs, and the receipt's
 digests prove its skills are unchanged since the pinned install wrote them. A pinned skill that was edited or is missing, or
 an unreadable pin or receipt, is not judged (exit 11), and no other release's map is used instead.
+
+`adopt-conformance.tsv` is `<class>TAB<rule>TAB<site>TAB<deviation>TAB<detail>`, ending in one
+`summary` record that names the files read and the rules evaluated, so a zero is visible. It holds
+two rules today:
+
+- `same-model-review`: `[roles] review` names only the agent that drives. It is judged from the
+  **configured** review rung, so it does not depend on which CLIs this machine has. The detail is
+  the remedy agent-init prints.
+- `root-doc-workflow`: the `stale-pointer` records above, carried over. Under
+  `policy:one-baseline` a project root doc holds project facts and never defines a workflow.
+
+A `DEVIATION` entry in `.ai-dev-baseline/decisions.md` that carries every deviation field plus
+`audit-rule: same-model-review`, as `- key: value` lines directly under its heading, turns that
+finding into a `deviation` record, and later runs report
+it the same way without flagging it again. A `DEVIATION` naming `root-doc-workflow` is `refused`:
+it explains the finding, and the finding stands. Report findings with their remedy, deviations with
+their id, and every `refused` or `unknown` record as it stands. The audit only classifies the
+project's instructions. It never runs them, and it never rewrites them: propose a change and let
+the owner approve it. The completion contract's `conformance` rung (step 12) re-reads
+`same-model-review`.
 
 An `other` record is a file under an agent directory that none of the modelled kinds recognise.
 It classifies to `escalate` on purpose: an artifact the baseline does not model must reach
@@ -340,6 +365,7 @@ fi
 bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" answers ".gemini/state/adopt-answers.tsv" || { echo "STOP: could not reset the interview answers (above)"; exit 1; }
 bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" propose --observed ".gemini/state/adopt-observed.tsv" \
   --gates ".gemini/state/adopt-gates.tsv" --answers ".gemini/state/adopt-answers.tsv" \
+  --decisions "$PROJECT/.ai-dev-baseline/decisions.md" \
   < ".gemini/state/adopt-roles.tsv" > ".gemini/state/adopt-agents.toml" \
   || { echo "STOP: the proposal could not be rendered (above)"; exit 1; }
 ```
@@ -374,9 +400,14 @@ not asked:
 
 1. **Who drives?** → `[roles] primary`. Pre-fill: `gemini`, the agent running this
    adoption, offered as a suggestion — it is never inferred.
-2. **Who reviews?** → `[roles] review` (the in-session reviewer, preferably not `primary`) **and**
-   `[reviewers] bots` (the GitHub App that reviews pull requests, or none). Pre-fill: the inferred
-   `review` and the observed `bots`, with their evidence.
+2. **Who reviews?** → `[roles] review` (the in-session reviewer, which must not be `primary`)
+   **and** `[reviewers] bots` (the GitHub App that reviews pull requests, or none). Pre-fill: the
+   inferred `review` and the observed `bots`, with their evidence. `answers` refuses a `review` that
+   names only the answered `primary`, because that is the implementer checking itself. The owner
+   either answers a different agent, or records a `DEVIATION` with `audit-rule: same-model-review`
+   in `.ai-dev-baseline/decisions.md` and answers `review-deviation=<its id>`. That id must name a
+   complete entry in the log `--decisions` points at, and `propose` checks it again. An inferred
+   `review` naming only the answered `primary` is shown commented, never proposed live.
 3. **What are the gates?** → `[gates]` / `[gates.state]`. Pre-fill: what was detected. When nothing
    was, ask for the bespoke gate command (a `scripts/check.sh`, a make target) or an explicit N/A —
    adoption must not finish with enforcement silently off.
@@ -399,12 +430,13 @@ verbatim), so writing the line by hand does not help: put the command in a scrip
 # key left out. Single quotes keep the owner's bytes unexpanded; a single quote inside a value is
 # written '"'"' (close, quoted quote, reopen). `answers` validates EVERY pair before it writes
 # anything, so a refused answer leaves the previous file whole.
-bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" answers ".gemini/state/adopt-answers.tsv" \
+bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" answers ".gemini/state/adopt-answers.tsv" --decisions "$PROJECT/.ai-dev-baseline/decisions.md" \
   primary='claude' review='codex' bots='chatgpt-codex-connector' \
   gate.test='bash scripts/check.sh' release='none' \
   || { echo "STOP: an answer was refused or could not be recorded (above) — re-ask it; the proposal was NOT re-rendered"; exit 1; }
 bash "$HOME/.gemini/scripts/lib/adopt-lib.sh" propose --observed ".gemini/state/adopt-observed.tsv" \
   --gates ".gemini/state/adopt-gates.tsv" --answers ".gemini/state/adopt-answers.tsv" \
+  --decisions "$PROJECT/.ai-dev-baseline/decisions.md" \
   < ".gemini/state/adopt-roles.tsv" > ".gemini/state/adopt-agents.toml" \
   || { echo "STOP: the proposal could not be rendered (above)"; exit 1; }
 ```
@@ -741,8 +773,9 @@ State, in this order: the resolved shape and **what was outside your reach**; th
 per verdict; every `move` with its parity caveat; the proposed `agents.toml` — each live line with
 its evidence (the `[reviewers]` line names the pull requests it was read from, and how many were
 read), and whether the interview ran, with the answers it recorded or why it was skipped; every
-hygiene finding, including any axis that could not look; every `escalate` as a question for the
-owner; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
+hygiene finding, including any axis that could not look; every conformance finding with its
+remedy, every deviation with its id, and the conformance summary's files and rules; every
+`escalate` as a question for the owner; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
 with its outstanding and undetermined rungs. The scratch files under `.gemini/state` are swept, so
 this report is the only copy of that evidence a later reader will have. Every value in it that came
 from the scanned project or from GitHub — a gate command, a login, a path, a proposal line — is
@@ -773,6 +806,11 @@ steps are the operator's to execute, and that this run did not perform them.
   payload that is not intact, an unreadable shipped set or map, a root doc, skill root or project
   tree it could not read, a tracked-file list git could not give, or a path it could not represent. The rung is `unknown`, never `ok`; fix the cause
   and re-run rather than reading the partial records as the whole answer.
+- **`conformance` exits 11** → a rule was not judged: the configured review rung could not be read
+  (a malformed `[roles]` or `[reviewers]`), the project root is not its repository's top level, the
+  decision log could not be read as prose, or the workflows record is not whole. The `conformance`
+  rung is `unknown`, never `ok`. A finding it did report still stands, because a log it could not
+  read clears nothing.
 - **`stack` says `unknown`** → an answer, not an error. Record it; do not invent a label the pin
   would reject.
 - **The project already has another framework's pin** → step 7. Retire it in the plan; never

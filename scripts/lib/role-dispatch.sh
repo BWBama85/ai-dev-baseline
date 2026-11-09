@@ -17,7 +17,8 @@
 #   role-dispatch.sh invoke  <role|agent> [--effort <v>]  # prompt on STDIN → run that CLI; clean stdout
 #   role-dispatch.sh effort  <role>          # the reasoning effort for that role (empty+rc1 = inherit)
 #   role-dispatch.sh available <agent>       # is that agent's CLI on PATH here? (silent; rc 0/1/2)
-#   role-dispatch.sh review-rung [<driver>]  # what will actually review a diff: independent|same-model|deferred|none|unknown
+#   role-dispatch.sh review-rung [--configured] [<driver>]  # what will actually review a diff: independent|same-model|deferred|none|unknown
+#   role-dispatch.sh rung-remedy <rung>      # the remedy sentence for a non-independent rung (same-model)
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
 #   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
 #   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
@@ -1054,7 +1055,14 @@ adb_agent_available() {
 # plainly declared something. Both are the fail-open direction, so a reader that cannot answer
 # makes the rung `unknown` rather than contributing nothing.
 #   0 = a determinate rung   2 = unknown
+#
+# `--configured` asks the same ladder of the CONFIGURATION alone: every configured reviewer counts
+# as installed, so the answer does not depend on which CLIs this machine has. That is the question
+# the adoption conformance audit (#301) asks about somebody else's repository; agent-init and the
+# workflow ask the live one.
 adb_review_rung() {
+  local configured=0
+  if [ "${1:-}" = --configured ]; then configured=1; shift; fi
   local driver="${1:-}" tokens bots rc t indep="" same="" missing="" suffix=""
   if [ -n "$driver" ]; then
     _adb_rd_valid_token "$driver" || { printf 'unknown driver-not-an-agent-token\n'; return 2; }
@@ -1068,7 +1076,7 @@ adb_review_rung() {
   # early return was what discarded the still-unavailable slots behind it.
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    if ! adb_agent_available "$t"; then
+    if [ "$configured" -eq 0 ] && ! adb_agent_available "$t"; then
       missing="${missing:+$missing,}$t"
       continue
     fi
@@ -1097,6 +1105,17 @@ EOF
         else printf 'none%s\n' "$suffix"; return 0; fi ;;   # rc 0 + empty is an explicit `bots = []`
     17) printf 'none%s\n' "$suffix"; return 0 ;;             # never declared
     *)  printf 'unknown reviewers-bots-malformed%s\n' "$suffix"; return 2 ;;
+  esac
+}
+
+# adb_rung_remedy <rung> — the one-sentence remedy for a rung that is not an independent review,
+# printed by agent-init and by the adoption conformance audit (#301), so the two cannot word it
+# differently. rc 1 for a rung that needs no remedy.
+adb_rung_remedy() {
+  case "${1:-}" in
+    # Not "declare a bot": the ladder returns same-model before it consults [reviewers] bots.
+    same-model) printf '%s\n' 'That is the implementer checking itself. Point `review` at a different agent.' ;;
+    *) return 1 ;;
   esac
 }
 
@@ -1356,7 +1375,8 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
              # Prints the resolved effort, or NOTHING with rc 1 when nothing declares one (the
              # agent's own config governs). rc 2 = an invalid declared value.
              adb_role_effort "$2" ;;
-    review-rung) adb_review_rung "${2:-}" ;;
+    review-rung) shift; adb_review_rung "$@" ;;
+    rung-remedy) adb_rung_remedy "${2:-}" ;;
     available) [ "$#" -ge 2 ] || { echo "usage: role-dispatch.sh available <agent>" >&2; exit 2; }
              # SILENT — the exit code IS the answer. A caller asking about several agents in a
              # ladder would otherwise have to filter this helper's chatter out of its own report.
@@ -1381,6 +1401,6 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
              # came from, and a defaulted "unknown" would silently ship an unlabelled payload from
              # a caller that simply forgot the argument.
              adb_untrusted_block "$2" ;;
-    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [<driver>] | bots [--declared|--comparable] | max-rounds | local-passes [--with-source] | untrusted <source>]" >&2; exit 2 ;;
+    *) echo "usage: role-dispatch.sh [resolve <role> | invoke <role|agent> | available <agent> | review-rung [--configured] [<driver>] | rung-remedy <rung> | bots [--declared|--comparable] | max-rounds | local-passes [--with-source] | untrusted <source>]" >&2; exit 2 ;;
   esac
 fi
