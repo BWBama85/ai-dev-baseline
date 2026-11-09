@@ -47,7 +47,7 @@ product thesis turned inward.
   `~/.<agent>/scripts/lib`, so anything placed there is available to every agent's skills. What a
   given module promises is stated in *its own* header: `cleanup-lib.sh` and `roadmap-lib.sh` declare
   themselves **network-pure** (their answers gate `rm` and ref deletes, so they must be hermetically
-  testable), while `repo-settings.sh`, `release-convention.sh`, `skill-compose.sh`,
+  testable), while `repo-settings.sh`, `release-convention.sh`,
   `role-dispatch.sh` and `currency-lib.sh` all deliberately mutate outside state. Do not infer a
   directory-wide rule from the first header you read; state your module's contract in your module.
   That includes its **output** (#437): an `Outputs:` section saying what stdout carries by default

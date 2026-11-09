@@ -11,8 +11,8 @@
 #                              #   (or fast-forward main, on channel = "main") + self-heal links
 #   baseline update --check    # report currency only; make NO changes (for a hook)
 #   baseline latest-release    # print the newest stable release tag of this clone's origin (validated)
-#   baseline skill-compose …   # compose a project's partial skill overrides (issue #22;
-#                              #   run 'baseline skill-compose -h' for its own usage)
+#   baseline skill-compose …   # RETIRED (#540): every subcommand refuses (exit 3) and says
+#                              #   what to do instead; 'baseline skill-compose -h' for that
 #   baseline repo …            # hand PR merges to GitHub: 'checks' / 'status' / 'apply' to set
 #                              #   required status checks then allow_auto_merge; 'automerge-ok',
 #                              #   the guard /implement-issue asks before it arms auto-merge;

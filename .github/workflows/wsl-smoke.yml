@@ -93,13 +93,10 @@ jobs:
         # bash log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh` — runs as an
         # ordinary user, for two reasons:
         #
-        #   1. Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot DENY it a write. The
-        #      offline suite has an assertion that depends on exactly that
-        #      (`scripts/check-skill-compose.sh:329-330` chmods a directory 555 and requires the
-        #      next compose to FAIL); under root the write succeeds, the assertion inverts, and the
-        #      job goes red for a reason that has nothing to do with WSL. Weakening the assertion
-        #      would have deleted real coverage to accommodate a CI choice — the workflow was what
-        #      was wrong.
+        #   1. Root holds `CAP_DAC_OVERRIDE`, so a POSIX mode bit cannot DENY it a read or a
+        #      write. The offline suite's unreadable-directory cases (`check-adopt.sh`'s mode-000
+        #      skill roots, `check-bash-floor-guard.sh`'s locked trees) depend on exactly that:
+        #      under root they SKIP, so the job would prove less than it claims.
         #   2. It is the DOCUMENTED configuration. `docs/installation.md` tells a Windows user to
         #      clone and install inside WSL as themselves, so running as root was proving a setup
         #      no real user has. The fix raises this job's fidelity rather than merely turning it
@@ -179,7 +176,7 @@ jobs:
             throw "could not read the effective uid inside WSL — got '$uid'"
           }
           if ($uid -eq '0') {
-            throw "the framework's steps would run as root — root holds CAP_DAC_OVERRIDE, so a read-only fixture cannot deny it a write and scripts/check-skill-compose.sh inverts (#271)"
+            throw "the framework's steps would run as root — root holds CAP_DAC_OVERRIDE, so a mode-000 fixture cannot deny it a read and the unreadable-directory cases go unexercised (#271)"
           }
 
       # BEFORE the floor guard below, deliberately: a version logged after the proof documents

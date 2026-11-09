@@ -76,16 +76,21 @@ HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 # re-read skill definitions after an update actually changed them on disk.
 # Usage: say <message> [reload]
 say() {
+  local m="$1"
+  [ -z "${COLL_MSG:-}" ] || m="${m:+$m
+}$COLL_MSG"
   if [ "$HAVE_JQ" -eq 1 ]; then
-    jq -cn --arg m "$1" --arg r "${2:-}" \
+    jq -cn --arg m "$m" --arg r "${2:-}" \
       '{systemMessage: $m}
        + (if $r == "" then {}
           else {hookSpecificOutput: {hookEventName: "SessionStart", reloadSkills: true}} end)'
   else
-    printf '%s\n' "$1"
+    printf '%s\n' "$m"
   fi
   exit 0
 }
+# finish — stop with nothing of currency's to say, still reporting a skill collision.
+finish() { [ -z "${COLL_MSG:-}" ] || say ""; exit 0; }
 
 # --- 1. only a genuinely new session ----------------------------------------
 
@@ -104,22 +109,39 @@ hook_field() {
 
 [ "$(hook_field source)" = "startup" ] || exit 0
 
-# --- 2. the shared policy ------------------------------------------------------
-
-# currency-lib.sh lives beside this script (install.sh symlinks scripts/lib into
-# ~/.claude/scripts/lib). Absent → an incomplete install; stay silent rather than guess.
-_adb_cu="$(dirname "$0")/lib/currency-lib.sh"
-[ -f "$_adb_cu" ] || exit 0
-
 # `cwd` comes from the event JSON (the session's directory, which need not be this process's);
 # fall back to $PWD. The library uses it for the self-clone guard — never update the clone this
 # very session is working in.
 SESSION_CWD="$(hook_field cwd)"
 [ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"
 
+# --- 1b. a project skill this session will never run (#540) ---------------------
+#
+# Claude runs a personal skill over a same-named project one, so name the project skills that lose.
+# Only names reach the message: adb_skill_collisions emits them from a closed charset.
+COLL_MSG=""
+_adb_root="$(git -C "$SESSION_CWD" rev-parse --show-toplevel 2>/dev/null)" || _adb_root=""
+if [ -n "$_adb_root" ] && command -v adb_skill_collisions >/dev/null 2>&1; then
+  _adb_co="$(adb_skill_collisions "$_adb_root" claude)"; _adb_crc=$?
+  _adb_names="$(printf '%s\n' "$_adb_co" | awk -F'\t' '$1 == "collides" {printf "%s%s", sep, $2; sep = ", "}')"
+  [ -z "$_adb_names" ] \
+    || COLL_MSG="baseline: this project's skill(s) $_adb_names share a name with a personal skill, so Claude runs the personal copy (#540)."
+  if [ "$_adb_crc" -eq 11 ]; then
+    COLL_MSG="${COLL_MSG:+$COLL_MSG
+}baseline: whether a project skill here is outranked by a personal one could not be decided (baseline pinned status names it)."
+  fi
+fi
+
+# --- 2. the shared policy ------------------------------------------------------
+
+# currency-lib.sh lives beside this script (install.sh symlinks scripts/lib into
+# ~/.claude/scripts/lib). Absent → an incomplete install; stay silent rather than guess.
+_adb_cu="$(dirname "$0")/lib/currency-lib.sh"
+[ -f "$_adb_cu" ] || finish
+
 # One bounded call; one outcome record on stdout ("<outcome>\t<message>"). The library never exits
 # non-zero for a policy outcome, and this hook cannot fail a session anyway.
-RECORD="$(bash "$_adb_cu" check --trigger startup --cwd "$SESSION_CWD" 2>/dev/null)" || exit 0
+RECORD="$(bash "$_adb_cu" check --trigger startup --cwd "$SESSION_CWD" 2>/dev/null)" || finish
 # Split on the FIRST whitespace run rather than slicing on a literal TAB. The outcome is a single
 # word by contract, so `read` gives it to $OUTCOME and every remaining byte to $MESSAGE — and it
 # degrades correctly on a record with no separator at all (empty message) instead of needing a
@@ -145,8 +167,8 @@ RECORD_EOF
 # silence. Outcomes that are not worth reporting carry an empty message by contract.
 case "$OUTCOME" in
   updated|repaired)            say "baseline: $MESSAGE" reload ;;
-  busy|offline)                exit 0 ;;
-  *) [ -n "$MESSAGE" ] && say "baseline: $MESSAGE"; exit 0 ;;
+  busy|offline)                finish ;;
+  *) [ -n "$MESSAGE" ] && say "baseline: $MESSAGE"; finish ;;
 esac
 
-exit 0
+finish

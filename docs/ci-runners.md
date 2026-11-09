@@ -177,11 +177,11 @@ answer. It would add a second verdict about a commit that already has one, not c
 
 **And it runs as an ordinary user, which is a correctness requirement rather than hygiene** (#271,
 D39). `wsl --install --no-launch` provisions **no user**, so an unprovisioned distro's default is
-root — and root holds `CAP_DAC_OVERRIDE`, which means a POSIX mode bit cannot *deny* it a write. The
-offline suite has an assertion that depends on exactly that: `check-skill-compose.sh` chmods a skill
-directory `555` and requires the next compose to fail. Run as root, that assertion **inverts**, and
-the job is red on a fixture that passes on `ubuntu-26.04` and on a maintainer's macOS workstation
-alike. So the job creates an `adb` account and hands it everything the framework touches — the clone,
+root — and root holds `CAP_DAC_OVERRIDE`, which means a POSIX mode bit cannot *deny* it a read or a
+write. The offline suite's unreadable-directory cases depend on exactly that: `check-adopt.sh` chmods
+skill roots `000` and requires them reported as undecidable, and under root they **skip**, so the job
+would prove less than it says on a fixture that runs in full on `ubuntu-26.04` and on a maintainer's
+macOS workstation alike. So the job creates an `adb` account and hands it everything the framework touches — the clone,
 the distro's `bash --version` log, the floor guard, `install.sh`, `selfcheck.sh`, `uninstall.sh`.
 Exactly three in-distro invocations still pass `--user root`: the `/etc/os-release` read, which runs
 before the account exists, and the two that are privileged by nature — the `apt-get` bootstrap and

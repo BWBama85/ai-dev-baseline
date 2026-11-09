@@ -16,14 +16,21 @@ own section, [Release-pinned, per project](#release-pinned-per-project).
 | Committed to the project | no | yes — the payload ships with the repo |
 | Agents | claude · codex · gemini | claude · codex |
 
-**They coexist, and neither one degrades the other.** A machine can run the global install and
-still open a project that carries a pinned payload. Which copy of a same-named skill runs there
-is the harness's precedence, not the baseline's: Claude Code runs a *personal* skill over a
-same-named *project* one ("personal over project",
-[code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)), so with the global
-install present Claude runs the global copy even inside a pinned project — tracked by #540 — and
-Codex lists both. Nothing arbitrates that at install time, and `baseline pinned status` reports
-the overlap rather than pretending to resolve it.
+**For Claude, do not run both on one machine** (#540). Neither install writes into the other, but
+a pinned project opened where the global install is also active does not run its pin:
+
+- **Skills:** Claude Code runs a *personal* skill over a same-named *project* one ("personal over
+  project", [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)), so the
+  global copy of every vendored skill runs, calling the global libraries. Codex lists both copies,
+  and which one a turn follows is not determined by the pin.
+- **Rules:** the global root doc and procedures load beside the project's own.
+- **Stop gates:** Claude merges hooks across scopes, so the global gates fire as well as the
+  pinned ones. Only `session-context.sh` defers to a vendored copy.
+
+`baseline pinned install` warns when a vendored skill collides with a personal one, `baseline
+pinned status` names each colliding skill and exits `21`, and a new session in such a project says
+so. On a machine without the global install, or in a Claude cloud session (which loads no personal
+skills), the pin runs as written.
 
 **Pick the global model** when the machine is yours and you want every project on it to move to
 each new release together. **Pick the pinned model** when a project must state which baseline it runs — a repo
@@ -921,10 +928,6 @@ silence looks exactly like "already current". Run `baseline update` by hand once
 sweep on it carries itself. The same applies to a `--no-hooks` install, where `/cleanup` becomes
 your *only* automatic trigger.
 
-**One thing an update does not do:** a project's *composed* skills — a partial override merged onto
-a base skill — are not recomposed when the base skill changes. Their staleness is a separate check;
-see issue #64.
-
 ### The two-clone topology
 
 A framework developer typically keeps **two** clones:
@@ -1038,7 +1041,10 @@ baseline pinned uninstall                  # or: ./uninstall.sh --pinned --proje
 `status` reports the mode, the pinned version, whether the payload still matches its receipt, and —
 this one call reaches the network — whether a newer release exists. Its exit code is the machine
 contract: `0` pinned and current · `10` a newer release exists · `11` not pinned · `20` the payload
-is missing or unverifiable · `30` the release list could not be read. A merged surface Codex cannot
+is missing or unverifiable · `21` the payload is intact, but a project skill shares its name with a
+personal skill on this machine (or that could not be decided, such as a dangling personal link) ·
+`30` the release list could not be read. When several apply, `20` wins over `21`, `21` over `10`,
+and `10` over `30`; `--offline` still returns `21`. A merged surface Codex cannot
 load counts as missing: a root `AGENTS.override.md` added after the install is reported as
 `shadowed`, with `20`, because Codex then reads it instead of `AGENTS.md`. A link there that fails
 to resolve for any reason but a missing target (a loop, for instance) is reported as `broken`,
@@ -1076,11 +1082,8 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   (`scripts/build.sh`), so a vendored payload could not be loaded — the installer refuses
   `--agent gemini` and says so rather than installing something inert. Global mode still covers all
   three agents.
-- **`skill-compose` overrides do not work in pinned mode.** The composer writes
-  `.claude/skills/<name>/SKILL.md` by merging your `overrides.md` onto the *installed base* skill —
-  and in this model that output path *is* the base. Carrying a delta on top of a pinned skill needs
-  a separate home; `/adopt` still reports an `overrides.md` it finds, so the situation is visible
-  rather than silent.
+- **There are no skill overrides.** The composer is retired (#540) and refuses every subcommand;
+  `/adopt` reports an `overrides.md` it finds, so one left behind is visible rather than silent.
 - **It vendors a runtime, not a development environment.** There is no `build.sh`, no `selfcheck`,
   and no `bin/` — a pinned project consumes the baseline, it does not develop it.
 - **The pin is not a lock file.** It records what was installed; the receipt is what proves the

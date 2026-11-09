@@ -233,20 +233,11 @@ replaced:
 a practice into its rule and its procedure, and `adb:paths`, which scopes that procedure — are
 refused in a workflow source. Their contract lives in `base/practices/00-index.md` (#434).
 
-### Step headings are project-override anchors
+### Step headings are no longer an override contract
 
-Per-project overrides are **retired** (`policy:one-baseline`): `/adopt`'s `workflows` rung
-reports an `overrides.md` and the skill it composes, and a new project should never write one.
-The anchor rule below stays only so the projects still carrying an override fail loud rather than
-silently while they migrate. A skill's `### ` step headings are a stable contract: a project can carry a small
-delta on one step (without forking the whole skill) by targeting its heading as an
-**anchor** in a `.claude/skills/<name>/overrides.md`, which `scripts/lib/skill-compose.sh`
-merges onto the installed base skill (issue #22 — see `docs/per-project-overrides.md`).
-The anchor is the heading slugified with the leading `N.` step number stripped, so a step
-can be **renumbered** freely; **renaming** a step heading changes its anchor and makes any
-project override that targeted it fail loud on the next recompose (the intended "your fork
-has diverged" signal). Keep step-heading wording stable across edits when you can, and
-treat a rename as a breaking change to that anchor.
+Per-project overrides are **retired** (`policy:one-baseline`, #540): `scripts/lib/skill-compose.sh`
+refuses every subcommand, and `/adopt`'s `workflows` rung reports any `overrides.md` a project
+still carries. A step heading may be renamed freely; no project composes against it.
 
 ## Adding a workflow
 

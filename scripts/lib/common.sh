@@ -2222,6 +2222,56 @@ $(_adb_agent_user_skill_root_specs "$1")
 EOF
 }
 
+# adb_skill_collisions <project-root> <agent> — which of a project's top-level skills share a name
+# with a PERSONAL skill this machine's agent also loads (#540). Claude runs the personal copy
+# ("personal over project", code.claude.com/docs/en/skills); Codex lists both. Keyed by skill name,
+# never by whether a root doc or a baseline install is present: any same-named personal skill counts.
+# Output, one TAB-separated line per finding, the name always from [A-Za-z0-9._-]:
+#   collides <name>          a readable <user-root>/<name>/SKILL.md exists
+#   unknown  <name> <why>    it could not be decided: a dangling link, an unreadable entry or root,
+#                            or a project skill name outside the closed charset (<name> is then `-`)
+# A name found in two project roots, or colliding in two user roots, is reported once.
+# Returns: 0 no finding · 10 collisions only · 11 something could not be decided (wins over 10)
+# · 2 usage. An agent with no project skill discovery (gemini) has nothing to collide: 0.
+adb_skill_collisions() {
+  local root="$1" agent="$2" pdir d name uroot u why seen=" " rc=0 found
+  [ -n "$root" ] && [ -n "$agent" ] || return 2
+  for pdir in $(adb_agent_project_skill_dirs "$agent"); do
+    [ -e "$root/$pdir" ] || [ -L "$root/$pdir" ] || continue
+    if [ ! -d "$root/$pdir" ] || [ ! -r "$root/$pdir" ] || [ ! -x "$root/$pdir" ]; then
+      printf 'unknown\t-\tproject skill root %s is unreadable\n' "$pdir"; rc=11; continue
+    fi
+    for d in "$root/$pdir"/*; do
+      [ -f "$d/SKILL.md" ] || continue
+      name="${d##*/}"
+      case "$name" in
+        *[!A-Za-z0-9._-]*) printf 'unknown\t-\ta project skill name outside [A-Za-z0-9._-] was not judged\n'; rc=11; continue ;;
+      esac
+      case "$seen" in *" $name "*) continue ;; esac
+      seen="$seen$name "
+      found=""; why=""
+      while IFS= read -r -d '' uroot; do
+        [ -n "$found" ] && break
+        if [ ! -e "$uroot" ] && [ ! -L "$uroot" ]; then continue; fi
+        if [ ! -d "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
+        u="$uroot/$name"
+        if [ -f "$u/SKILL.md" ]; then
+          if [ -r "$u/SKILL.md" ]; then found=1; else why="personal $name/SKILL.md is unreadable"; fi
+        elif [ -L "$u" ] && [ ! -e "$u" ]; then
+          why="personal $name is a dangling link"
+        elif [ -d "$u" ] && { [ ! -r "$u" ] || [ ! -x "$u" ]; }; then
+          why="personal $name is unreadable"
+        fi
+      done < <(adb_agent_user_skill_roots "$agent")
+      if [ -n "$found" ]; then
+        printf 'collides\t%s\n' "$name"; [ "$rc" -eq 11 ] || rc=10
+      elif [ -n "$why" ]; then
+        printf 'unknown\t%s\t%s\n' "$name" "$why"; rc=11
+      fi
+    done
+  done
+  return "$rc"
+}
 
 adb_agent_manifest() {
   local agent="$1" repo="$2" home="$3" s

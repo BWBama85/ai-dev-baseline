@@ -170,6 +170,27 @@ OUT="$(printf 'not json' | env HOME="$fh" XDG_CACHE_HOME="$work/cache" XDG_CONFI
 eq "$RC" "0" "malformed event → exit 0"
 eq "$OUT" "" "malformed event → silence"
 
+# --- a project skill a personal one outranks (#540) ------------------------------
+# Claude runs the personal `demo` over the project's, so a session there is told so — by name, on
+# the operator channel, even though the install itself is current and currency has nothing to say.
+reset_src
+pj540="$work/proj540"; mkdir -p "$pj540/.claude/skills/demo"; : > "$pj540/.claude/skills/demo/SKILL.md"
+git init -q "$pj540"
+run_hook startup "$pj540"
+eq "$RC" "0" "colliding project skill → exit 0"
+has "$OUT" "this project's skill(s) demo share a name with a personal skill" "colliding project skill → named"
+has "$OUT" '"systemMessage"' "colliding project skill → on the operator channel"
+printf '%s' "$OUT" | jq -e . >/dev/null 2>&1 && ok || bad "collision line must be valid JSON"
+mv "$pj540/.claude/skills/demo" "$pj540/.claude/skills/solo"
+reset_src
+run_hook startup "$pj540"
+eq "$OUT" "" "no shared skill name → silence"
+rm -f "$fh/.claude/skills/solo"; ln -s "$work/nowhere-540" "$fh/.claude/skills/solo"
+reset_src
+run_hook startup "$pj540"
+has "$OUT" "could not be decided" "a dangling personal link → reported as undecidable, never silence"
+rm -f "$fh/.claude/skills/solo"
+
 # --- the source gate: only a genuinely new session ---------------------------
 # clear/compact happen MID-session, fork runs beside a live parent, resume continues a
 # conversation whose tooling was already loaded. None may swap tooling underneath.

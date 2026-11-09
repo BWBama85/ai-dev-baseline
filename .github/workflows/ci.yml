@@ -622,7 +622,7 @@ jobs:
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
 
-      - name: Partial skill override composer — ops, inherit-on-recompose, currency, guards (#22)
+      - name: Retired skill-override composer — every subcommand refuses (#540)
         run: bash scripts/check-skill-compose.sh
 
   cleanup:
