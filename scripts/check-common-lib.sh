@@ -4032,6 +4032,23 @@ ln -s "$sk540/none" "$sk540/p/.codex/skills/both2"
 out="$(sk_run codex)"; rc=$?
 eq "$rc:$out" "10:collides${TAB}both2" "skill-collisions: a confirmed collision wins over an undecidable copy of the same name"
 rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
+mkdir -p "$sk540/p/.agents/skills/shut" "$sk540/h/.agents/skills/shut"
+: > "$sk540/p/.agents/skills/shut/SKILL.md"; : > "$sk540/h/.agents/skills/shut/SKILL.md"; chmod 111 "$sk540/h/.agents/skills/shut"
+if [ -r "$sk540/h/.agents/skills/shut" ]; then
+  check_note "SKIP: this user can list a mode-111 directory (root?); the unlistable-personal-skill case is unexercised"
+else
+  out="$(sk_run codex)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unlistable personal skill folder is undecidable (11), not a collision"
+fi
+chmod 755 "$sk540/h/.agents/skills/shut"; rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+mkdir -p "$sk540/p/.agents/skills/nl" "$sk540/h/.agents/skills/nl" "$sk540/tg"
+: > "$sk540/tg/body"; : > "$sk540/tg/body
+"
+ln -s "$sk540/tg/body" "$sk540/p/.agents/skills/nl/SKILL.md"; ln -s "$sk540/tg/body
+" "$sk540/h/.agents/skills/nl/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}nl" "skill-collisions: targets differing only by a trailing newline are two skills"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents" "$sk540/tg"
 for lk in "$sk540/p/.claude" "$sk540/p"; do
   chmod 000 "$lk"
   if [ -x "$lk" ]; then

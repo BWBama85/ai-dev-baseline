@@ -2246,10 +2246,12 @@ _adb_canon_file() {
   local f="$1" t dir n=0
   while [ -L "$f" ]; do
     n=$((n + 1)); [ "$n" -le 40 ] || return 1
-    t="$(readlink "$f" && printf x)" || return 1; t="${t%x}"; t="${t%?}"
+    # `readlink -n` so GNU and BSD emit the same bytes; the sentinel keeps a trailing newline.
+    t="$(readlink -n "$f" && printf x)" || return 1; t="${t%x}"
     case "$t" in /*) f="$t" ;; *) f="${f%/*}/$t" ;; esac
   done
   dir="$(cd "${f%/*}" 2>/dev/null && pwd -P && printf x)" || return 1; dir="${dir%x}"; dir="${dir%?}"
+  [ -e "${dir%/}/${f##*/}" ] || return 1
   printf '%s/%s' "${dir%/}" "${f##*/}"
 }
 
@@ -2263,17 +2265,20 @@ _adb_skill_verdict() {
     # Listing is required, not only search: the harness discovers skills by listing the root.
     if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
     u="$uroot/$n"
-    if [ -f "$u/SKILL.md" ]; then
+    # A loader discovers SKILL.md by listing the folder, so it must be listable as well as searchable.
+    if [ -d "$u" ] && { [ ! -r "$u" ] || [ ! -x "$u" ]; }; then
+      why="personal $n is unreadable"
+    elif [ -f "$u/SKILL.md" ]; then
       # The project's own skill reached twice — its folder, or its SKILL.md resolving to the same
       # PATH (a loader de-duplicates by canonical path, so a hardlink is still two skills).
       [ "$u" -ef "$d" ] && continue
-      if pc="$(_adb_canon_file "$d/SKILL.md")" && uc="$(_adb_canon_file "$u/SKILL.md")" && [ "$pc" = "$uc" ]; then continue; fi
+      # SENTINEL CAPTURE: a trailing newline is a legal byte of a path.
+      if pc="$(_adb_canon_file "$d/SKILL.md" && printf x)" && uc="$(_adb_canon_file "$u/SKILL.md" && printf x)" \
+         && [ "$pc" = "$uc" ]; then continue; fi
       if [ -r "$u/SKILL.md" ]; then printf 'collides'; return 0; fi
       why="personal $n/SKILL.md is unreadable"
     elif [ -L "$u" ] && [ ! -e "$u" ]; then
       why="personal $n is a dangling link"
-    elif [ -d "$u" ] && [ ! -x "$u" ]; then
-      why="personal $n is unreadable"
     elif [ -L "$u/SKILL.md" ] && [ ! -e "$u/SKILL.md" ]; then
       why="personal $n/SKILL.md is a dangling link"
     fi

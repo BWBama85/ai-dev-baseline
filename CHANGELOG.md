@@ -16,8 +16,8 @@ only by a release it upgrades to. These entries are the notes for both.
   project's vendored skills do not run. `status` now names each colliding skill per agent, says
   which copy Claude runs (Codex lists both), and exits `21` instead of `0`; a dangling or unreadable
   personal entry is reported as undecidable, also `21`. Precedence is `20` over `21` over `10` over
-  `30`. `pinned install` warns on a collision, and a new session in such a project names the skills
-  on the operator channel. The docs now say pinned and global installs are not supported together
+  `30`. `pinned install` warns on a collision, and where the global install's SessionStart hook runs,
+  a new session in such a project names the skills on the operator channel. The docs now say pinned and global installs are not supported together
   for Claude.
 
 - **`/adopt` audits a project's own instructions against the baseline (#301, decidable half).**
