@@ -2239,27 +2239,71 @@ adb_parents_searchable() {
   done
 }
 
+# _adb_canon_file <path> — the path with every symlink resolved, the way a loader canonicalizes a
+# SKILL.md path: printed without a trailing newline; returns 1 when it cannot be resolved (a loop,
+# a dangling link, an unsearchable directory).
+_adb_canon_file() {
+  local f="$1" t dir n=0
+  while [ -L "$f" ]; do
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    t="$(readlink "$f" && printf x)" || return 1; t="${t%x}"; t="${t%?}"
+    case "$t" in /*) f="$t" ;; *) f="${f%/*}/$t" ;; esac
+  done
+  dir="$(cd "${f%/*}" 2>/dev/null && pwd -P && printf x)" || return 1; dir="${dir%x}"; dir="${dir%?}"
+  printf '%s/%s' "${dir%/}" "${f##*/}"
+}
+
+# _adb_skill_verdict <agent> <project-skill-dir> <name> — one project copy against every user root:
+# prints `collides`, or `unknown<TAB><why>`, or nothing when no personal copy competes with it.
+_adb_skill_verdict() {
+  local agent="$1" d="$2" n="$3" uroot u why="" pc uc
+  while IFS= read -r -d '' uroot; do
+    if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi
+    if [ ! -e "$uroot" ] && [ ! -L "$uroot" ]; then continue; fi
+    # Listing is required, not only search: the harness discovers skills by listing the root.
+    if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
+    u="$uroot/$n"
+    if [ -f "$u/SKILL.md" ]; then
+      # The project's own skill reached twice — its folder, or its SKILL.md resolving to the same
+      # PATH (a loader de-duplicates by canonical path, so a hardlink is still two skills).
+      [ "$u" -ef "$d" ] && continue
+      if pc="$(_adb_canon_file "$d/SKILL.md")" && uc="$(_adb_canon_file "$u/SKILL.md")" && [ "$pc" = "$uc" ]; then continue; fi
+      if [ -r "$u/SKILL.md" ]; then printf 'collides'; return 0; fi
+      why="personal $n/SKILL.md is unreadable"
+    elif [ -L "$u" ] && [ ! -e "$u" ]; then
+      why="personal $n is a dangling link"
+    elif [ -d "$u" ] && [ ! -x "$u" ]; then
+      why="personal $n is unreadable"
+    elif [ -L "$u/SKILL.md" ] && [ ! -e "$u/SKILL.md" ]; then
+      why="personal $n/SKILL.md is a dangling link"
+    fi
+  done < <(adb_agent_user_skill_roots "$agent")
+  [ -z "$why" ] || printf 'unknown\t%s' "$why"
+}
+
 # adb_skill_collisions <project-root> <agent> — which of a project's top-level skills share a
 # DIRECTORY name with a personal skill this machine's agent also loads (#540). Claude ranks a
 # personal skill over a same-named project one ("personal over project", code.claude.com/docs/en/
 # skills); Codex lists both. Any same-named personal skill counts, baseline-owned or not, and the
 # answer never depends on a root doc or on install detection. A personal entry resolving to the
-# project's own skill directory is the same skill, not a collision (both agents de-duplicate it).
+# project's own skill (its folder, or its SKILL.md's canonical path) is the same skill.
 # NOT EVALUATED, by owner decision (D153): frontmatter `name` aliases, Codex `[[skills.config]]`
 # enablement, nested personal folders. Claude's reserved `synced` and `anthropic-skills` folders
-# are skipped in any capitalization, since Claude loads no authored skill from them.
+# are skipped in any capitalization; Codex's hidden folders are skipped, as its loader does.
+# Every project copy of a name is judged before the name's verdict is chosen: collides over
+# undecidable over nothing. Per name the question is existential — one readable personal copy is a
+# collision even when another entry for that name could not be decided.
 # Output, one TAB-separated line per finding, every name from [A-Za-z0-9._-]:
-#   collides <name>          <user-root>/<name>/SKILL.md is readable
+#   collides <name>          a readable personal skill of that name competes with a project copy
 #   unknown  <name> <why>    it could not be decided: a dangling link, an unreadable entry, root or
 #                            ancestor, or a name outside the closed charset (<name> is then `-`)
-# Each name is reported once. The question per name is existential: one readable personal copy in
-# any user root is a collision, even when another root's entry for that name could not be decided.
 # Returns: 0 no finding · 10 collisions only · 11 something could not be decided (wins over 10)
 # · 2 usage. An agent with no project skill discovery (gemini) has nothing to collide: 0.
 adb_skill_collisions() {
   local root="${1:-}" agent="${2:-}"
   [ -n "$root" ] && [ -n "$agent" ] || return 2
-  local rc=0 pdir d n nd nok uroot u why found anyskill="" seen=" " cfg_other=""
+  local rc=0 pdir d n why v anyskill="" cfg_other="" names=" " coll=" " unk="" nl='
+'
   # Claude reads personal skills from $CLAUDE_CONFIG_DIR/skills when that is set. The baseline
   # installs under $HOME/.claude only, so another configured root is not read: every project skill
   # is then undecidable for Claude, and the default root is not consulted at all.
@@ -2273,6 +2317,7 @@ adb_skill_collisions() {
   if [ ! -d "$root" ] || [ ! -x "$root" ]; then
     printf 'unknown\t-\tthe project root is not a searchable directory\n'; return 11
   fi
+  # Phase 1: judge every project copy, collecting per-name results.
   for pdir in $(adb_agent_project_skill_dirs "$agent"); do
     if ! adb_parents_searchable "$root" "$pdir/."; then
       printf 'unknown\t-\tproject skill root %s or a parent of it is unreadable\n' "$pdir"; rc=11; continue
@@ -2282,68 +2327,53 @@ adb_skill_collisions() {
       printf 'unknown\t-\tproject skill root %s is unreadable\n' "$pdir"; rc=11; continue
     fi
     for d in "$root/$pdir"/* "$root/$pdir"/.[!.]* "$root/$pdir"/..?*; do
-      # Only a directory can be a skill; a dangling link might have been one, so it is not skipped.
-      # The three globs cover dot-prefixed names too; an unmatched one is skipped here.
+      # Only a directory can be a skill; a dangling link might have been one. The three globs
+      # cover dot-prefixed names too; an unmatched one is skipped here.
       [ -d "$d" ] || { [ -L "$d" ] && [ ! -e "$d" ]; } || continue
       n="${d##*/}"
-      # The name is judged only once the entry is known to be (or might be) a skill, and a name is
-      # marked seen only when it is reported, so an empty same-named folder in one root never hides
-      # the skill in another.
-      nd="$n"; nok=1; case "$n" in *[!A-Za-z0-9._-]*) nd=-; nok="" ;; esac
       if [ "$agent" = claude ]; then
         case "$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')" in synced|anthropic-skills) continue ;; esac
       else
         case "$n" in .*) continue ;; esac   # Codex's loader skips hidden folders
       fi
-      case "$seen" in *" $n "*) continue ;; esac
       why=""
       if [ -L "$d" ] && [ ! -e "$d" ]; then
-        why="project $nd is a dangling link"
+        why="project $n is a dangling link"
       elif [ ! -r "$d" ] || [ ! -x "$d" ]; then
-        why="project skill $nd is unreadable"
+        why="project skill $n is unreadable"
       elif [ -L "$d/SKILL.md" ] && [ ! -e "$d/SKILL.md" ]; then
-        why="project $nd/SKILL.md is a dangling link"
+        why="project $n/SKILL.md is a dangling link"
       elif [ ! -f "$d/SKILL.md" ]; then
         continue
       elif [ ! -r "$d/SKILL.md" ]; then
-        why="project $nd/SKILL.md is unreadable"
-      elif [ -z "$nok" ]; then
-        why="a project skill name outside [A-Za-z0-9._-] was not judged"
+        why="project $n/SKILL.md is unreadable"
       fi
       anyskill=1
-      if [ -n "$why" ]; then
-        [ -z "$nok" ] || seen="$seen$n "
-        printf 'unknown\t%s\t%s\n' "$nd" "$why"; rc=11; continue
+      case "$n" in
+        *[!A-Za-z0-9._-]*) printf 'unknown\t-\ta project skill name outside [A-Za-z0-9._-] was not judged\n'; rc=11; continue ;;
+      esac
+      case "$names" in *" $n "*) ;; *) names="$names$n " ;; esac
+      if [ -z "$why" ] && [ -z "$cfg_other" ]; then
+        v="$(_adb_skill_verdict "$agent" "$d" "$n")"
+        case "$v" in
+          collides) coll="$coll$n " ;;
+          unknown*) why="${v#unknown	}" ;;
+        esac
       fi
-      [ -z "$cfg_other" ] || continue
-      found=""; why=""
-      while IFS= read -r -d '' uroot; do
-        if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi
-        if [ ! -e "$uroot" ] && [ ! -L "$uroot" ]; then continue; fi
-        # Listing is required, not only search: the harness discovers skills by listing the root.
-        if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
-        u="$uroot/$n"
-        if [ -f "$u/SKILL.md" ]; then
-          # The project's own skill reached twice, by its folder or by its SKILL.md: one skill.
-          if [ "$u" -ef "$d" ] || [ "$u/SKILL.md" -ef "$d/SKILL.md" ]; then continue; fi
-          if [ -r "$u/SKILL.md" ]; then found=1; break; fi
-          why="personal $n/SKILL.md is unreadable"
-        elif [ -L "$u" ] && [ ! -e "$u" ]; then
-          why="personal $n is a dangling link"
-        elif [ -d "$u" ] && [ ! -x "$u" ]; then
-          why="personal $n is unreadable"
-        elif [ -L "$u/SKILL.md" ] && [ ! -e "$u/SKILL.md" ]; then
-          why="personal $n/SKILL.md is a dangling link"
-        fi
-      done < <(adb_agent_user_skill_roots "$agent")
-      # Seen only once reported: a copy found to be the project's own skill leaves the name open
-      # for a distinct same-named copy in another project root.
-      if [ -n "$found" ]; then
-        seen="$seen$n "; printf 'collides\t%s\n' "$n"; [ "$rc" -eq 11 ] || rc=10
-      elif [ -n "$why" ]; then
-        seen="$seen$n "; printf 'unknown\t%s\t%s\n' "$n" "$why"; rc=11
-      fi
+      [ -z "$why" ] || unk="$unk$n	$why$nl"
     done
+  done
+  # Phase 2: one verdict per name, in first-seen order.
+  for n in $names; do
+    case "$coll" in
+      *" $n "*) printf 'collides\t%s\n' "$n"; [ "$rc" -eq 11 ] || rc=10; continue ;;
+    esac
+    while IFS='	' read -r d why; do
+      [ "$d" = "$n" ] || continue
+      printf 'unknown\t%s\t%s\n' "$n" "$why"; rc=11; break
+    done <<EOF
+$unk
+EOF
   done
   if [ -n "$cfg_other" ] && [ -n "$anyskill" ]; then
     printf 'unknown\t-\tCLAUDE_CONFIG_DIR names another personal root, which is not evaluated\n'; rc=11

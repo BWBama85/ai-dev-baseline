@@ -4019,6 +4019,19 @@ mkdir -p "$sk540/p/.agents/skills/.hid" "$sk540/h/.agents/skills/.hid" "$sk540/p
 out="$(sk_run codex)"; rc=$?
 eq "$rc:$out" "0:" "skill-collisions: Codex skips hidden folders, and a SKILL.md linked to the project's is one skill"
 rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+# A hardlinked SKILL.md is two paths, so two skills to a loader that de-duplicates by path.
+mkdir -p "$sk540/p/.agents/skills/hard" "$sk540/h/.agents/skills/hard"
+: > "$sk540/p/.agents/skills/hard/SKILL.md"; ln "$sk540/p/.agents/skills/hard/SKILL.md" "$sk540/h/.agents/skills/hard/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}hard" "skill-collisions: a hardlinked personal SKILL.md is a distinct path, so a collision"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+# An undecidable copy in one root never hides a confirmed collision in the other.
+mkdir -p "$sk540/p/.codex/skills" "$sk540/p/.agents/skills/both2" "$sk540/h/.agents/skills/both2"
+ln -s "$sk540/none" "$sk540/p/.codex/skills/both2"
+: > "$sk540/p/.agents/skills/both2/SKILL.md"; : > "$sk540/h/.agents/skills/both2/SKILL.md"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}both2" "skill-collisions: a confirmed collision wins over an undecidable copy of the same name"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
 for lk in "$sk540/p/.claude" "$sk540/p"; do
   chmod 000 "$lk"
   if [ -x "$lk" ]; then
