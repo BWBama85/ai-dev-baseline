@@ -1344,6 +1344,30 @@ NESTED
     #
     # `mapfile -d ''` rather than a pipeline, for the reason the credential axis learned: `-print0`
     # output cannot survive a command substitution, because bash strips NUL bytes.
+    # A PROJECT RULE OR A HAND-MIRROR LOCATION (#552) is a specialized surface, not an unmodelled
+    # file. It is enumerated by the one walk `specialized` uses, so a linked rules directory reaches
+    # `classify` exactly as it reaches `specialized`; the catch-all below then skips what it emitted.
+    local _ad_rs _ad_rf
+    local -a _ad_rfound=()
+    case "$a" in claude) _ad_rs=".claude/rules" ;; *) _ad_rs=".$a/rules.md .$a/rules" ;; esac
+    for _ad_rf in $_ad_rs; do
+      [ -e "$root/$_ad_rf" ] || [ -L "$root/$_ad_rf" ] || continue
+      _ad_parents_searchable "$root" "$_ad_rf" || continue   # `specialized` reports it as not judged
+      _ad_rfound=()
+      mapfile -d '' -t _ad_rfound < <(_ad_sp_rule_walk "$root" "$_ad_rf")
+      if [ "${#_ad_rfound[@]}" -eq 0 ] || [ "${_ad_rfound[-1]}" != 0 ]; then
+        printf 'warning%sthe rules under .%s could not be walked in full — some were not inventoried\n' "$TAB" "$a"
+      fi
+      [ "${#_ad_rfound[@]}" -eq 0 ] || unset '_ad_rfound[-1]'
+      for rel in "${_ad_rfound[@]}"; do
+        [ -n "$rel" ] || continue
+        _ad_owns "$_ad_owned" "$rel" && continue
+        _ad_emit rule "$rel" "${rel##*/}" "$a"
+        _ad_emitted="$_ad_emitted$rel$nl"
+      done
+      # A linked rules directory is walked above; the link itself is not a file to classify.
+      [ -L "$root/$_ad_rf" ] && [ -d "$root/$_ad_rf" ] && _ad_emitted="$_ad_emitted$_ad_rf$nl"
+    done
     _ad_others=()
     # A TRAVERSAL THAT FAILED PART-WAY is not a complete one (#535: an unreadable `.claude/commands`
     # read as "no commands"). A process substitution cannot report its status, so the walk appends
@@ -1389,11 +1413,9 @@ NESTED
       esac
       _ad_owns "$_ad_owned" "$rel" && continue
       case "$nl$_ad_emitted" in *"$nl$rel$nl"*) continue ;; esac
-      # A PROJECT RULE OR A HAND-MIRROR LOCATION (#552) is a specialized surface, not an unmodelled
-      # file: `specialized` judges its home, and `classify` reads that through `sclass`.
+      # A link INSIDE the rules tree is walked by the rules walk above (a linked rule directory or file).
       case "$a:$rel" in
-        claude:.claude/rules/*.md|codex:.codex/rules.md|codex:.codex/rules/*.md|gemini:.gemini/rules.md|gemini:.gemini/rules/*.md)
-          _ad_emit rule "$rel" "${rel##*/}" "$a"; continue ;;
+        claude:.claude/rules/*|codex:.codex/rules/*|gemini:.gemini/rules/*) [ -L "$root/$rel" ] && continue ;;
       esac
       _ad_emit other "$rel" "${rel##*/}" "$a"
     done
@@ -3058,7 +3080,8 @@ _ad_sp_path_ok() {
 # docs, 2026-11-09: code.claude.com memory (rules, nested CLAUDE.md) and a live InstructionsLoaded
 # probe on Claude Code 2.1.319; codex-rs agents_md.rs (root to working directory, one file per
 # directory, the override first); gemini-cli docs/cli/gemini-md.md (just-in-time on tool access,
-# v0.35.0). A nested AGENTS.md beside an AGENTS.override.md is `codex:shadowed` (set by the caller).
+# v0.35.0). A nested AGENTS.md beside an AGENTS.override.md is `codex:shadowed`, and a rule that
+# resolves outside the project is `claude:after-approval` or `none` (both set by the caller).
 _ad_sp_reach() {
   case "$1:$2:$3:$4" in
     rootdoc:claude:*)             printf 'claude:every-session' ;;
@@ -3079,6 +3102,36 @@ _ad_sp_doc_agent() {
     CLAUDE.md) printf claude ;; AGENTS.md|AGENTS.override.md) printf codex ;; GEMINI.md) printf gemini ;;
     *) return 1 ;;
   esac
+}
+
+# _ad_sp_rule_walk <root> <start> — every `*.md` file at or below <start> (relative to <root>),
+# NUL-delimited, then one last NUL-delimited field: the walk's status. Links are followed (-L), as
+# Claude follows a linked rules directory or rule; a loop or a dangling link is a failed walk, never
+# an empty one. THE ONE WALK `scan` and `specialized` share, so a linked rule cannot reach one and
+# not the other.
+_ad_sp_rule_walk() {
+  ( cd "$1" 2>/dev/null || { printf '\0%s' 1; exit 0; }
+    find -L "$2" -type f -name '*.md' -print0 2>/dev/null | LC_ALL=C sort -z
+    _sp_ps=("${PIPESTATUS[@]}")
+    printf '\0%s' "$(( _sp_ps[0] | _sp_ps[1] ))" )
+}
+
+# _ad_sp_external <root> <relpath> — true when the file resolves outside <root> through a linked
+# directory or a linked file (one hop). Claude treats such a rule as an external import: it loads
+# only after the project's external imports are approved, and then only when it has no `paths:`
+# (code.claude.com/docs/en/memory, "Share rules across projects with symlinks"). Prints `network`
+# for a target under /net or /Network, which Claude does not follow at all.
+_ad_sp_external() {
+  local root="$1" rel="$2" rp d t
+  rp="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
+  d="$(cd "$root/${rel%/*}" 2>/dev/null && pwd -P)" || return 1
+  if [ -L "$root/$rel" ]; then
+    t="$(readlink "$root/$rel")" || return 1
+    case "$t" in */*) d="$(cd "$d" 2>/dev/null && cd "${t%/*}" 2>/dev/null && pwd -P)" || return 1 ;; esac
+  fi
+  case "$d/" in /net/*|/Network/*) printf 'network'; return 0 ;; esac
+  case "$d/" in "$rp"/*) return 1 ;; esac
+  return 0
 }
 
 # _ad_sp_fm_lines <file> — how many lines the frontmatter block takes (0 when the first line is not
@@ -3114,7 +3167,7 @@ _ad_sp_scope() {
     }
     function item(k, v) {
       v = trim(v)
-      if (v == "" || v !~ /^[A-Za-z0-9._\/*?{},!@+\[\]-]+$/ || v ~ /^\// || v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }
+      if (v == "" || v !~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+$/ || v ~ /^\/\// || v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }
       G[k] = G[k] (G[k] == "" ? "" : " ") v; n[k]++
     }
     function splitc(k, v,  i, c, d, q, cur) {   # commas at brace depth 0 and outside quotes
@@ -3151,6 +3204,14 @@ _ad_sp_scope() {
         if (k in seen) bad = 1
         seen[k] = 1
         if (v != "" && v !~ /^#/) { scalar(k, v); sc = k } else cur = k
+      } else if (k in other) bad = 1
+      else {
+        # ANY key YAML would reject makes the whole block ineffective (code.claude.com memory), so a
+        # flow value or a quoted one must close on its line: Claude would load the rule unscoped.
+        other[k] = 1
+        f = substr(v, 1, 1)
+        if (f == "\"" || f == Q) val(v)
+        else if (f == "[" || f == "{") { w = v; sub(/[ \t]+#.*$/, "", w); if (substr(w, length(w), 1) != (f == "[" ? "]" : "}")) bad = 1 }
       }
       next
     }
@@ -3185,11 +3246,11 @@ _ad_sp_package() {
 # _ad_sp_glob_dir <glob> — the deepest directory every match of <glob> shares: its literal leading
 # components, the last one dropped when it names a file. The glob was refused a `..` component.
 _ad_sp_glob_dir() {
-  local rest="$1" dir="" comp
+  local rest="${1#/}" dir="" comp
   while [ -n "$rest" ]; do
     comp="${rest%%/*}"
     case "$rest" in */*) rest="${rest#*/}" ;; *) rest="" ;; esac
-    case "$comp" in *[\*\?\{\}\!\[\]]*|''|.) break ;; esac
+    case "$comp" in *[\*\?\{\}\!\[\]\\]*|''|.) break ;; esac
     [ -n "$rest" ] || break
     dir="${dir:+$dir/}$comp"
   done
@@ -3204,9 +3265,14 @@ _ad_sp_body_digest() {
   n="$(_ad_sp_fm_lines "$1")" || return 1
   case "$n" in ''|*[!0-9]*) return 1 ;; esac
   if [ "$n" -eq 0 ]; then adb_sha256 "$1"; return; fi
-  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf ' %s' "${PIPESTATUS[0]}")" || return 1
+  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf ' %s %s' "${PIPESTATUS[0]}" "${PIPESTATUS[1]}")" || return 1
   [ "${out##* }" = 0 ] || return 1
-  printf '%s' "${out% *}"
+  out="${out% *}"
+  [ "${out##* }" = 0 ] || return 1
+  out="${out% *}"
+  case "$out" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#out}" -eq 64 ] || return 1
+  printf '%s' "$out"
 }
 
 # _ad_sp_prose <file> — the file with frontmatter blanked, through the shared prose filter (fenced
@@ -3253,8 +3319,10 @@ _ad_sp_snapshot() {
 # _ad_sp_keeps <decisions-file> — one `<line>TAB<path|->TAB<problem|->` per `keeps:` line in a
 # decision-log entry, read from PROSE (an example in a fence keeps nothing). An entry's fields are the
 # `- key:` lines directly under its `## <id> — <title>` heading. Problems: `bad-id` (the heading's
-# id is not a plain token), `twice` (any field given twice, `keeps` included), `not-project-delta`,
-# `bad-path`. A malformed entry is refused, never normalized into an exemption. rc 1 = unreadable.
+# id is not a plain token), `duplicate-id` (another entry uses it), `twice` (any field given twice,
+# `keeps` included), `not-project-delta`, `incomplete` (no YYYY-MM-DD `date`, or an empty `decision`
+# or `reason`: the template's fields that say why), `bad-path`. A malformed entry is refused, never
+# normalized into an exemption. rc 1 = unreadable.
 _ad_sp_keeps() {
   local f="$1" prose
   [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f" || return 1
@@ -3266,13 +3334,14 @@ _ad_sp_keeps() {
         if (badid) p = "bad-id"
         else if (twice) p = "twice"
         else if (F["category"] != "project-delta") p = "not-project-delta"
-        print KL[i] "\t" (KV[i] == "" ? "-" : KV[i]) "\t" p
+        else if (F["date"] !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ || F["decision"] == "" || F["reason"] == "") p = "incomplete"
+        m++; ML[m] = KL[i]; MV[m] = (KV[i] == "" ? "-" : KV[i]); MP[m] = p; MI[m] = id
       }
       id = ""; badid = 0; twice = 0; nk = 0; started = 0; delete F; delete KL; delete KV; delete KP
     }
     /^##? / { flush()
               h = $0; sub(/^##? /, "", h)
-              if (match(h, /^[^ ]+ (—|-) /)) { id = h; sub(/ .*/, "", id); badid = (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) }
+              if (match(h, /^[^ ]+ (—|-) /)) { id = h; sub(/ .*/, "", id); badid = (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/); ids[id]++ }
               next }
     id != "" && /^- [a-z-]+:/ {
       started = 1
@@ -3288,7 +3357,8 @@ _ad_sp_keeps() {
     }
     id != "" && !started && /^[ \t]*$/ { next }
     id != "" { flush(); next }
-    END { flush() }'
+    END { flush()
+          for (i = 1; i <= m; i++) print ML[i] "\t" MV[i] "\t" ((MP[i] == "-" && ids[MI[i]] > 1) ? "duplicate-id" : MP[i]) }'
 }
 
 cmd_specialized() {
@@ -3339,13 +3409,7 @@ cmd_specialized() {
       [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
       if test -L "$root/.$a"; then _sp_unk "$a" ".$a" rule linked-agent-dir; continue; fi
       found=()
-      # -L: a linked rules directory, or a linked rule, is walked as Claude walks it. A loop or a
-      # dangling link is a failed walk, never an empty one.
-      mapfile -d '' -t found < <(
-        cd "$root" 2>/dev/null || { printf '\0%s' 1; exit 0; }
-        find -L "$f" -type f -name '*.md' -print0 2>/dev/null | LC_ALL=C sort -z
-        _sp_ps=("${PIPESTATUS[@]}")
-        printf '\0%s' "$(( _sp_ps[0] | _sp_ps[1] ))")
+      mapfile -d '' -t found < <(_ad_sp_rule_walk "$root" "$f")
       if [ "${#found[@]}" -eq 0 ] || [ "${found[-1]}" != 0 ]; then _sp_unk "$a" "$f" rule not-walked-in-full; fi
       [ "${#found[@]}" -eq 0 ] || unset 'found[-1]'
       for rel in "${found[@]}"; do
@@ -3386,28 +3450,41 @@ cmd_specialized() {
   fi
 
   # --- per-surface facts: key, scope, reach, digests ---------------------------------------------------
-  local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=()
-  local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st
+  # EACH SURFACE IS READ ONCE, into a private snapshot, and everything about it — scope, digests, line
+  # count, prose, pointers, the judgment's checks — is derived from those bytes, so a file replaced
+  # mid-run cannot pair one version's digest with another version's text.
+  local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=() SNAP=()
+  local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st spdir="" ext
   local -a garr=() ok_i=()
+  spdir="$(mktemp -d "${TMPDIR:-/tmp}/adopt-spx.XXXXXX")" || die "specialized: could not create a private snapshot directory"
   for ((i = 0; i < n; i++)); do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"
     if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi
     if [ -n "${IDX[$rel]:-}" ]; then continue; fi
-    if ! _ad_sp_readable "$root" "$rel"; then _sp_unk "$a" "$rel" "$kind" unreadable; continue; fi
+    if ! _ad_sp_readable "$root" "$rel" || ! head -c 1048577 "$root/$rel" > "$spdir/$i" 2>/dev/null \
+       || ! _ad_size_ok "$spdir/$i" 1048576 || ! adb_nul_free "$spdir/$i"; then
+      _sp_unk "$a" "$rel" "$kind" unreadable; continue
+    fi
+    SNAP["$rel"]="$spdir/$i"
     key=-; scope=-
     if [ "$kind" = rule ] && [ "$a" = claude ]; then
-      if ! ks="$(_ad_sp_scope "$root/$rel")"; then _sp_unk "$a" "$rel" rule malformed-frontmatter; continue; fi
+      if ! ks="$(_ad_sp_scope "${SNAP[$rel]}")"; then _sp_unk "$a" "$rel" rule malformed-frontmatter; continue; fi
       key="${ks%%$'\t'*}"; scope="${ks#*$'\t'}"
     fi
     # A DIGEST THAT COULD NOT BE TAKEN is not judged: an empty one would read as "no mirror" and
     # "the judgment is stale", two confident answers about bytes nobody read.
-    if ! WHOLE["$rel"]="$(adb_sha256 "$root/$rel")" || ! BODY["$rel"]="$(_ad_sp_body_digest "$root/$rel")" \
-       || ! LINES["$rel"]="$(_ad_sp_lines "$root/$rel")"; then
+    if ! WHOLE["$rel"]="$(adb_sha256 "${SNAP[$rel]}")" || ! BODY["$rel"]="$(_ad_sp_body_digest "${SNAP[$rel]}")" \
+       || ! LINES["$rel"]="$(_ad_sp_lines "${SNAP[$rel]}")"; then
       _sp_unk "$a" "$rel" "$kind" not-digested; continue
     fi
     IDX["$rel"]="$i"; ok_i+=("$i")
     KEY["$rel"]="$key"; SCOPE["$rel"]="$scope"
     REACH["$rel"]="$(_ad_sp_reach "$kind" "$a" "$key" "${rel##*/}")"
+    # A rule that resolves outside the project is an external import for Claude.
+    if [ "$kind" = rule ] && [ "$a" = claude ] && ext="$(_ad_sp_external "$root" "$rel")"; then
+      if [ "$ext" = network ]; then REACH["$rel"]=none
+      else case "$key" in paths|both) REACH["$rel"]=none ;; *) REACH["$rel"]="claude:after-approval" ;; esac; fi
+    fi
     # Codex reads one document per directory, the override first.
     if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi
     if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -n "${OVR[.]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi
@@ -3513,7 +3590,10 @@ cmd_specialized() {
           [ -z "${JSEEN[$jp]:-}" ] || { jok=0; break; }
           JSEEN["$jp"]="$jd"; prev_p="$jp"; prev_e=0
           # An EMPTY file is judged by one row, 0 0.
-          if [ "$js" -eq 0 ]; then JEND["$jp"]=0; prev_e=-1; JHAS_F["$jp"]=1; continue; fi
+          if [ "$js" -eq 0 ]; then
+            [ "$jc" = fact ] || { jok=0; break; }   # an empty file has no prose, so no workflow
+            JEND["$jp"]=0; prev_e=-1; JHAS_F["$jp"]=1; continue
+          fi
         fi
         [ "$prev_e" -ge 0 ] || { jok=0; break; }
         [ "$jd" = "${JSEEN[$jp]}" ] || { jok=0; break; }
@@ -3524,7 +3604,7 @@ cmd_specialized() {
         elif [ "$jc" = workflow ]; then
           # FENCES ARE NOT JUDGED: a range is a workflow only through a prose line inside it.
           if [ -z "${PLC[$jp]+x}" ]; then
-            if pl="$(_ad_sp_prose_lines "$root/$jp")"; then PLC["$jp"]="$pl"; else JBAD["$jp"]=1; continue; fi
+            if pl="$(_ad_sp_prose_lines "${SNAP[$jp]}")"; then PLC["$jp"]="$pl"; else JBAD["$jp"]=1; continue; fi
           fi
           if printf '%s\n' "${PLC[$jp]}" | LC_ALL=C awk -v s="$js" -v e="$je" '$1 >= s && $1 <= e { f = 1 } END { exit !f }'; then
             JHAS_W["$jp"]=1
@@ -3552,13 +3632,20 @@ cmd_specialized() {
   fi
   for i in "${ok_i[@]}"; do
     rel="${S_PATH[$i]}"
-    case "${ST[$rel]}" in mirror:*) JUD["$rel"]=-; continue ;; esac
+    case "${ST[$rel]}" in mirror:*) continue ;; esac
     if [ -z "$jgiven" ]; then JUD["$rel"]=-; continue; fi
     if [ -z "${JSEEN[$rel]:-}" ] || [ -n "${JBAD[$rel]:-}" ]; then JUD["$rel"]=unjudged; continue; fi
     if [ "${JSEEN[$rel]}" != "${WHOLE[$rel]}" ]; then JUD["$rel"]=stale; continue; fi
     if [ -n "${JHAS_F[$rel]:-}" ] && [ -n "${JHAS_W[$rel]:-}" ]; then JUD["$rel"]=mixed
     elif [ -n "${JHAS_W[$rel]:-}" ]; then JUD["$rel"]=workflows
     else JUD["$rel"]=facts; fi
+  done
+
+  # A MIRROR CARRIES ITS SOURCE'S JUDGMENT: a copy of a file whose workflow ranges retire must not be
+  # the one place they survive. It is never judged itself, nor counted twice.
+  for i in "${ok_i[@]}"; do
+    rel="${S_PATH[$i]}"
+    case "${ST[$rel]}" in mirror:*) JUD["$rel"]="${JUD[${ST[$rel]#mirror:}]:--}" ;; esac
   done
 
   # --- pointer names: legacy names the baseline supersedes, and the project's own skills --------------
@@ -3598,6 +3685,7 @@ cmd_specialized() {
     esac
     case "$st" in unhomed:*) nun=$((nun + 1)) ;; respell|extra-key) nresp=$((nresp + 1)) ;; exempt) nexm=$((nexm + 1)) ;; esac
     jw="${JUD[$rel]}"
+    case "$st" in mirror:*) jw=- ;; esac
     case "$jw" in
       facts) nfact=$((nfact + 1)) ;; mixed) nmix=$((nmix + 1)) ;; workflows) nwf=$((nwf + 1)) ;;
       unjudged|stale) nunj=$((nunj + 1)) ;;
@@ -3608,7 +3696,7 @@ cmd_specialized() {
     # doc's are `workflows`' stale-pointer records already.
     case "$st:$kind" in mirror:*|*:rootdoc) continue ;; esac
     [ -n "$names" ] || continue
-    if ! prose="$(_ad_sp_prose "$root/$rel")" || ! hits="$(printf '%s\n' "$prose" | _ad_pointer_hits "$names")"; then
+    if ! prose="$(_ad_sp_prose "${SNAP[$rel]}")" || ! hits="$(printf '%s\n' "$prose" | _ad_pointer_hits "$names")"; then
       _sp_unk "$a" "$rel" "$kind" pointers-not-judged; continue
     fi
     while IFS="$TAB" read -r pln pnm; do
@@ -3621,6 +3709,7 @@ cmd_specialized() {
   [ -n "$ptxt" ] || ptxt="pointers=$npt"
   local jtxt=not-given
   [ -z "$jgiven" ] || jtxt=given
+  rm -rf "$spdir"
   _ad_sp_rec summary - - - - - - - "specialized: rootdocs=$nroot rules=$nrule $nested_txt mirrors=$nmir facts=$nfact mixed=$nmix workflows=$nwf unhomed=$nun respell=$nresp exempt=$nexm refused=$nref unjudged=$nunj $ptxt unknown=$nunk judgment=$jtxt"
   [ "$nunk" -eq 0 ] || return 11
   local nfind=$((nun + nresp + nref + npt))
@@ -3644,21 +3733,29 @@ cmd_sclass() {
     [ -z "${snap:-}" ] || rm -f "$snap"; printf 'unjudged\n'; return 0
   fi
   out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" '
-    function pth(x) { return x ~ /^[A-Za-z0-9._\/-]+$/ }
-    function rowok(  k) {
+    # A path the writer emits: the closed charset, relative, no empty or `..` component.
+    function pth(x) { return x ~ /^[A-Za-z0-9._\/-]+$/ && x !~ /^\// && x !~ /\/\// && x !~ /\/$/ && x !~ /(^|\/)\.\.(\/|$)/ }
+    function scp(x) { return x == "-" || x ~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+( [A-Za-z0-9._\/*?{},!@+\[\]\\-]+)*$/ }
+    function rch(x) { return x ~ /^(none|claude:(every-session|on-path-match|on-demand|after-approval)|codex:(every-session|cwd-at-or-below|shadowed)|gemini:(every-session|on-access))$/ }
+    function knd(x) { return x ~ /^(rootdoc|rule|nested-doc)$/ }
+    function agt(x) { return x ~ /^(claude|codex|gemini)$/ }
+    function rowok(  m) {
       if (NF != 9) return 0
-      k = ($3 ~ /^(rootdoc|rule|nested-doc)$/); ag = ($4 ~ /^(claude|codex|gemini)$/)
-      if ($1 == "summary") return ($2 $3 $4 $5 $6 $7 $8 == "-------" && $9 ~ /^specialized: /)
-      if ($1 == "surface")
-        return (pth($2) && k && ag && $5 ~ /^(paths|globs|both|none|-)$/ && $6 != "" \
-                && $7 ~ /^(none|claude:(every-session|on-path-match|on-demand)|codex:(every-session|cwd-at-or-below|shadowed)|gemini:(every-session|on-access))$/ \
-                && $8 ~ /^(homed|exempt|respell|extra-key|unhomed:(rootdoc|rules)|unhomed:nested:[A-Za-z0-9._\/-]+|mirror:[A-Za-z0-9._\/-]+)$/ \
-                && $9 ~ /^(facts|mixed|workflows|stale|unjudged|-)$/)
-      if ($1 == "key-spelling") return (pth($2) && $3 == "rule" && $8 == "paths" && $9 == "-")
-      if ($1 == "pointer") return ($2 ~ /^[A-Za-z0-9._\/-]+:[0-9]+$/ && k && $8 ~ /^[A-Za-z0-9._-]+$/ && $9 == "-")
-      if ($1 == "exempt") return (pth($2) && k && $8 ~ /^decisions\.md:[0-9]+$/ && $9 == "-")
-      if ($1 == "exemption-refused") return ($2 ~ /^decisions\.md:[0-9]+$/ && $8 ~ /^[a-z-]+$/ && $9 == "-")
-      if ($1 == "unknown") return (($2 == "-" || pth($2)) && $8 ~ /^[a-z-]+$/ && $9 == "-")
+      if ($1 == "summary") return ($2 $3 $4 $5 $6 $7 $8 == "-------" && $9 ~ /^specialized: [a-z]+=[a-z0-9-]+( [a-z]+=[a-z0-9-]+)*$/)
+      if ($1 == "surface") {
+        if (!(pth($2) && knd($3) && agt($4) && $5 ~ /^(paths|globs|both|none|-)$/ && scp($6) && rch($7) \
+              && $9 ~ /^(facts|mixed|workflows|stale|unjudged|-)$/)) return 0
+        if ($8 ~ /^(homed|exempt|respell|extra-key|unhomed:rootdoc|unhomed:rules)$/) return 1
+        if ($8 ~ /^unhomed:nested:/) { m = $8; sub(/^unhomed:nested:/, "", m); return pth(m) }
+        if ($8 ~ /^mirror:/) { m = $8; sub(/^mirror:/, "", m); return pth(m) }
+        return 0
+      }
+      if ($1 == "key-spelling") return (pth($2) && $3 == "rule" && $4 == "claude" && $5 ~ /^(globs|both)$/ && scp($6) && rch($7) && $8 == "paths" && $9 == "-")
+      if ($1 == "pointer") { m = $2; sub(/:[0-9]+$/, "", m)
+                             return ($2 ~ /:[1-9][0-9]*$/ && pth(m) && knd($3) && $4 $5 $6 $7 == "----" && $8 ~ /^[A-Za-z0-9._-]+$/ && $9 == "-") }
+      if ($1 == "exempt") return (pth($2) && knd($3) && agt($4) && $5 $6 $7 == "---" && $8 ~ /^decisions\.md:[1-9][0-9]*$/ && $9 == "-")
+      if ($1 == "exemption-refused") return ($2 ~ /^decisions\.md:[1-9][0-9]*$/ && $3 $4 $5 $6 $7 == "-----" && $8 ~ /^[a-z-]+$/ && $9 == "-")
+      if ($1 == "unknown") return (($2 == "-" || pth($2)) && ($3 == "-" || knd($3)) && ($4 == "-" || agt($4)) && $5 $6 $7 == "---" && $8 ~ /^[a-z-]+$/ && $9 == "-")
       return 0
     }
     !rowok() { bad = 1; next }
@@ -3670,8 +3767,8 @@ cmd_sclass() {
       if (bad || n != 1 || last != NR) { print "unjudged"; exit }
       if (unk) { print "unjudged"; exit }
       if (st == "") { print "none"; exit }
-      if (st ~ /^mirror:/) { print "mirror"; exit }
       if (jd == "mixed" || jd == "workflows") { print "split"; exit }
+      if (st ~ /^mirror:/) { print "mirror"; exit }
       if (st == "respell" || st == "extra-key") { print st; exit }
       if (st ~ /^unhomed:nested:/) { print "unhomed:nested"; exit }
       if (st == "unhomed:rootdoc" || st == "unhomed:rules") { print st; exit }

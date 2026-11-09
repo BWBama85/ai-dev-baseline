@@ -1584,14 +1584,17 @@ cp "$SPX/.claude/rules/db.md" "$SPX/.codex/rules/db.md"
 printf '# DB\nMigrations under src/db are append-only.\n' > "$SPX/.codex/rules/db-body.md"
 printf 'a hand-written summary of several rules\n' > "$SPX/.codex/rules.md"
 printf 'not markdown\n' > "$SPX/.codex/rules/default.rules"
+sp_entry() {  # <id> <category> <keeps> — a complete decision entry, seven lines
+  printf '## %s — an entry\n- date: 2026-11-09\n- category: %s\n- decision: keep it\n- reason: a fact here\n- keeps: %s\n\n' "$1" "$2" "$3"
+}
 {
-  printf '## D1 — keep the web doc\n- date: 2026-11-09\n- category: project-delta\n- keeps: apps/web/AGENTS.md\n\n'
-  printf '## D2 — keep db\n- date: 2026-11-09\n- category: project-delta\n- keeps: .claude/rules/db.md\n\n'
-  printf '## D3 — a bad path\n- date: 2026-11-09\n- category: project-delta\n- keeps: .claude/rules/d b.md\n\n'
-  printf '## D4 — not a delta\n- date: 2026-11-09\n- category: general\n- keeps: docs/guide/GEMINI.md\n\n'
-  printf '## D5 — keeps a key\n- date: 2026-11-09\n- category: project-delta\n- keeps: .claude/rules/a11y.md\n\n'
+  sp_entry D1 project-delta apps/web/AGENTS.md          # keeps at line 6
+  sp_entry D2 project-delta .claude/rules/db.md         # 13
+  sp_entry D3 project-delta '.claude/rules/d b.md'      # 20
+  sp_entry D4 general docs/guide/GEMINI.md              # 27
+  sp_entry D5 project-delta .claude/rules/a11y.md       # 34
   printf '```\n## D6 — in a fence\n- category: project-delta\n- keeps: docs/guide/GEMINI.md\n```\n\n'
-  printf '## D7 — a prefix\n- date: 2026-11-09\n- category: project-delta\n- keeps: apps/web\n'
+  sp_entry D7 project-delta apps/web                    # 47
 } > "$SPX/.ai-dev-baseline/decisions.md"
 git init -q "$SPX" >/dev/null 2>&1; check_git "$SPX" add -A; check_git "$SPX" commit -q -m fixture
 
@@ -1630,17 +1633,17 @@ has "$spo" "surface${TAB}.codex/rules/db-body.md${TAB}rule${TAB}codex${TAB}-${TA
 has "$spo" "surface${TAB}.codex/rules.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}unhomed:rules" \
   "specialized: a hand-mirror location that copies nothing is a fact surface outside its home"
 hasnt "$spo" "default.rules" "specialized: Codex's execpolicy .rules file is not a rule surface"
-has "$spo" "exempt${TAB}apps/web/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}-${TAB}decisions.md:4" \
+has "$spo" "exempt${TAB}apps/web/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}-${TAB}decisions.md:6" \
   "specialized: a project-delta keeps: line exempts the path it names, at its line"
-has "$spo" "exempt${TAB}.claude/rules/db.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}decisions.md:9" \
+has "$spo" "exempt${TAB}.claude/rules/db.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}decisions.md:13" \
   "specialized: keeps: .claude/rules/db.md is an exemption at its decisions.md line"
-has "$spo" "exemption-refused${TAB}decisions.md:14${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}bad-path" \
+has "$spo" "exemption-refused${TAB}decisions.md:20${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}bad-path" \
   "specialized: keeps: with a space in the path is refused"
-has "$spo" "exemption-refused${TAB}decisions.md:19${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}not-project-delta" \
+has "$spo" "exemption-refused${TAB}decisions.md:27${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}not-project-delta" \
   "specialized: keeps: on an entry that is not a project-delta is refused"
-has "$spo" "exemption-refused${TAB}decisions.md:24${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}key-not-location" \
+has "$spo" "exemption-refused${TAB}decisions.md:34${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}key-not-location" \
   "specialized: keeps: never explains away a globs: key"
-has "$spo" "exemption-refused${TAB}decisions.md:35${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}no-surface" \
+has "$spo" "exemption-refused${TAB}decisions.md:47${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}no-surface" \
   "specialized: keeps: naming a directory above a surface is refused — the match is exact, never a prefix"
 has "$spo" "surface${TAB}docs/guide/GEMINI.md${TAB}nested-doc${TAB}gemini${TAB}-${TAB}-${TAB}gemini:on-access${TAB}unhomed:rules" \
   "specialized: refused and fenced keeps: lines exempt nothing — the finding stays"
@@ -1683,7 +1686,7 @@ has "$spj" "surface${TAB}.claude/rules/db.md${TAB}rule${TAB}claude${TAB}paths${T
 has "$spj" "surface${TAB}.claude/rules/tools.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/a/**${TAB}claude:on-path-match${TAB}homed${TAB}mixed" "judgment: fact and workflow ranges make it mixed"
 has "$spj" "surface${TAB}apps/api/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${TAB}-${TAB}claude:on-demand${TAB}homed${TAB}facts" "judgment: a nested doc judged facts"
 has "$spj" "surface${TAB}.claude/rules/a11y.md${TAB}rule${TAB}claude${TAB}globs${TAB}src/components/**/* src/ui/**${TAB}claude:every-session${TAB}respell${TAB}unjudged" "judgment: a surface with no rows is unjudged"
-has "$spj" "surface${TAB}.codex/rules/db.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/db.md${TAB}-" "judgment: a mirror is never judged"
+has "$spj" "surface${TAB}.codex/rules/db.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/db.md${TAB}facts" "judgment: a mirror is never judged itself, and carries its source's judgment"
 has "$spj" "facts=2 mixed=1 workflows=0" "judgment: the trailer counts the judged classes"
 eq "$(printf '%s\n' "$spj" | tail -n 1 | sed 's/.* judgment=//')" given "judgment: the trailer says exactly judgment=given"
 
@@ -1826,15 +1829,22 @@ printf '.claude/rules/flow.md\t%s\t1\t4\tfact\tnested:/etc\n' "$(r1d .claude/rul
 has "$(bash "$AD" specialized "$SPR" --agents claude --judgment "$r1f")" "judgment-refused" "judgment: an absolute destination is refused"
 eq "$(bash "$AD" classify rule no unknown no extra-key | cut -f2 | grep -c 'delete the globs')" 1 "classify: the extra-key remedy deletes globs:, never renames it"
 # sclass validates every field, not only the width.
-printf 'surface\tx.md\tbogus\tnobody\tzzz\t-\twhere\tmirror:\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: x\n' > "$WORK/sp-garbage.tsv"
+printf 'surface\tx.md\tbogus\tnobody\tzzz\t-\twhere\tmirror:\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rules=1\n' > "$WORK/sp-garbage.tsv"
 eq "$(bash "$AD" sclass "$WORK/sp-garbage.tsv" x.md nobody)" unjudged "sclass: a record with garbage fields judges nothing"
 # A malformed decision entry never grants an exemption.
 mkdir -p "$SPR/.ai-dev-baseline"
-printf '## bad!id — keep\n- category: project-delta\n- keeps: apps/api/src/CLAUDE.md\n\n## D9 — twice\n- category: general\n- category: project-delta\n- keeps: CLAUDE.md\n' > "$SPR/.ai-dev-baseline/decisions.md"
+{ printf '## bad!id — keep\n- category: project-delta\n- keeps: apps/api/src/CLAUDE.md\n\n## D9 — twice\n- category: general\n- category: project-delta\n- keeps: CLAUDE.md\n\n'
+  printf '## D10 — no reason\n- date: 2026-11-09\n- category: project-delta\n- decision: x\n- keeps: apps/api/src/CLAUDE.md\n\n'
+  sp_entry D11 project-delta apps/api/src/CLAUDE.md      # keeps at line 21
+  sp_entry D11 project-delta pkg/empty/AGENTS.md         # 28
+} > "$SPR/.ai-dev-baseline/decisions.md"
 r1e="$(bash "$AD" specialized "$SPR" --agents claude)"
 has "$r1e" "exemption-refused${TAB}decisions.md:3${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}bad-id" "keeps: an entry whose id is not a plain token is refused"
 has "$r1e" "exemption-refused${TAB}decisions.md:8${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}twice" "keeps: an entry with a field given twice is refused"
-hasnt "$r1e" "${TAB}exempt${TAB}" "keeps: ...and neither exempts anything"
+has "$r1e" "exemption-refused${TAB}decisions.md:14${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}incomplete" "keeps: an entry with no reason is refused"
+has "$r1e" "exemption-refused${TAB}decisions.md:21${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}duplicate-id" "keeps: an entry whose id another entry uses is refused"
+has "$r1e" "exemption-refused${TAB}decisions.md:28${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}duplicate-id" "keeps: ...both of them"
+hasnt "$r1e" "${TAB}exempt${TAB}" "keeps: ...and none of them exempts anything"
 rm -f "$SPR/.ai-dev-baseline/decisions.md"
 # A tracked doc whose path cannot be represented reaches the output only as `-`.
 NLD="$WORK/sp-nl"
@@ -1848,6 +1858,52 @@ dir/CLAUDE.md"; git init -q "$NLD" >/dev/null 2>&1; check_git "$NLD" add -A; che
 else
   check_note "SKIP: this filesystem refuses a newline in a directory name"
 fi
+# --- 4g (review round 2) -------------------------------------------------------------------------
+r2s="$(bash "$AD" scan "$SPR" --agents claude,codex)"
+has "$r2s" "rule${TAB}.claude/rules/flow.md${TAB}flow.md${TAB}claude" "scan: a linked rules directory is walked, as specialized walks it"
+hasnt "$r2s" "other${TAB}.claude/rules" "scan: ...and the link itself is not an other record"
+SP2="$WORK/sp-r2"; mkdir -p "$SP2/.claude/rules" "$SP2/.codex/rules" "$WORK/sp-r2-outside"
+printf -- '---\npaths: "src/**"\ndescription: [unterminated\n---\nx\n' > "$SP2/.claude/rules/badother.md"
+printf -- '---\npaths: "src/**"\ndescription: "fine"\ntags: [a, b]\n---\nx\n' > "$SP2/.claude/rules/goodother.md"
+printf -- '---\npaths: "/*.md"\n---\nanchored\n' > "$SP2/.claude/rules/anchored.md"
+printf -- '---\npaths: "src/\\[x\\].ts"\n---\nescaped\n' > "$SP2/.claude/rules/escaped.md"
+printf -- '---\npaths: "lib/**"\n---\nscoped external\n' > "$WORK/sp-r2-outside/ext-scoped.md"
+printf 'unscoped external\n' > "$WORK/sp-r2-outside/ext-open.md"
+ln -s "$WORK/sp-r2-outside/ext-scoped.md" "$SP2/.claude/rules/ext-scoped.md"
+ln -s "$WORK/sp-r2-outside/ext-open.md" "$SP2/.claude/rules/ext-open.md"
+printf '# Root\nfacts\nrun the deploy steps\n' > "$SP2/CLAUDE.md"; cp "$SP2/CLAUDE.md" "$SP2/.codex/rules/copy.md"
+: > "$SP2/empty.md"; mkdir -p "$SP2/pkg"; : > "$SP2/pkg/CLAUDE.md"
+git init -q "$SP2" >/dev/null 2>&1; check_git "$SP2" add -A; check_git "$SP2" commit -q -m fixture
+r2="$(bash "$AD" specialized "$SP2" --agents claude,codex)"
+has "$r2" "unknown${TAB}.claude/rules/badother.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: an unclosed flow value under another key makes the block malformed"
+has "$r2" "surface${TAB}.claude/rules/goodother.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}" "yaml: well-formed other keys are fine"
+has "$r2" "surface${TAB}.claude/rules/anchored.md${TAB}rule${TAB}claude${TAB}paths${TAB}/*.md${TAB}" "yaml: an anchored glob is a glob"
+has "$r2" "surface${TAB}.claude/rules/escaped.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/\\[x\\].ts${TAB}" "yaml: an escaped bracket is a glob"
+has "$r2" "surface${TAB}.claude/rules/ext-scoped.md${TAB}rule${TAB}claude${TAB}paths${TAB}lib/**${TAB}none${TAB}" "links: an external paths: rule never loads"
+has "$r2" "surface${TAB}.claude/rules/ext-open.md${TAB}rule${TAB}claude${TAB}none${TAB}-${TAB}claude:after-approval${TAB}" "links: an external unscoped rule loads only after approval"
+has "$r2" "surface${TAB}.claude/rules/goodother.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}claude:on-path-match" "links: a rule inside the project keeps its reach"
+r2f="$WORK/sp-r2.tsv"; r2d() { bash "$AD" prose "$SP2" "$1" | awk -F'\t' '$1=="file" {print $3}'; }
+printf 'pkg/CLAUDE.md\t%s\t0\t0\tworkflow\tretire\n' "$(r2d pkg/CLAUDE.md)" > "$r2f"
+has "$(bash "$AD" specialized "$SP2" --agents claude --judgment "$r2f")" "judgment-refused" "judgment: an empty file's 0 0 row cannot be a workflow"
+printf 'CLAUDE.md\t%s\t1\t2\tfact\tkeep\nCLAUDE.md\t%s\t3\t3\tworkflow\tretire\n' "$(r2d CLAUDE.md)" "$(r2d CLAUDE.md)" > "$r2f"
+bash "$AD" specialized "$SP2" --agents claude,codex --judgment "$r2f" > "$WORK/sp-r2j.tsv"
+has "$(cat "$WORK/sp-r2j.tsv")" "surface${TAB}.codex/rules/copy.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:CLAUDE.md${TAB}mixed" "mirror: a mirror carries its source's judgment"
+eq "$(bash "$AD" sclass "$WORK/sp-r2j.tsv" .codex/rules/copy.md codex)" split "sclass: a mirror of a split source is split, never keep"
+has "$(cat "$WORK/sp-r2j.tsv")" "facts=0 mixed=1" "mirror: ...and is not counted a second time"
+# sclass checks each field on its own.
+sp_bad_surface() {  # <label> <scope> <reach> <status> <judged>
+  printf 'surface\tx.md\trule\tclaude\tpaths\t%s\t%s\t%s\t%s\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rules=1\n' "$2" "$3" "$4" "$5" > "$WORK/sp-bad.tsv"
+  eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" x.md claude)" unjudged "sclass: $1 judges nothing"
+}
+sp_bad_surface "a scope outside the glob charset" '<script>' claude:on-path-match homed facts
+sp_bad_surface "an unknown reach" 'src/**' claude:sometimes homed facts
+sp_bad_surface "an empty mirror source" 'src/**' claude:on-path-match 'mirror:' -
+sp_bad_surface "a traversal-shaped mirror source" 'src/**' claude:on-path-match 'mirror:../x.md' -
+sp_bad_surface "an unknown judgment" 'src/**' claude:on-path-match homed maybe
+printf 'surface\tx.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rules=1\n' > "$WORK/sp-good.tsv"
+eq "$(bash "$AD" sclass "$WORK/sp-good.tsv" x.md claude)" homed "sclass: ...while the same record with every field in its grammar is read"
+printf 'surface\t../x.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rules=1\n' > "$WORK/sp-bad.tsv"
+eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" ../x.md claude)" unjudged "sclass: a traversal-shaped surface path judges nothing"
 # An EMPTY judgment is a valid one: the writer emits it for a project with nothing to judge.
 : > "$spf"
 spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
@@ -2694,9 +2750,9 @@ printf 'competes\t.claude/skills/other\tclaude\timplement-issue\towner\tr\nsumma
 eq "$(cls_first)" escalate "workflow classify: a skill with no record is unjudged, never keep"
 # A rule (#552) is judged by its `specialized` class, through `sclass`; never `other`'s escalation.
 printf 'rule\t.claude/rules/db.md\tdb.md\tclaude\n' > "$WFS/state/adopt-scan.tsv"
-printf 'surface\t.claude/rules/db.md\trule\tclaude\tpaths\tsrc/db/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: s\n' > "$WFS/state/adopt-specialized.tsv"
+printf 'surface\t.claude/rules/db.md\trule\tclaude\tpaths\tsrc/db/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rules=1\n' > "$WFS/state/adopt-specialized.tsv"
 eq "$(cls_first)" keep "workflow classify: a rule in its home judged facts is keep"
-printf 'surface\t.claude/rules/db.md\trule\tclaude\tglobs\tsrc/db/**\tclaude:every-session\trespell\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: s\n' > "$WFS/state/adopt-specialized.tsv"
+printf 'surface\t.claude/rules/db.md\trule\tclaude\tglobs\tsrc/db/**\tclaude:every-session\trespell\t-\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rules=1\n' > "$WFS/state/adopt-specialized.tsv"
 eq "$(cls_first)" move "workflow classify: a globs: rule is move"
 rm -f "$WFS/state/adopt-specialized.tsv"
 eq "$(cls_first)" escalate "workflow classify: a rule with no specialized record is unjudged, never keep"
@@ -3495,10 +3551,6 @@ shmutant_mut propose-same-model-not-rechecked \
     '  if false && ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}"' \
     'propose: a planted review = primary with no deviation is not rendered'
 
-shmutant_mut specialized-rule-arm-dropped \
-    '        claude:.claude/rules/*.md|codex:.codex/rules.md|codex:.codex/rules/*.md|gemini:.gemini/rules.md|gemini:.gemini/rules/*.md)' \
-    '        NEVERMATCHES)' \
-    'scan: a project rule is a rule record'
 shmutant_mut specialized-nested-needs-manifest \
     '      S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag")' \
     '      _adb_has_project_manifest "$root/${rel%/*}" && { S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag"); }' \
@@ -3551,14 +3603,6 @@ shmutant_mut specialized-mirror-sources-by-agent \
     '    [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"' \
     '    _sp_sel "${S_AGENT[$i]}" || continue; [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"' \
     'its source is found when only codex is asked about'
-shmutant_mut specialized-body-digest-adds-newline \
-    '  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf '"'"' %s'"'"' "${PIPESTATUS[0]}")" || return 1' \
-    '  out="$(LC_ALL=C awk -v n="$n" '"'"'NR > n'"'"' "$1" | adb_sha256_stdin; printf '"'"' %s'"'"' 0)" || return 1' \
-    'a body that adds a final newline is not the same bytes'
-shmutant_mut specialized-rules-links-not-followed \
-    'find -L "$f" -type f' \
-    'find "$f" -type f' \
-    'a symlinked rules directory is walked'
 shmutant_mut specialized-list-under-scalar-accepted \
     '    /^[ \t]+-/ { if (sc != "") bad = 1' \
     '    /^[ \t]+-/ { if (0) bad = 1' \
@@ -3582,7 +3626,7 @@ shmutant_mut sclass-location-outranks-split \
 shmutant_mut sclass-fields-unchecked \
     '      if ($1 == "surface")' \
     '      if ($1 == "surface") return 1; if (0)' \
-    'a record with garbage fields judges nothing'
+    'an unknown reach judges nothing'
 shmutant_mut specialized-keeps-bad-id-normalized \
     '        if (badid) p = "bad-id"' \
     '        if (0) p = "bad-id"' \
@@ -3599,6 +3643,50 @@ shmutant_mut specialized-package-beside-manifest-only \
     '      if [ -n "$(_ad_sp_package "$root" "${rel%/*}")" ]; then st=homed;' \
     '      if _adb_has_project_manifest "$root/${rel%/*}"; then st=homed;' \
     'a doc anywhere inside a package is in its home'
+shmutant_mut specialized-rule-arm-dropped \
+    '        _ad_emit rule "$rel" "${rel##*/}" "$a"' \
+    '        :' \
+    'scan: a project rule is a rule record'
+shmutant_mut specialized-body-digest-adds-newline \
+    '  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf '"'"' %s %s'"'"' "${PIPESTATUS[0]}" "${PIPESTATUS[1]}")" || return 1' \
+    '  out="$(LC_ALL=C awk -v n="$n" '"'"'NR > n'"'"' "$1" | adb_sha256_stdin; printf '"'"' %s %s'"'"' 0 0)" || return 1' \
+    'a body that adds a final newline is not the same bytes'
+shmutant_mut specialized-rules-links-not-followed \
+    '    find -L "$2" -type f' \
+    '    find "$2" -type f' \
+    'a symlinked rules directory is walked'
+shmutant_mut specialized-other-key-unchecked \
+    'if (substr(w, length(w), 1) != (f == "[" ? "]" : "}")) bad = 1' \
+    'if (0) bad = 1' \
+    'an unclosed flow value under another key'
+shmutant_mut specialized-empty-row-workflow \
+    '            [ "$jc" = fact ] || { jok=0; break; }   # an empty file has no prose, so no workflow' \
+    '            :' \
+    'cannot be a workflow'
+shmutant_mut specialized-mirror-judgment-dropped \
+    '    case "${ST[$rel]}" in mirror:*) JUD["$rel"]="${JUD[${ST[$rel]#mirror:}]:--}" ;; esac' \
+    '    :' \
+    'a mirror of a split source is split'
+shmutant_mut specialized-external-reach-assumed \
+    '      else case "$key" in paths|both) REACH["$rel"]=none ;; *) REACH["$rel"]="claude:after-approval" ;; esac; fi' \
+    '      else :; fi' \
+    'an external paths: rule never loads'
+shmutant_mut sclass-scope-unchecked \
+    '$5 ~ /^(paths|globs|both|none|-)$/ && scp($6) && rch($7)' \
+    '$5 ~ /^(paths|globs|both|none|-)$/ && rch($7)' \
+    'a scope outside the glob charset judges nothing'
+shmutant_mut specialized-keeps-incomplete-accepted \
+    '(F["date"] !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ || F["decision"] == "" || F["reason"] == "")' \
+    '(0)' \
+    'an entry with no reason is refused'
+shmutant_mut specialized-keeps-duplicate-id-accepted \
+    '((MP[i] == "-" && ids[MI[i]] > 1) ? "duplicate-id" : MP[i])' \
+    'MP[i]' \
+    'an entry whose id another entry uses'
+shmutant_mut scan-linked-rules-dir-is-other \
+    '      [ -L "$root/$_ad_rf" ] && [ -d "$root/$_ad_rf" ] && _ad_emitted="$_ad_emitted$_ad_rf$nl"' \
+    '      :' \
+    '...and the link itself is not an other record'
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \
