@@ -124,8 +124,8 @@ adb_require_bash "$@"
 # Print the top comment block as --help (the shared idiom in common.sh, sourced not copied).
 usage() { adb_usage "$0"; }
 
-# Delegate the partial-skill-override composer to its library (issue #22). It operates on the
-# PROJECT repo the user is in — NOT the install-source clone — so it must dispatch BEFORE the
+# Dispatch the RETIRED composer (D153) to its library, which refuses every subcommand with exit 3
+# and says what to do instead. Kept so an old gate gets that reason; dispatched BEFORE the
 # install-source resolution + wrong-clone guard below. The composer also installs into
 # ~/.<agent>/scripts/lib, so it can equally be invoked directly there (e.g. from a project gate).
 if [ "${1:-}" = "skill-compose" ]; then

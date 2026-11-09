@@ -2244,7 +2244,7 @@ adb_parents_searchable() {
 # personal skill over a same-named project one ("personal over project", code.claude.com/docs/en/
 # skills); Codex lists both. Any same-named personal skill counts, baseline-owned or not, and the
 # answer never depends on a root doc or on install detection. A personal entry resolving to the
-# project's own skill directory is the same skill, not a collision (Claude de-duplicates it).
+# project's own skill directory is the same skill, not a collision (both agents de-duplicate it).
 # NOT EVALUATED, by owner decision (D153): frontmatter `name` aliases, Codex `[[skills.config]]`
 # enablement, nested personal folders. Claude's reserved `synced` and `anthropic-skills` folders
 # are skipped in any capitalization, since Claude loads no authored skill from them.
@@ -2259,7 +2259,16 @@ adb_parents_searchable() {
 adb_skill_collisions() {
   local root="${1:-}" agent="${2:-}"
   [ -n "$root" ] && [ -n "$agent" ] || return 2
-  local rc=0 pdir d n nd nok uroot u why found anyskill="" seen=" "
+  local rc=0 pdir d n nd nok uroot u why found anyskill="" seen=" " cfg_other=""
+  # Claude reads personal skills from $CLAUDE_CONFIG_DIR/skills when that is set. The baseline
+  # installs under $HOME/.claude only, so another configured root is not read: every project skill
+  # is then undecidable for Claude, and the default root is not consulted at all.
+  if [ "$agent" = claude ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    case "${CLAUDE_CONFIG_DIR%/}" in
+      "$HOME/.claude") : ;;
+      *) [ "$CLAUDE_CONFIG_DIR" -ef "$HOME/.claude" ] || cfg_other=1 ;;
+    esac
+  fi
   [ -n "$(adb_agent_project_skill_dirs "$agent")" ] || return 0
   if [ ! -d "$root" ] || [ ! -x "$root" ]; then
     printf 'unknown\t-\tthe project root is not a searchable directory\n'; return 11
@@ -2302,6 +2311,7 @@ adb_skill_collisions() {
       anyskill=1
       [ -z "$nok" ] || seen="$seen$n "
       if [ -n "$why" ]; then printf 'unknown\t%s\t%s\n' "$nd" "$why"; rc=11; continue; fi
+      [ -z "$cfg_other" ] || continue
       found=""; why=""
       while IFS= read -r -d '' uroot; do
         if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi
@@ -2310,7 +2320,7 @@ adb_skill_collisions() {
         if [ ! -d "$uroot" ] || [ ! -r "$uroot" ] || [ ! -x "$uroot" ]; then why="user skill root ${uroot##*/} is unreadable"; continue; fi
         u="$uroot/$n"
         if [ -f "$u/SKILL.md" ]; then
-          if [ "$agent" = claude ] && [ "$u" -ef "$d" ]; then continue; fi
+          if [ "$u" -ef "$d" ]; then continue; fi   # the project's own skill, reached twice
           if [ -r "$u/SKILL.md" ]; then found=1; break; fi
           why="personal $n/SKILL.md is unreadable"
         elif [ -L "$u" ] && [ ! -e "$u" ]; then
@@ -2328,10 +2338,7 @@ adb_skill_collisions() {
       fi
     done
   done
-  # Claude reads personal skills from $CLAUDE_CONFIG_DIR/skills when that is set; the baseline
-  # installs under $HOME/.claude only, so a different configured root is reported, never assumed empty.
-  if [ "$agent" = claude ] && [ -n "$anyskill" ] && [ -n "${CLAUDE_CONFIG_DIR:-}" ] \
-     && ! [ "$CLAUDE_CONFIG_DIR" -ef "$HOME/.claude" ]; then
+  if [ -n "$cfg_other" ] && [ -n "$anyskill" ]; then
     printf 'unknown\t-\tCLAUDE_CONFIG_DIR names another personal root, which is not evaluated\n'; rc=11
   fi
   return "$rc"

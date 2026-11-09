@@ -3996,6 +3996,16 @@ rm -rf "$sk540/p/.claude/skills/.hidden" "$sk540/h/.claude/skills/.hidden" "$sk5
 SK_CFG="$sk540/cfg"; out="$(sk_run claude)"; rc=$?; SK_CFG=""
 eq "$rc" 11 "skill-collisions: a CLAUDE_CONFIG_DIR naming another root is not evaluated, so undecidable (11)"
 has "$out" "CLAUDE_CONFIG_DIR names another personal root" "skill-collisions: …and says so"
+hasnt "$out" "collides" "skill-collisions: …and the unused default root claims no collision"
+mv "$sk540/h/.claude" "$sk540/h/.claude-away"
+SK_CFG="$sk540/h/.claude"; out="$(sk_run claude)"; rc=$?; SK_CFG=""
+eq "$rc:$out" "0:" "skill-collisions: CLAUDE_CONFIG_DIR spelled as the default root, absent, is the default (0)"
+mv "$sk540/h/.claude-away" "$sk540/h/.claude"
+mkdir -p "$sk540/p/.agents/skills/own" "$sk540/h/.agents/skills"; : > "$sk540/p/.agents/skills/own/SKILL.md"
+ln -s "$sk540/p/.agents/skills/own" "$sk540/h/.agents/skills/own"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: a Codex personal link to the project's own skill is the same skill (0)"
+rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
 for lk in "$sk540/p/.claude" "$sk540/p"; do
   chmod 000 "$lk"
   if [ -x "$lk" ]; then
