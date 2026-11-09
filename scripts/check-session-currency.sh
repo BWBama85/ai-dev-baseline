@@ -189,7 +189,13 @@ rm -f "$fh/.claude/skills/solo"; ln -s "$work/nowhere-540" "$fh/.claude/skills/s
 reset_src
 run_hook startup "$pj540"
 has "$OUT" "could not be decided" "a dangling personal link → reported as undecidable, never silence"
+has "$OUT" "solo: personal solo is a dangling link" "…naming the skill and why, not only pointing elsewhere"
 rm -f "$fh/.claude/skills/solo"
+# A project outside any git repository is still a project: the root falls back to the cwd.
+ng540="$work/nogit540"; mkdir -p "$ng540/.claude/skills/demo"; : > "$ng540/.claude/skills/demo/SKILL.md"
+reset_src
+run_hook startup "$ng540"
+has "$OUT" "this project's skill(s) demo share a name" "a colliding skill outside git → still named"
 
 # --- the source gate: only a genuinely new session ---------------------------
 # clear/compact happen MID-session, fork runs beside a live parent, resume continues a

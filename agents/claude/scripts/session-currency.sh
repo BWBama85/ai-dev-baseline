@@ -73,12 +73,16 @@ HAVE_JQ=0; command -v jq >/dev/null 2>&1 && HAVE_JQ=1
 # Emit at most one operator-visible line and stop. Uses jq when available (the correct structured
 # channel); degrades to plain stdout otherwise, which reaches Claude rather than the operator —
 # worse, but never wrong. `reload` adds hookSpecificOutput.reloadSkills, which asks the harness to
-# re-read skill definitions after an update actually changed them on disk.
+# re-read skill definitions after an update actually changed them on disk. A skill collision
+# (coll_msg, below) is appended on every path, and an empty message with none emits nothing.
 # Usage: say <message> [reload]
+COLL_MSG=""
 say() {
   local m="$1"
+  coll_msg
   [ -z "${COLL_MSG:-}" ] || m="${m:+$m
 }$COLL_MSG"
+  [ -n "$m" ] || exit 0
   if [ "$HAVE_JQ" -eq 1 ]; then
     jq -cn --arg m "$m" --arg r "${2:-}" \
       '{systemMessage: $m}
@@ -90,7 +94,7 @@ say() {
   exit 0
 }
 # finish — stop with nothing of currency's to say, still reporting a skill collision.
-finish() { [ -z "${COLL_MSG:-}" ] || say ""; exit 0; }
+finish() { say ""; }
 
 # --- 1. only a genuinely new session ----------------------------------------
 
@@ -117,20 +121,26 @@ SESSION_CWD="$(hook_field cwd)"
 
 # --- 1b. a project skill this session will never run (#540) ---------------------
 #
-# Claude runs a personal skill over a same-named project one, so name the project skills that lose.
-# Only names reach the message: adb_skill_collisions emits them from a closed charset.
-COLL_MSG=""
-_adb_root="$(git -C "$SESSION_CWD" rev-parse --show-toplevel 2>/dev/null)" || _adb_root=""
-if [ -n "$_adb_root" ] && command -v adb_skill_collisions >/dev/null 2>&1; then
-  _adb_co="$(adb_skill_collisions "$_adb_root" claude)"; _adb_crc=$?
-  _adb_names="$(printf '%s\n' "$_adb_co" | awk -F'\t' '$1 == "collides" {printf "%s%s", sep, $2; sep = ", "}')"
-  [ -z "$_adb_names" ] \
-    || COLL_MSG="baseline: this project's skill(s) $_adb_names share a name with a personal skill, so Claude runs the personal copy (#540)."
-  if [ "$_adb_crc" -eq 11 ]; then
+# Claude ranks a personal skill over a same-named project one, so name the project skills that lose.
+# Asked at emit time, after any update or repair has changed the personal links. Only names and the
+# detector's fixed reasons reach the message: adb_skill_collisions emits names from a closed charset.
+coll_msg() {
+  local root co crc names unk
+  command -v adb_skill_collisions >/dev/null 2>&1 || return 0
+  # SENTINEL CAPTURE: a trailing newline is a legal byte of the root's path.
+  root="$(cd "$SESSION_CWD" 2>/dev/null && adb_repo_root && printf x)" || return 0
+  root="${root%x}"; root="${root%?}"
+  [ -n "$root" ] || return 0
+  co="$(adb_skill_collisions "$root" claude)"; crc=$?
+  names="$(printf '%s\n' "$co" | awk -F'\t' '$1 == "collides" {printf "%s%s", sep, $2; sep = ", "}')"
+  [ -z "$names" ] \
+    || COLL_MSG="baseline: this project's skill(s) $names share a name with a personal skill, which Claude ranks over the project's copy (#540)."
+  if [ "$crc" -eq 11 ]; then
+    unk="$(printf '%s\n' "$co" | awk -F'\t' '$1 == "unknown" {printf "%s%s: %s", sep, $2, $3; sep = "; "}')"
     COLL_MSG="${COLL_MSG:+$COLL_MSG
-}baseline: whether a project skill here is outranked by a personal one could not be decided (baseline pinned status names it)."
+}baseline: whether a project skill here is outranked by a personal one could not be decided — $unk"
   fi
-fi
+}
 
 # --- 2. the shared policy ------------------------------------------------------
 

@@ -1288,9 +1288,7 @@ case "$CU_MESSAGE" in ?*) CU_LINE="baseline: $CU_MESSAGE" ;; esac
 
 An `updated` line means the tooling under `~/.<agent>/` changed **during this run**. That is safe
 here precisely because step 6 already composed the report, and it is worth the operator seeing:
-the next skill they invoke is the new one. Note that a project's *composed* skills (a partial
-override merged onto a base skill) are not recomposed by an update — that is tracked separately
-in #64.
+the next skill they invoke is the new one.
 
 ### 8. Emit
 

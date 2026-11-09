@@ -3903,4 +3903,43 @@ if [ "${1:-}" = "--mutation" ]; then
   exit 0
 fi
 
+# ---- adb_skill_collisions (#540): a skill answers to its directory AND its frontmatter name ----
+sk540="$(mktemp -d)"; TAB="$(printf '\t')"
+sk_run() { HOME="$sk540/h" CODEX_HOME="$sk540/cx" bash -c '. scripts/lib/common.sh; adb_skill_collisions "$1" "$2"' _ "$sk540/p" "$1"; }
+mkdir -p "$sk540/h/.claude/skills/pers" "$sk540/p/.claude/skills/proj" "$sk540/p/.claude/skills/solo"
+printf -- '---\nname: "deploy"\n---\n' > "$sk540/h/.claude/skills/pers/SKILL.md"
+printf -- '---\nname: deploy\n---\n' > "$sk540/p/.claude/skills/proj/SKILL.md"
+: > "$sk540/p/.claude/skills/solo/SKILL.md"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 10 "skill-collisions: two skills sharing only a frontmatter name collide (10)"
+eq "$out" "collides${TAB}deploy" "skill-collisions: …reported once, by the shared name"
+out="$(sk_run gemini)"; rc=$?
+eq "$rc:$out" "0:" "skill-collisions: an agent with no project skill discovery has nothing to collide"
+( set -u; . scripts/lib/common.sh; adb_skill_collisions ) >/dev/null 2>&1; rc=$?
+eq "$rc" 2 "skill-collisions: no arguments under set -u is usage (2), not an abort"
+mkdir -p "$sk540/h/.claude/skills/solo"; ln -s "$sk540/none" "$sk540/h/.claude/skills/solo/SKILL.md"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 11 "skill-collisions: a dangling personal SKILL.md is undecidable (11), never no collision"
+has "$out" "unknown${TAB}solo${TAB}personal solo/SKILL.md is a dangling link" "skill-collisions: …naming it"
+rm -f "$sk540/h/.claude/skills/solo/SKILL.md"; rmdir "$sk540/h/.claude/skills/solo"
+chmod 000 "$sk540/p/.claude"
+if [ -x "$sk540/p/.claude" ]; then
+  check_note "SKIP: this user can search a mode-000 directory (root?); the unreadable-ancestor case is unexercised"
+else
+  out="$(sk_run claude)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unsearchable project .claude is undecidable (11), never 0"
+  has "$out" "project skill root .claude/skills or a parent of it is unreadable" "skill-collisions: …and says so"
+fi
+chmod 755 "$sk540/p/.claude"
+chmod 111 "$sk540/h/.claude/skills"
+if [ -r "$sk540/h/.claude/skills" ]; then
+  check_note "SKIP: this user can list a mode-111 directory (root?); the unlistable-user-root case is unexercised"
+else
+  out="$(sk_run claude)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unlistable user skill root is undecidable (11)"
+  has "$out" "user skill root skills is unreadable" "skill-collisions: …and says so"
+fi
+chmod 755 "$sk540/h/.claude/skills"
+rm -rf "$sk540"
+
 check_summary "common-lib"

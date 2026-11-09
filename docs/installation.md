@@ -19,17 +19,20 @@ own section, [Release-pinned, per project](#release-pinned-per-project).
 **For Claude, do not run both on one machine** (#540). Neither install writes into the other, but
 a pinned project opened where the global install is also active does not run its pin:
 
-- **Skills:** Claude Code runs a *personal* skill over a same-named *project* one ("personal over
-  project", [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)), so the
-  global copy of every vendored skill runs, calling the global libraries. Codex lists both copies,
+- **Skills:** Claude Code ranks a *personal* skill over a same-named *project* one ("personal over
+  project", [code.claude.com/docs/en/skills](https://code.claude.com/docs/en/skills)), and a skill
+  answers to its directory name and its frontmatter `name`, so the global copy of every vendored
+  skill runs, calling the global libraries. Codex lists both copies,
   and which one a turn follows is not determined by the pin.
 - **Rules:** the global root doc and procedures load beside the project's own.
 - **Stop gates:** Claude merges hooks across scopes, so the global gates fire as well as the
   pinned ones. Only `session-context.sh` defers to a vendored copy.
 
 `baseline pinned install` warns when a vendored skill collides with a personal one, `baseline
-pinned status` names each colliding skill and exits `21`, and a new session in such a project says
-so. On a machine without the global install, or in a Claude cloud session (which loads no personal
+pinned status` names each colliding skill and exits `21`, and wherever the global install's
+SessionStart hook runs, a new session in such a project names them too. A pinned project on a
+machine with no global install but an unrelated personal skill of the same name gets only the
+`install` and `status` reports. On a machine without the global install, or in a Claude cloud session (which loads no personal
 skills), the pin runs as written.
 
 **Pick the global model** when the machine is yours and you want every project on it to move to

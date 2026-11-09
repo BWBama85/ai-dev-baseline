@@ -1817,7 +1817,7 @@ _pi_report_collisions() {
     if [ -n "$names" ]; then
       _pi_say "note:    $ag skill(s) here share a name with a personal skill on this machine: $names"
       case "$ag" in
-        claude) _pi_say "         Claude Code runs the PERSONAL copy (personal over project); this pin does not govern them." ;;
+        claude) _pi_say "         Claude Code ranks the PERSONAL copy over this project's (personal over project); this pin does not govern them." ;;
         *)      _pi_say "         Codex lists both copies; which one a turn follows is not determined by the pin." ;;
       esac
     fi

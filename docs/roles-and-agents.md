@@ -90,8 +90,9 @@ For Claude the path is `.claude/skills/release/SKILL.md` (see
 [per-project-overrides.md](per-project-overrides.md)). It runs only because
 the baseline ships no `release` skill: Claude runs a personal skill over a
 same-named project one (#540). Codex loads project skills from `.codex/skills`
-and `.agents/skills`; Gemini has no established project-local skill discovery,
-so a Gemini primary cannot carry one.
+and `.agents/skills`. Antigravity documents project skills in `.agents/skills`
+too, but the baseline does not yet integrate Gemini project skills (pinned mode
+refuses `--agent gemini`), so check before relying on one there.
 
 **2. Have that skill honor `[roles].release` itself.** Setting
 

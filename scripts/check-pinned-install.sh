@@ -538,7 +538,7 @@ out="$(HOME="$co540" CODEX_HOME="$co540/.codex" bash "$PI" status --project "$P"
 eq "$rc" 21 "status: a vendored skill sharing a name with a personal one exits 21, never 0"
 has "$out" "claude skill(s) here share a name with a personal skill on this machine: cleanup, implement-issue" \
     "status: …naming every colliding skill, the linked one followed through its link"
-has "$out" "Claude Code runs the PERSONAL copy" "status: …and saying which copy Claude runs"
+has "$out" "Claude Code ranks the PERSONAL copy over this project's" "status: …and saying which copy Claude ranks first"
 hasnt "$out" "Codex lists both" "status: …and no Codex line when no Codex root collides"
 printf '%s\n' '[{"tagName":"v10.0.0","isLatest":true}]' > "$work/pigh.json"
 HOME="$co540" CODEX_HOME="$co540/.codex" PATH="$pigh:$PATH" bash "$PI" status --project "$P" >/dev/null 2>&1; rc=$?

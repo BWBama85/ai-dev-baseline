@@ -73,8 +73,9 @@ fork never meant to change. A fork that carried ~25 novel lines on top of a
 ### 2b. Partial compose-override — retired, and the composer refuses
 
 `skill-compose` used to merge a project's `.claude/skills/<name>/overrides.md` onto the installed
-baseline skill (#22). It never delivered on Claude: composing needs the global base skill, and
-while that personal skill is installed Claude runs it instead of the composed project copy (#540).
+baseline skill (#22). Composing needs the global base skill, and on any machine where that
+personal skill is installed Claude runs it instead of the composed project copy (#540); the
+composed copy ran only where the global install was absent.
 So the composer is retired: `baseline skill-compose compose`, `check` and `list-anchors` each exit
 `3` and name the retirement, and write nothing.
 
