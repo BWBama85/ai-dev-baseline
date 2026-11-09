@@ -4006,6 +4006,13 @@ ln -s "$sk540/p/.agents/skills/own" "$sk540/h/.agents/skills/own"
 out="$(sk_run codex)"; rc=$?
 eq "$rc:$out" "0:" "skill-collisions: a Codex personal link to the project's own skill is the same skill (0)"
 rm -rf "$sk540/p/.agents" "$sk540/h/.agents"
+# A self-linked copy in one Codex root leaves the name open for a distinct copy in the other.
+mkdir -p "$sk540/p/.codex/skills/dual" "$sk540/p/.agents/skills/dual" "$sk540/h/.agents/skills"
+: > "$sk540/p/.codex/skills/dual/SKILL.md"; : > "$sk540/p/.agents/skills/dual/SKILL.md"
+ln -s "$sk540/p/.codex/skills/dual" "$sk540/h/.agents/skills/dual"
+out="$(sk_run codex)"; rc=$?
+eq "$rc:$out" "10:collides${TAB}dual" "skill-collisions: a self-linked copy does not hide a distinct copy in the other Codex root"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents" "$sk540/h/.agents"
 for lk in "$sk540/p/.claude" "$sk540/p"; do
   chmod 000 "$lk"
   if [ -x "$lk" ]; then

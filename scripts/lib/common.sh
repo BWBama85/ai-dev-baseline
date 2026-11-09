@@ -2309,8 +2309,10 @@ adb_skill_collisions() {
         why="a project skill name outside [A-Za-z0-9._-] was not judged"
       fi
       anyskill=1
-      [ -z "$nok" ] || seen="$seen$n "
-      if [ -n "$why" ]; then printf 'unknown\t%s\t%s\n' "$nd" "$why"; rc=11; continue; fi
+      if [ -n "$why" ]; then
+        [ -z "$nok" ] || seen="$seen$n "
+        printf 'unknown\t%s\t%s\n' "$nd" "$why"; rc=11; continue
+      fi
       [ -z "$cfg_other" ] || continue
       found=""; why=""
       while IFS= read -r -d '' uroot; do
@@ -2331,10 +2333,12 @@ adb_skill_collisions() {
           why="personal $n/SKILL.md is a dangling link"
         fi
       done < <(adb_agent_user_skill_roots "$agent")
+      # Seen only once reported: a copy found to be the project's own skill leaves the name open
+      # for a distinct same-named copy in another project root.
       if [ -n "$found" ]; then
-        printf 'collides\t%s\n' "$n"; [ "$rc" -eq 11 ] || rc=10
+        seen="$seen$n "; printf 'collides\t%s\n' "$n"; [ "$rc" -eq 11 ] || rc=10
       elif [ -n "$why" ]; then
-        printf 'unknown\t%s\t%s\n' "$n" "$why"; rc=11
+        seen="$seen$n "; printf 'unknown\t%s\t%s\n' "$n" "$why"; rc=11
       fi
     done
   done
