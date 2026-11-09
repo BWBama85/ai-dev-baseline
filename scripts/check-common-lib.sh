@@ -2673,7 +2673,7 @@ eq "${ cls "foo bar" "$N" "$N" "${ printf '[{"user":{"login":"foo bar"},"content
    "classify: a whitespace-bearing login matches its OWN evidence under the TAB grammar"
 
 # --- adb_md_prose: THE shared CommonMark prose filter (#136) ------------------
-# The primitive's own unit home. `check-roadmap.sh` and `check-skill-compose.sh` exercise it
+# The primitive's own unit home. `check-roadmap.sh` exercises it
 # THROUGH their consumers, which is where the interesting inputs live — but a shared primitive gets
 # tested here too, so a break is attributed to the filter rather than to whichever consumer noticed.
 #
@@ -3939,6 +3939,34 @@ mkdir -p "$sk540/p/.claude/skills/synced" "$sk540/h/.claude/skills/synced"
 out="$(sk_run claude)"
 hasnt "$out" "synced" "skill-collisions: Claude's reserved synced folder loads no authored skill, so it never collides"
 rm -rf "$sk540/p/.claude/skills/synced" "$sk540/h/.claude/skills/synced"
+for rs in SYNCED Anthropic-Skills; do
+  mkdir -p "$sk540/p/.claude/skills/$rs" "$sk540/h/.claude/skills/$rs"
+  : > "$sk540/p/.claude/skills/$rs/SKILL.md"; : > "$sk540/h/.claude/skills/$rs/SKILL.md"
+done
+out="$(sk_run claude)"
+hasnt "$out" "SYNCED" "skill-collisions: the reserved folder is skipped in any capitalization"
+hasnt "$out" "Anthropic-Skills" "skill-collisions: …anthropic-skills too"
+rm -rf "$sk540/p/.claude/skills/SYNCED" "$sk540/h/.claude/skills/SYNCED" \
+       "$sk540/p/.claude/skills/Anthropic-Skills" "$sk540/h/.claude/skills/Anthropic-Skills"
+printf 'notes\n' > "$sk540/p/.claude/skills/README notes.md"
+out="$(sk_run claude)"; rc=$?
+eq "$rc" 10 "skill-collisions: a plain file in a skill root is no skill, never undecidable"
+rm -f "$sk540/p/.claude/skills/README notes.md"
+mkdir -p "$sk540/p/.claude/skills/locked"; : > "$sk540/p/.claude/skills/locked/SKILL.md"
+chmod 000 "$sk540/p/.claude/skills/locked/SKILL.md"
+if [ -r "$sk540/p/.claude/skills/locked/SKILL.md" ]; then
+  check_note "SKIP: this user can read a mode-000 file (root?); the unreadable-project-SKILL.md case is unexercised"
+else
+  out="$(sk_run claude)"; rc=$?
+  eq "$rc" 11 "skill-collisions: an unreadable project SKILL.md is undecidable (11)"
+  has "$out" "unknown${TAB}locked${TAB}project locked/SKILL.md is unreadable" "skill-collisions: …naming it"
+fi
+chmod 644 "$sk540/p/.claude/skills/locked/SKILL.md"; rm -rf "$sk540/p/.claude/skills/locked"
+mkdir -p "$sk540/p/.codex/skills" "$sk540/p/.agents/skills"
+ln -s "$sk540/none" "$sk540/p/.codex/skills/twice"; ln -s "$sk540/none" "$sk540/p/.agents/skills/twice"
+out="$(sk_run codex)"
+eq "$(printf '%s\n' "$out" | grep -c twice)" 1 "skill-collisions: a name undecided in two roots is reported once"
+rm -rf "$sk540/p/.codex" "$sk540/p/.agents"
 chmod 111 "$sk540/h/.claude/skills"
 out="$(sk_run claude)"; rc=$?
 eq "$rc" 10 "skill-collisions: an unlistable but searchable user root is probed by name (10)"

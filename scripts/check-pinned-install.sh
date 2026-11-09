@@ -613,6 +613,9 @@ eq "${#out}" 0 "notice: … and prints nothing at all"
 out="$(bash "$PI" notice --project "$P" 2>&1)"; rc=$?
 yes "$rc" "notice: reports a pinned project"
 has "$out" "PINNED baseline payload" "notice: … naming the model"
+hasnt "$out" "does not govern" "notice: … never claiming the global install does not govern it (#540)"
+out="$(HOME="$co540" CODEX_HOME="$co540/.codex" bash "$PI" notice --project "$P" 2>&1)"
+has "$out" "claude: a personal skill here shares a name with a vendored one" "notice: a Claude collision is named (#540)"
 
 # ================================ upgrade =======================================================
 

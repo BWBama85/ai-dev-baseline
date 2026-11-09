@@ -44,8 +44,8 @@ adb_info() { printf '%s\n' "$*"; }
 
 # Print a CLI's --help text from its own top comment block: skip the shebang (NR==1), strip a
 # leading "# ", stop at the first non-comment line (so internal section comments never leak). The
-# ONE home for this idiom — bin/baseline and scripts/lib/skill-compose.sh both call it with their
-# own file rather than each carrying a copy. Usage: adb_usage <file>   (e.g. adb_usage "$0")
+# ONE home for this idiom — bin/baseline and the CLI libraries call it with their own file rather
+# than each carrying a copy. Usage: adb_usage <file>   (e.g. adb_usage "$0")
 adb_usage() { awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$1"; }
 
 # adb_display_value <value> — render a value onto ONE physical line, for a diagnostic that NAMES a
@@ -2247,7 +2247,7 @@ adb_parents_searchable() {
 # project's own skill directory is the same skill, not a collision (Claude de-duplicates it).
 # NOT EVALUATED, by owner decision (D153): frontmatter `name` aliases, Codex `[[skills.config]]`
 # enablement, nested personal folders. Claude's reserved `synced` and `anthropic-skills` folders
-# are skipped, since Claude loads no authored skill from them.
+# are skipped in any capitalization, since Claude loads no authored skill from them.
 # Output, one TAB-separated line per finding, every name from [A-Za-z0-9._-]:
 #   collides <name>          <user-root>/<name>/SKILL.md is readable
 #   unknown  <name> <why>    it could not be decided: a dangling link, an unreadable entry, root or
@@ -2272,24 +2272,30 @@ adb_skill_collisions() {
       printf 'unknown\t-\tproject skill root %s is unreadable\n' "$pdir"; rc=11; continue
     fi
     for d in "$root/$pdir"/*; do
-      [ -e "$d" ] || [ -L "$d" ] || continue
+      # Only a directory can be a skill; a dangling link might have been one, so it is not skipped.
+      [ -d "$d" ] || { [ -L "$d" ] && [ ! -e "$d" ]; } || continue
       n="${d##*/}"
       case "$n" in
         *[!A-Za-z0-9._-]*) printf 'unknown\t-\ta project skill name outside [A-Za-z0-9._-] was not judged\n'; rc=11; continue ;;
       esac
+      if [ "$agent" = claude ]; then
+        case "$(printf '%s' "$n" | tr '[:upper:]' '[:lower:]')" in synced|anthropic-skills) continue ;; esac
+      fi
+      case "$seen" in *" $n "*) continue ;; esac
+      seen="$seen$n "
       if [ -L "$d" ] && [ ! -e "$d" ]; then
         printf 'unknown\t%s\tproject %s is a dangling link\n' "$n" "$n"; rc=11; continue
       fi
-      if [ -d "$d" ] && { [ ! -r "$d" ] || [ ! -x "$d" ]; }; then
+      if [ ! -r "$d" ] || [ ! -x "$d" ]; then
         printf 'unknown\t%s\tproject skill %s is unreadable\n' "$n" "$n"; rc=11; continue
       fi
       if [ -L "$d/SKILL.md" ] && [ ! -e "$d/SKILL.md" ]; then
         printf 'unknown\t%s\tproject %s/SKILL.md is a dangling link\n' "$n" "$n"; rc=11; continue
       fi
       [ -f "$d/SKILL.md" ] || continue
-      case "$agent:$n" in claude:synced|claude:anthropic-skills) continue ;; esac
-      case "$seen" in *" $n "*) continue ;; esac
-      seen="$seen$n "
+      if [ ! -r "$d/SKILL.md" ]; then
+        printf 'unknown\t%s\tproject %s/SKILL.md is unreadable\n' "$n" "$n"; rc=11; continue
+      fi
       found=""; why=""
       while IFS= read -r -d '' uroot; do
         if ! adb_parents_searchable "" "${uroot#/}/."; then why="a parent of user skill root ${uroot##*/} is unreadable"; continue; fi
@@ -6407,8 +6413,7 @@ adb_drvfs_warn() {
 # approximation; it is reproducible, and its fixture is check-state-assert.sh 3b-i2.
 #
 # `_ADB_MD_AWK` is that filter, as an awk FUNCTION LIBRARY — no main rule and no END block, so a
-# consumer can prepend it to its own program and keep its own record handling (`skill-compose.sh`
-# runs over two named files and could not tolerate a main rule at all).
+# consumer can prepend it to its own program and keep its own record handling.
 #
 # HOW A CONSUMER DRIVES IT. Buffer the body, then resolve it once:
 #
@@ -6490,9 +6495,9 @@ adb_drvfs_warn() {
 #     column the reader has already left. Never the reverse — see adb_md_content_at.
 #   - Indented code INSIDE a list item is still not recognized (D27, unmoved by #252), so a line 4+
 #     past the item's content is scanned rather than stripped.
-#   - The two consumers that call `adb_md_fence_delim` directly rather than through `adb_md_block`
-#     (`skill-compose.sh`, `check-release-skill.sh`) pass a container column of 0 and therefore keep
-#     the top-level-only rule. They are unchanged in every case but one, and the exception is worth
+#   - The consumer that calls `adb_md_fence_delim` directly rather than through `adb_md_block`
+#     (`check-release-skill.sh`) passes a container column of 0 and therefore keeps the
+#     top-level-only rule. It is unchanged in every case but one, and the exception is worth
 #     stating rather than rounding off: the closer bound became container-relative, so a fence they
 #     open at indent 1-3 now needs its closer at indent <= 3 as well, where the old opener-relative
 #     bound allowed up to opener + 3. Every indented opener in the tree today (2-3 spaces, in
@@ -6594,7 +6599,7 @@ IFS= read -r -d '' _ADB_MD_AWK <<'AWKMD' || true
     # back unchanged when a list-nested fence is ended by the item that opens the next one.
     #
     # This is the function #131 exists for (adb-claim-ok: closed NOT_PLANNED, folded into #136).
-    # `skill-compose.sh` carried a second detector — a
+    # The retired `skill-compose.sh` carried a second detector — a
     # boolean toggle on any ``` after 0-3 spaces — and the two had already drifted: a `~~~`-fenced
     # `### ` line was advertised as a composable anchor, and a ``` closing a longer run left the
     # toggle inverted for the whole rest of the file, hiding every later step.

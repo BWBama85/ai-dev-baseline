@@ -116,7 +116,8 @@ hook_field() {
 # `cwd` comes from the event JSON (the session's directory, which need not be this process's);
 # fall back to $PWD. The library uses it for the self-clone guard — never update the clone this
 # very session is working in.
-SESSION_CWD="$(hook_field cwd)"
+# SENTINEL CAPTURE: a trailing newline is a legal byte of a directory name; drop only the reader's.
+SESSION_CWD="$(hook_field cwd; printf x)"; SESSION_CWD="${SESSION_CWD%x}"; SESSION_CWD="${SESSION_CWD%$'\n'}"
 [ -n "$SESSION_CWD" ] || SESSION_CWD="$PWD"
 
 # --- 1b. a project skill this session will never run (#540) ---------------------

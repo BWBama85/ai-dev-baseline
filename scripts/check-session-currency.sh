@@ -196,6 +196,12 @@ ng540="$work/nogit540"; mkdir -p "$ng540/.claude/skills/demo"; : > "$ng540/.clau
 reset_src
 run_hook startup "$ng540"
 has "$OUT" "this project's skill(s) demo share a name" "a colliding skill outside git → still named"
+# A session directory whose name ends in a newline keeps that byte.
+nl540="$work/nl540
+"; mkdir -p "$nl540/.claude/skills/demo"; : > "$nl540/.claude/skills/demo/SKILL.md"
+reset_src
+run_hook startup "$nl540"
+has "$OUT" "this project's skill(s) demo share a name" "a session cwd ending in a newline → still named"
 
 # --- the source gate: only a genuinely new session ---------------------------
 # clear/compact happen MID-session, fork runs beside a live parent, resume continues a

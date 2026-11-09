@@ -1661,8 +1661,8 @@ EOF
 
   _pi_say "pinned to $ver — commit .ai-dev-baseline/ and the vendored .<agent>/ payload"
   # Advisory: the install succeeded, and the collision is a fact about this machine, not the tree.
-  if ! _pi_report_collisions "$p" "$(printf '%s,' "${agents[@]}")" \
-     && ! adb_skill_collisions "$p" claude >/dev/null 2>&1; then
+  _pi_report_collisions "$p" "$(printf '%s,' "${agents[@]}")" || :
+  if [ -n "$_PI_CLAUDE_COLLIDES" ]; then
     _pi_say "warning: a personal skill outranks a vendored one here; pinned and global installs are not supported"
     _pi_say "         together for Claude (docs/installation.md, #540)."
   fi
@@ -1810,14 +1810,18 @@ EOF
 # _pi_report_collisions <project-root> <agents-csv> — print a `note:` per agent naming each project
 # skill that shares its name with a personal skill here, and what that agent then runs.
 # Returns 0 nothing to report · 1 a collision, or one that could not be decided, was reported.
+# Sets _PI_CLAUDE_COLLIDES non-empty when a Claude collision was established (not merely undecided).
+_PI_CLAUDE_COLLIDES=""
 _pi_report_collisions() {
   local p="$1" agents="$2" ag out rc any=0 names unk
+  _PI_CLAUDE_COLLIDES=""
   for ag in $(printf '%s' "$agents" | tr ',' ' '); do
     out="$(adb_skill_collisions "$p" "$ag")"; rc=$?
     [ "$rc" -eq 0 ] && continue
     any=1
     names="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "collides" {printf "%s%s", sep, $2; sep = ", "}')"
     if [ -n "$names" ]; then
+      [ "$ag" != claude ] || _PI_CLAUDE_COLLIDES=1
       _pi_say "note:    $ag skill(s) here share a name with a personal skill on this machine: $names"
       case "$ag" in
         claude) _pi_say "         Claude Code ranks the PERSONAL copy over this project's (personal over project); this pin does not govern them." ;;
@@ -1852,8 +1856,15 @@ cmd_notice() {
   ver="$(_pi_pin_get "$p" version)"
   src="$(_pi_pin_source "$p")" || return 20
   agents="$(_pi_pin_agents "$p" | tr '\n' ',')"
-  printf 'baseline: this project runs a PINNED baseline payload (%s) — the global install does not govern it.\n' \
-    "${ver:-version unrecorded}" >&2
+  printf 'baseline: this project runs a PINNED baseline payload (%s).\n' "${ver:-version unrecorded}" >&2
+  # Claude ranks a personal skill over a vendored one, so the pin governs a skill only where no
+  # personal skill shares its name (#540).
+  local ag_
+  for ag_ in $(printf '%s' "$agents" | tr ',' ' '); do
+    adb_skill_collisions "$p" "$ag_" >/dev/null 2>&1 && continue
+    printf 'baseline:   %s: a personal skill here shares a name with a vendored one, or that could not be decided — run: bash %s status\n' \
+      "$ag_" "$(_pi_cmd_path "$p")" >&2
+  done
   rp="$(_pi_receipt_path "$p")"
   if [ -f "$rp" ]; then
     counts="$(_pi_verify_tree "$p" "$rp")"
