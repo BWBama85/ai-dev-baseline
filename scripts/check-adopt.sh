@@ -1474,7 +1474,7 @@ eq "$cfrc" 10 "conformance: a tab smuggled into audit-rule does not clear the fi
 has "$cfo" "refused${TAB}" "conformance: ...the entry is refused"
 eq "$(HOME="$WORK/nohome" bash "$AD" answers "$WORK/an-tab.tsv" --decisions "$CF1/.ai-dev-baseline/decisions.md" primary=claude review=claude review-deviation=D11 >/dev/null 2>&1; echo $?)" 2 \
    "answers: a deviation whose audit-rule carries a tab is refused, as conformance refuses it"
-{ dev_entry D12 same-model-review; printf -- '- category: general\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
+{ dev_entry D12 same-model-review | sed '$d'; printf -- '- category: general\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
 has "$(cf "$CF1")" "refused${TAB}same-model-review${TAB}.ai-dev-baseline/decisions.md${TAB}D12${TAB}the DEVIATION is missing twice:category" \
     "conformance: a DEVIATION giving a field twice is refused, never read by its first value"
 { dev_entry D13 same-model-review; dev_entry D13 same-model-review; } > "$CF1/.ai-dev-baseline/decisions.md"
@@ -1489,6 +1489,15 @@ eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: ...and clears nothing"
 eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: an id shared with a DEVIATION that names no audit-rule is still a duplicate"
 { dev_entry D23 same-model-review reason; printf '# Other section\n- reason: borrowed\n'; } > "$CF1/.ai-dev-baseline/decisions.md"
 eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: a field from the section after the entry does not complete it"
+# Any line that is not a field ends the entry: an indented or tab-separated heading, a Setext
+# heading, or prose, each followed by a borrowed `- reason:`. A blank line before the first field
+# is still allowed.
+for sep_ in '  ## Other' "##${TAB}Other" "$(printf 'Other\n=====')" 'Some prose.'; do
+  { dev_entry D26 same-model-review reason; printf '%s\n- reason: borrowed\n' "$sep_"; } > "$CF1/.ai-dev-baseline/decisions.md"
+  eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: a field after [$(printf '%s' "$sep_" | head -n 1)] does not complete the entry above it"
+done
+{ printf '## D27 — DEVIATION: spaced\n\n'; dev_entry D27 same-model-review | sed 1d; } > "$CF1/.ai-dev-baseline/decisions.md"
+eq "$(cf "$CF1" >/dev/null; echo $?)" 0 "conformance: a blank line between the heading and the first field is allowed"
 dev_entry D24 same-model-review | sed 's/^- date: 2026-11-01$/- date: not-a-date/' > "$CF1/.ai-dev-baseline/decisions.md"
 has "$(cf "$CF1")" "D24${TAB}the DEVIATION is missing date" "conformance: a DEVIATION whose date is not YYYY-MM-DD is refused"
 dev_entry D25 same-model-review | sed 's/DEVIATION: one licence$/DEVIATION:/' > "$CF1/.ai-dev-baseline/decisions.md"
@@ -3158,10 +3167,10 @@ shmutant_mut deviation-duplicate-counts-audited-only \
     '                else seen[id]++' \
     '                else seen[""]++' \
     'conformance: an id shared with a DEVIATION that names no audit-rule is still a duplicate'
-shmutant_mut deviation-entry-runs-past-h1 \
-    '    /^##? / { flush()' \
-    '    /^## / { flush()' \
-    'conformance: a field from the section after the entry does not complete it'
+shmutant_mut deviation-entry-runs-past-its-fields \
+    '    id != "" { flush() }' \
+    '    id != "" { next }' \
+    'conformance: a field after [Other] does not complete the entry above it'
 shmutant_mut deviation-date-unchecked \
     '        if (F["date"] != "" && F["date"] !~' \
     '        if (0 && F["date"] !~' \

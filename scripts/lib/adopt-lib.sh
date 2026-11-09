@@ -2990,9 +2990,11 @@ _ad_conf_rec() {  # <class> <rule> <site> <deviation> <detail> — a control byt
 # that names an `audit-rule`, read from PROSE only (an example in a fence declares nothing).
 # <missing> is `-`, or the comma-joined problems: a required field absent or empty, a field given
 # twice (`twice:<field>`), a `date` that is not YYYY-MM-DD, an empty title, an id or audit-rule outside its grammar (`bad-id`, printed as
-# id `-`; `bad-audit-rule`), or an id another DEVIATION heading also uses (`duplicate-id`). An entry
-# ends at the next level-1 or level-2 heading. Every printed field is in a closed charset, so each
-# line has exactly three. rc 1 = the file could not be read whole.
+# id `-`; `bad-audit-rule`), or an id another DEVIATION heading also uses (`duplicate-id`). An
+# entry's fields are the `- key:` lines DIRECTLY under its heading (blank lines only before the
+# first): any other line ends it, so no heading spelling (ATX at any indent, Setext) and no later
+# section can supply a field. Every printed field is in a closed charset, so each line has exactly
+# three. rc 1 = the file could not be read whole.
 _ad_deviations() {
   local f="$1" prose
   [ -f "$f" ] && [ -r "$f" ] && _ad_size_ok "$f" 1048576 && adb_nul_free "$f" || return 1
@@ -3008,7 +3010,7 @@ _ad_deviations() {
         r = F["audit-rule"]; if (r !~ /^[a-z0-9][a-z0-9-]*$/) { r = "-"; miss = add(miss, "bad-audit-rule") }
         n++; RID[n] = id; RRULE[n] = r; RMISS[n] = miss
       }
-      id = ""; bad = ""; delete F
+      id = ""; bad = ""; started = 0; delete F
     }
     /^##? / { flush()
               h = $0; sub(/^##? /, "", h)
@@ -3020,11 +3022,15 @@ _ad_deviations() {
               }
               next }
     id != "" && /^- [a-z-]+:/ {
+      started = 1
       k = $0; sub(/^- /, "", k); sub(/:.*/, "", k)
       v = $0; sub(/^- [a-z-]+:[ \t]*/, "", v); sub(/[ \t]+$/, "", v)
       if (k in F) { bad = add(bad, "twice:" k); next }
       F[k] = v
+      next
     }
+    id != "" && !started && /^[ \t]*$/ { next }
+    id != "" { flush() }
     END { flush()
           for (i = 1; i <= n; i++) {
             m = RMISS[i]; if (RID[i] != "-" && seen[RID[i]] > 1) m = add(m, "duplicate-id")

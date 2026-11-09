@@ -227,7 +227,8 @@ two rules today:
   `policy:one-baseline` a project root doc holds project facts and never defines a workflow.
 
 A `DEVIATION` entry in `.ai-dev-baseline/decisions.md` that carries every deviation field plus
-`audit-rule: same-model-review` turns that finding into a `deviation` record, and later runs report
+`audit-rule: same-model-review`, as `- key: value` lines directly under its heading, turns that
+finding into a `deviation` record, and later runs report
 it the same way without flagging it again. A `DEVIATION` naming `root-doc-workflow` is `refused`:
 it explains the finding, and the finding stands. Report findings with their remedy, deviations with
 their id, and every `refused` or `unknown` record as it stands. The audit only classifies the
