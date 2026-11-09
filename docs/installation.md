@@ -32,8 +32,11 @@ a pinned project opened where the global install is also active does not run its
 pinned status` names each colliding skill and exits `21`, and wherever the global install's
 SessionStart hook runs, a new session in such a project names them too. A pinned project on a
 machine with no global install but an unrelated personal skill of the same name gets only the
-`install` and `status` reports. On a machine without the global install, or in a Claude cloud session (which loads no personal
-skills), the pin runs as written.
+`install` and `status` reports. The pin's skills run as written only where no personal skill of
+the same name exists: a machine with neither the global install nor another such skill, or a
+Claude cloud session, which loads no personal skills (a cloud thread in a claude.ai project loads
+no repository skills either). The check compares skill **directory** names; a frontmatter `name`
+alias, Codex's `[[skills.config]]` enablement and nested personal folders are not evaluated (D153).
 
 **Pick the global model** when the machine is yours and you want every project on it to move to
 each new release together. **Pick the pinned model** when a project must state which baseline it runs — a repo

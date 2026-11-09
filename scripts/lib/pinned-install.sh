@@ -1661,8 +1661,11 @@ EOF
 
   _pi_say "pinned to $ver — commit .ai-dev-baseline/ and the vendored .<agent>/ payload"
   # Advisory: the install succeeded, and the collision is a fact about this machine, not the tree.
-  _pi_report_collisions "$p" "$(printf '%s,' "${agents[@]}")" \
-    || _pi_say "warning: pinned and global installs are not supported together for Claude (docs/installation.md, #540)."
+  if ! _pi_report_collisions "$p" "$(printf '%s,' "${agents[@]}")" \
+     && ! adb_skill_collisions "$p" claude >/dev/null 2>&1; then
+    _pi_say "warning: a personal skill outranks a vendored one here; pinned and global installs are not supported"
+    _pi_say "         together for Claude (docs/installation.md, #540)."
+  fi
   rm -rf "$work"; trap - EXIT
   return 0
 }
@@ -1820,6 +1823,7 @@ _pi_report_collisions() {
         claude) _pi_say "         Claude Code ranks the PERSONAL copy over this project's (personal over project); this pin does not govern them." ;;
         *)      _pi_say "         Codex lists both copies; which one a turn follows is not determined by the pin." ;;
       esac
+      _pi_say "         (compared by directory name; frontmatter name aliases and Codex skill config are not evaluated)"
     fi
     unk="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "unknown" {printf "%s%s: %s", sep, $2, $3; sep = "; "}')"
     [ -z "$unk" ] || _pi_say "note:    $ag skill collisions could not be decided — $unk"

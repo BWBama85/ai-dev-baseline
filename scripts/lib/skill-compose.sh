@@ -2,8 +2,8 @@
 # ai-dev-baseline — the RETIRED partial skill override composer (#22, retired by #540).
 #
 # A project carries no skills of its own (policy:one-baseline, D148), and a composed
-# `.claude/skills/<name>/SKILL.md` never ran on a machine able to build it: composing needs the
-# global base skill, and Claude runs that personal skill over a same-named project one. So every
+# `.claude/skills/<name>/SKILL.md` did not run on a machine with the global install: composing
+# needs the global base skill, and Claude runs that personal skill over a same-named project one. So every
 # subcommand refuses, naming why and where to go instead. The file stays at its installed path so
 # a project gate that still calls `skill-compose check` gets that reason, not "command not found".
 #

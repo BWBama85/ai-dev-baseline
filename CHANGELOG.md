@@ -63,8 +63,9 @@ only by a release it upgrades to. These entries are the notes for both.
 ### Changed
 
 - **`skill-compose` is retired (#540).** `baseline skill-compose compose`, `check` and
-  `list-anchors` now exit `3`, name the retirement and write nothing. A composed override never ran
-  where it could be built, because Claude runs the personal base skill over it. Remove a
+  `list-anchors` now exit `3`, name the retirement and write nothing. Composing needed the global
+  base skill, and on any machine with that installed Claude runs the personal base skill over the
+  composed copy. Remove a
   `skill-compose check` gate from `agents.toml [gates]`; `/adopt` reports any `overrides.md` left.
 
 - **A project carries no skills of its own (`policy:one-baseline`, D148).** A project skill — a
