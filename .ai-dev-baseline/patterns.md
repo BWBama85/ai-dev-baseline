@@ -802,4 +802,5 @@ One line per resolved review thread, newest last.
 - `partial-validation` `scripts/lib/project-gates.sh:458` `c1753db` `PRRT_kwDOTfywrM6vDDrr` PR #570 2026-10-22 — the quoted-string rule ignored Python escapes in single-quoted strings, hiding a later pytest dependency in setup.py
 - `status-swallowed` `scripts/lib/project-gates.sh:520` `c1753db` `PRRT_kwDOTfywrM6vDDrs` PR #570 2026-10-22 — an unsearchable evidence directory left its glob literal, read as absent evidence instead of unknown
 - `status-swallowed` `scripts/lib/adopt-lib.sh:1191` `5cc7e2c` `PRRT_kwDOTfywrM60rQ5p` PR #606 2026-11-06 — an unreadable hidden directory under a nested root was skipped without marking the walk incomplete
+- `third-party-default` `scripts/lib/common.sh:2312` `b55a797` `PRRT_kwDOTfywrM61M9pQ` PR #620 2026-11-09 — collision dedupe marked a name seen before a same-skill exemption, hiding a distinct copy in the other Codex root
 <!-- adb:hits:end -->
