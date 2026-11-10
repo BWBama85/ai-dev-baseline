@@ -17,7 +17,8 @@ only by a release it upgrades to. These entries are the notes for both.
   nested root doc there, and paths that span the tree in `.claude/rules/<name>.md` with `paths:`.
   A per-package gate command is a custom gate (`test-api`) scoped by `[gates.scope]`, and
   `agents.toml` carries no prose. `adopt-lib.sh specialized` inventories the root docs,
-  `.claude/rules/**/*.md` (through links), every tracked nested root doc (manifest or not) and
+  `.claude/rules/**/*.md` (a linked rule is reported, never followed), every tracked nested root
+  doc (manifest or not) and
   `.codex/rules*`/`.gemini/rules*` hand mirrors, by path and frontmatter only. It reports each
   one's scope, which agent loads it and when, and where it belongs. It also reports a rule scoped
   with `globs:`, which Claude Code does not read, so that rule loads every session (witnessed on

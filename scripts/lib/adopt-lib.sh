@@ -807,7 +807,7 @@ cmd_prescribed() {
     # Custom gate POLICY — the practice's one home. Collides with a shipped script by name.
     "script${TAB}precommit-gate.sh") return 0 ;;
     # Project rule / convention / stack boundary — the repo's own root doc.
-    "rootdoc${TAB}CLAUDE.md"|"rootdoc${TAB}AGENTS.md"|"rootdoc${TAB}GEMINI.md") return 0 ;;
+    "rootdoc${TAB}CLAUDE.md"|"rootdoc${TAB}AGENTS.md"|"rootdoc${TAB}AGENTS.override.md"|"rootdoc${TAB}GEMINI.md") return 0 ;;
     # Role assignment + gate commands — agents.toml.
     "manifest${TAB}agents.toml") return 0 ;;
     # The decision log itself.
@@ -942,7 +942,7 @@ cmd_classify() {
     case "$wclass" in
       homed)  printf 'keep%sproject facts in their home (handling-the-unknown.md) — judged facts only, so it stays as it is\n' "$TAB" ;;
       exempt) printf 'keep%skept outside its home by a project-delta keeps: entry in the decision log — judged facts only\n' "$TAB" ;;
-      mirror) printf 'keep%sa hand mirror, byte-identical to the Claude rule or nested doc it copies — keep it in step until the baseline carries rules to Codex and Gemini; never a competing skill\n' "$TAB" ;;
+      mirror) printf 'keep%sa hand mirror, byte-identical to the Claude rule, root doc or nested doc it copies — keep it in step until the baseline carries rules to Codex and Gemini; never a competing skill\n' "$TAB" ;;
       split)  printf 'move%sholds workflow ranges — split it per the judgment (adopt-split.tsv): each fact range goes to the destination its row names, the workflow ranges retire as baseline issues\n' "$TAB" ;;
       extra-key) printf 'move%sscoped by paths:, which Claude Code reads, beside a globs: key it ignores — delete the globs: line (the owner approves the edit; nothing rewrites it)\n' "$TAB" ;;
       respell) printf 'move%sscoped with a key Claude Code does not read (globs:), so it loads at every session start — rename the key to paths: (the owner approves the edit; nothing rewrites it)\n' "$TAB" ;;
@@ -1134,7 +1134,7 @@ cmd_scan() {
   # join. Review reproduced it.
   #
   # Root docs + the manifest + the decision log.
-  for f in CLAUDE.md AGENTS.md GEMINI.md; do
+  for f in CLAUDE.md AGENTS.md AGENTS.override.md GEMINI.md; do
     [ -f "$root/$f" ] && _ad_emit rootdoc "$f" "$f" -
   done
   [ -f "$root/agents.toml" ] && _ad_emit manifest agents.toml agents.toml -
@@ -1155,6 +1155,11 @@ cmd_scan() {
   # both `foreign-pin` -> move and `other` -> escalate).
   local _ad_emitted="" nl
   nl="$(printf '\nx')"; nl="${nl%x}"
+  # Claude's other project-doc location (code.claude.com/docs/en/memory) is a root doc too.
+  if [ -f "$root/.claude/CLAUDE.md" ]; then
+    _ad_emit rootdoc .claude/CLAUDE.md CLAUDE.md -
+    _ad_emitted="$_ad_emitted.claude/CLAUDE.md$nl"
+  fi
   if [ -f "$root/.claude/UPSTREAM_VERSION" ]; then
     _ad_emit foreign-pin .claude/UPSTREAM_VERSION UPSTREAM_VERSION -
     _ad_emitted="$_ad_emitted.claude/UPSTREAM_VERSION$nl"
@@ -1353,6 +1358,10 @@ NESTED
     for _ad_rf in $_ad_rs; do
       [ -e "$root/$_ad_rf" ] || [ -L "$root/$_ad_rf" ] || continue
       _ad_parents_searchable "$root" "$_ad_rf" || continue   # `specialized` reports it as not judged
+      # A LINKED rules directory is not walked (#552, owner 2026-11-09): one record, which escalates.
+      if [ -L "$root/$_ad_rf" ]; then
+        _ad_emit rule "$_ad_rf" "${_ad_rf##*/}" "$a"; _ad_emitted="$_ad_emitted$_ad_rf$nl"; continue
+      fi
       _ad_rfound=()
       mapfile -d '' -t _ad_rfound < <(_ad_sp_rule_walk "$root" "$_ad_rf")
       if [ "${#_ad_rfound[@]}" -eq 0 ] || [ "${_ad_rfound[-1]}" != 0 ]; then
@@ -1361,12 +1370,11 @@ NESTED
       [ "${#_ad_rfound[@]}" -eq 0 ] || unset '_ad_rfound[-1]'
       for rel in "${_ad_rfound[@]}"; do
         [ -n "$rel" ] || continue
+        rel="${rel#L:}"   # a link is a rule record too: `specialized` reports it not judged, so it escalates
         _ad_owns "$_ad_owned" "$rel" && continue
         _ad_emit rule "$rel" "${rel##*/}" "$a"
         _ad_emitted="$_ad_emitted$rel$nl"
       done
-      # A linked rules directory is walked above; the link itself is not a file to classify.
-      [ -L "$root/$_ad_rf" ] && [ -d "$root/$_ad_rf" ] && _ad_emitted="$_ad_emitted$_ad_rf$nl"
     done
     _ad_others=()
     # A TRAVERSAL THAT FAILED PART-WAY is not a complete one (#535: an unreadable `.claude/commands`
@@ -3080,8 +3088,8 @@ _ad_sp_path_ok() {
 # docs, 2026-11-09: code.claude.com memory (rules, nested CLAUDE.md) and a live InstructionsLoaded
 # probe on Claude Code 2.1.319; codex-rs agents_md.rs (root to working directory, one file per
 # directory, the override first); gemini-cli docs/cli/gemini-md.md (just-in-time on tool access,
-# v0.35.0). A nested AGENTS.md beside an AGENTS.override.md is `codex:shadowed`, and a rule that
-# resolves outside the project is `claude:after-approval` or `none` (both set by the caller).
+# v0.35.0). A nested AGENTS.md beside an AGENTS.override.md is `codex:shadowed`, and an AGENTS.md
+# with no CLAUDE.md beside or above it also reaches Claude (`+claude:…`; both set by the caller).
 _ad_sp_reach() {
   case "$1:$2:$3:$4" in
     rootdoc:claude:*)             printf 'claude:every-session' ;;
@@ -3104,34 +3112,19 @@ _ad_sp_doc_agent() {
   esac
 }
 
-# _ad_sp_rule_walk <root> <start> — every `*.md` file at or below <start> (relative to <root>),
-# NUL-delimited, then one last NUL-delimited field: the walk's status. Links are followed (-L), as
-# Claude follows a linked rules directory or rule; a loop or a dangling link is a failed walk, never
-# an empty one. THE ONE WALK `scan` and `specialized` share, so a linked rule cannot reach one and
-# not the other.
+# _ad_sp_rule_walk <root> <start> — every `*.md` file at or below <start> (relative to <root>), and
+# every LINK there as `L:<path>`, NUL-delimited, then one last NUL-delimited field: the walk's
+# status. NO LINK IS FOLLOWED (owner, 2026-11-09): Claude follows linked rules, but which ones load
+# depends on approval of external imports, the target's location and whether it has `paths:`, and
+# emulating that is where the guesses came from. A linked rule or rules directory is reported as not
+# judged, for the operator to resolve. THE ONE WALK `scan` and `specialized` share.
 _ad_sp_rule_walk() {
   ( cd "$1" 2>/dev/null || { printf '\0%s' 1; exit 0; }
-    find -L "$2" -type f -name '*.md' -print0 2>/dev/null | LC_ALL=C sort -z
+    { find "$2" -type f -name '*.md' -print0 2>/dev/null; _sp_f=$?
+      find "$2" -mindepth 1 -type l -print0 2>/dev/null | while IFS= read -r -d '' _sp_l; do printf 'L:%s\0' "$_sp_l"; done
+      _sp_l=("${PIPESTATUS[@]}"); exit $(( _sp_f | _sp_l[0] )); } | LC_ALL=C sort -z
     _sp_ps=("${PIPESTATUS[@]}")
     printf '\0%s' "$(( _sp_ps[0] | _sp_ps[1] ))" )
-}
-
-# _ad_sp_external <root> <relpath> — true when the file resolves outside <root> through a linked
-# directory or a linked file (one hop). Claude treats such a rule as an external import: it loads
-# only after the project's external imports are approved, and then only when it has no `paths:`
-# (code.claude.com/docs/en/memory, "Share rules across projects with symlinks"). Prints `network`
-# for a target under /net or /Network, which Claude does not follow at all.
-_ad_sp_external() {
-  local root="$1" rel="$2" rp d t
-  rp="$(cd "$root" 2>/dev/null && pwd -P)" || return 1
-  d="$(cd "$root/${rel%/*}" 2>/dev/null && pwd -P)" || return 1
-  if [ -L "$root/$rel" ]; then
-    t="$(readlink "$root/$rel")" || return 1
-    case "$t" in */*) d="$(cd "$d" 2>/dev/null && cd "${t%/*}" 2>/dev/null && pwd -P)" || return 1 ;; esac
-  fi
-  case "$d/" in /net/*|/Network/*) printf 'network'; return 0 ;; esac
-  case "$d/" in "$rp"/*) return 1 ;; esac
-  return 0
 }
 
 # _ad_sp_fm_lines <file> — how many lines the frontmatter block takes (0 when the first line is not
@@ -3145,86 +3138,119 @@ _ad_sp_fm_lines() {
 }
 
 # _ad_sp_scope <file> — the rule's frontmatter scope: `<key>TAB<globs, space-joined, or ->`.
-# rc 1 = malformed: an unclosed block, a key given twice, an empty list, a value outside the glob
-# charset, a `..` component, text after a closing quote, or an indented line under a scalar or under
-# no key YAML would accept. Malformed is never "unscoped". `paths:` takes a YAML list or a
-# comma-separated string (code.claude.com/docs/en/memory); `globs:` is read the same way so its
+# THE FRONTMATTER IS READ IN A STRICT SUBSET OF YAML (owner, 2026-11-09): `key: value` lines whose
+# value is a plain scalar, a quoted one with no escapes, a one-line flow list of those, or (for
+# another key) a block scalar or nested mapping; `- item` lists under a key with no inline value.
+# Anything outside the subset is malformed (rc 1) — never "unscoped" and never "scoped", because
+# Claude loads a rule whose YAML does not parse with no scope at all, and a reader emulating every
+# corner of YAML in shell is where the guesses came from. So is an unclosed block, a key given
+# twice, an empty list, a glob outside the charset or with a `..` component. `paths:` takes a list
+# or a comma-separated string (code.claude.com/docs/en/memory); `globs:` is read the same way so its
 # intended scope can be reported. An empty file has no frontmatter.
 _ad_sp_scope() {
   LC_ALL=C awk '
-    BEGIN { Q = sprintf("%c", 39) }
+    BEGIN { Q = sprintf("%c", 39); D = "\"" }
     function trim(v) { sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); return v }
-    # one YAML scalar: a quoted one ends at its quote (only a comment may follow); a plain one
-    # ends at " #".
-    function val(v,  f, i) {
+    # nocmt <v> — <v> without a trailing ` # comment` (a plain scalar ends there in YAML).
+    function nocmt(v) { sub(/[ \t]+#.*$/, "", v); return trim(v) }
+    # sval <v> <inflow> — ONE scalar of the supported subset, unquoted, or set bad. Double-quoted:
+    # no backslash (no escapes) and no inner quote. Single-quoted: no inner quote.
+    # Plain: none of the YAML indicators first (an alias `*`, an anchor `&`, a tag `!`, a block
+    # `|` `>`, a flow bracket, a comment, a quote, `%`, `@`, a backtick), no `: ` and no ` #`, and
+    # inside a flow list no flow indicator at all.
+    function sval(v, inflow,  f, body, i, rest) {
       v = trim(v); f = substr(v, 1, 1)
-      if (f == "\"" || f == Q) {
+      if (f == D || f == Q) {
+        # the scalar ends at its closing quote; only a comment may follow it
         i = index(substr(v, 2), f); if (i == 0) { bad = 1; return "" }
-        rest = trim(substr(v, i + 2)); if (rest != "" && rest !~ /^#/) bad = 1
-        return substr(v, 2, i - 1)
+        body = substr(v, 2, i - 1); rest = trim(substr(v, i + 2))
+        if (rest != "" && rest !~ /^#/) { bad = 1; return "" }
+        if (f == D && index(body, "\\")) { bad = 1; return "" }
+        return body
       }
-      sub(/[ \t]+#.*$/, "", v); return trim(v)
+      if (v == "" || v ~ /^[*&!|>\[\]{},#%@`?]/ || v ~ /^-([ \t]|$)/ || v ~ /:([ \t]|$)/ || v ~ /[ \t]#/) { bad = 1; return "" }
+      if (inflow && v ~ /[\[\]{},]/) { bad = 1; return "" }
+      if (index(v, D) || index(v, Q)) { bad = 1; return "" }
+      return v
+    }
+    # value <key> <v> — the inline value of a key: a flow list, or one scalar (comma-split for
+    # paths/globs, as the vendor reads a comma-separated string). Records into G/n for our keys.
+    function value(k, v,  inner, m, parts, i, it, q) {
+      v = trim(v)
+      if (substr(v, 1, 1) == "[") {
+        # the list closes on this line; a comment may follow
+        q = ""; for (i = 1; i <= length(v); i++) { c = substr(v, i, 1)
+          if (q != "") { if (c == q) q = ""; continue }
+          if (c == D || c == Q) { q = c; continue }
+          if (c == "]") break }
+        if (i > length(v) || q != "") { bad = 1; return }
+        if (trim(substr(v, i + 1)) != "" && trim(substr(v, i + 1)) !~ /^#/) { bad = 1; return }
+        inner = trim(substr(v, 2, i - 2)); if (inner == "") return
+        m = splitq(inner, parts)
+        for (i = 1; i <= m; i++) { it = sval(parts[i], 1); if (bad) return; if (ours) item(k, it) }
+        return
+      }
+      if (substr(v, 1, 1) == "{") { bad = 1; return }                 # flow maps are outside the subset
+      if (v ~ /^[|>][-+]?$/) { if (ours) bad = 1; else blk = 1; return } # a block scalar (other keys)
+      it = sval((substr(v, 1, 1) == D || substr(v, 1, 1) == Q) ? v : nocmt(v), 0)
+      if (bad || !ours) return
+      m = splitq(it, parts)
+      for (i = 1; i <= m; i++) item(k, trim(parts[i]))
+    }
+    # splitq <s> <arr> — split on commas outside quotes and braces; an empty part is bad.
+    function splitq(s, arr,  i, c, q, d, cur, m) {
+      q = ""; d = 0; cur = ""; m = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+        if (c == D || c == Q) { q = c; cur = cur c; continue }
+        if (c == "{") d++; else if (c == "}") d--
+        if (c == "," && d == 0) { if (trim(cur) == "") bad = 1; arr[++m] = cur; cur = "" } else cur = cur c
+      }
+      if (trim(cur) == "") bad = 1
+      arr[++m] = cur
+      return m
     }
     function item(k, v) {
       v = trim(v)
       if (v == "" || v !~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+$/ || v ~ /^\/\// || v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }
       G[k] = G[k] (G[k] == "" ? "" : " ") v; n[k]++
     }
-    function splitc(k, v,  i, c, d, q, cur) {   # commas at brace depth 0 and outside quotes
-      d = 0; q = ""; cur = ""
-      for (i = 1; i <= length(v); i++) {
-        c = substr(v, i, 1)
-        if (q != "") { if (c == q) q = ""; cur = cur c; continue }
-        if (c == "\"" || c == Q) { q = c; cur = cur c; continue }
-        if (c == "{") d++; else if (c == "}") d--
-        if (c == "," && d == 0) { item(k, val(cur)); cur = "" } else cur = cur c
-      }
-      if (q != "") bad = 1
-      item(k, val(cur))
-    }
-    function scalar(k, v,  j) {
-      v = trim(v)
-      if (substr(v, 1, 1) == "[") {
-        j = index(v, "]"); while (j > 0 && index(substr(v, j + 1), "]") > 0) j += index(substr(v, j + 1), "]")
-        if (j == 0) { bad = 1; return }
-        rest = trim(substr(v, j + 1)); if (rest != "" && rest !~ /^#/) { bad = 1; return }
-        splitc(k, substr(v, 2, j - 2)); return
-      }
-      splitc(k, val(v))
-    }
     { sub(/\r$/, "") }
     NR == 1 { if ($0 != "---") { nofm = 1; exit } ; next }
     closed { exit }
     $0 == "---" { closed = 1; next }
     NR > 400 { exit }
-    /^[A-Za-z_][A-Za-z0-9_-]*[ \t]*:/ {
-      k = $0; sub(/[ \t]*:.*/, "", k); v = $0; sub(/^[^:]*:[ \t]*/, "", v); v = trim(v)
-      cur = ""; sc = ""
-      if (k == "paths" || k == "globs") {
-        if (k in seen) bad = 1
-        seen[k] = 1
-        if (v != "" && v !~ /^#/) { scalar(k, v); sc = k } else cur = k
-      } else if (k in other) bad = 1
-      else {
-        # ANY key YAML would reject makes the whole block ineffective (code.claude.com memory), so a
-        # flow value or a quoted one must close on its line: Claude would load the rule unscoped.
-        other[k] = 1
-        f = substr(v, 1, 1)
-        if (f == "\"" || f == Q) val(v)
-        else if (f == "[" || f == "{") { w = v; sub(/[ \t]+#.*$/, "", w); if (substr(w, length(w), 1) != (f == "[" ? "]" : "}")) bad = 1 }
-      }
-      next
-    }
     /^[ \t]*(#.*)?$/ { next }
-    /^[ \t]+-/ { if (sc != "") bad = 1
-                 else if (cur != "") { v = $0; sub(/^[ \t]+-/, "", v); item(cur, val(v)) }
-                 next }
-    /^[ \t]/ { if (cur != "" || sc != "") bad = 1; next }
+    # A TOP-LEVEL KEY. `key:` then a space and a value, or nothing.
+    /^[A-Za-z_][A-Za-z0-9_-]*:([ \t]|$)/ {
+      k = $0; sub(/:.*/, "", k); v = $0; sub(/^[^:]*:/, "", v); v = trim(v)
+      ours = (k == "paths" || k == "globs"); blk = 0; nest = 0; lst = 0; under = k
+      if (k in seen) bad = 1
+      seen[k] = 1
+      if (v == "" || v ~ /^#/) { open = 1; if (ours) want[k] = 1; next }
+      open = 0; value(k, v); next
+    }
+    # An indented line belongs to the key above: its block list (`- item`), the text of a block
+    # scalar, or (under another key with no inline value) a nested mapping.
+    /^[ \t]+/ {
+      if (blk) next
+      if (!open) { bad = 1; next }
+      if ($0 ~ /^[ \t]+-([ \t]|$)/) {
+        if (nest) { bad = 1; next }
+        v = $0; sub(/^[ \t]+-/, "", v); v = trim(v)
+        it = sval((substr(v, 1, 1) == D || substr(v, 1, 1) == Q) ? v : nocmt(v), 0)
+        if (!bad && ours) item(under, it)
+        lst = 1; next
+      }
+      if (!ours && !lst && $0 ~ /^[ \t]+[A-Za-z_][A-Za-z0-9_-]*:([ \t]|$)/) { nest = 1; next }
+      bad = 1; next
+    }
     { bad = 1 }
     END {
       if (NR == 0 || nofm) { print "none\t-"; exit 0 }
       if (!closed || bad) exit 1
-      for (k in seen) if (n[k] == 0) exit 1
+      for (k in seen) if ((k == "paths" || k == "globs") && n[k] == 0) exit 1
       if (("paths" in seen) && ("globs" in seen)) { print "both\t" G["paths"]; exit 0 }
       if ("paths" in seen) { print "paths\t" G["paths"]; exit 0 }
       if ("globs" in seen) { print "globs\t" G["globs"]; exit 0 }
@@ -3393,9 +3419,9 @@ cmd_specialized() {
   }
 
   # --- enumerate: root docs, rules and hand-mirror locations, from the filesystem -------------------
-  for f in CLAUDE.md AGENTS.md AGENTS.override.md GEMINI.md; do
+  for f in CLAUDE.md .claude/CLAUDE.md AGENTS.md AGENTS.override.md GEMINI.md; do
     [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
-    S_PATH+=("$f"); S_KIND+=(rootdoc); S_AGENT+=("$(_ad_sp_doc_agent "$f")")
+    S_PATH+=("$f"); S_KIND+=(rootdoc); S_AGENT+=("$(_ad_sp_doc_agent "${f##*/}")")
     [ "$f" = AGENTS.override.md ] && OVR[.]=1
   done
   local -a found=() starts=()
@@ -3408,12 +3434,14 @@ cmd_specialized() {
       if ! _ad_parents_searchable "$root" "$f"; then _sp_unk "$a" "$f" rule unsearchable; continue; fi
       [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
       if test -L "$root/.$a"; then _sp_unk "$a" ".$a" rule linked-agent-dir; continue; fi
+      if [ -L "$root/$f" ]; then _sp_unk "$a" "$f" rule linked-rule; continue; fi
       found=()
       mapfile -d '' -t found < <(_ad_sp_rule_walk "$root" "$f")
       if [ "${#found[@]}" -eq 0 ] || [ "${found[-1]}" != 0 ]; then _sp_unk "$a" "$f" rule not-walked-in-full; fi
       [ "${#found[@]}" -eq 0 ] || unset 'found[-1]'
       for rel in "${found[@]}"; do
         [ -n "$rel" ] || continue
+        case "$rel" in L:*) _sp_unk "$a" "${rel#L:}" rule linked-rule; continue ;; esac
         _ad_owns "$_ad_owned" "$rel" && continue
         S_PATH+=("$rel"); S_KIND+=(rule); S_AGENT+=("$a")
       done
@@ -3454,17 +3482,23 @@ cmd_specialized() {
   # count, prose, pointers, the judgment's checks — is derived from those bytes, so a file replaced
   # mid-run cannot pair one version's digest with another version's text.
   local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=() SNAP=()
-  local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st spdir="" ext
+  local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st spdir="" spbytes=0 cd_ cm_
   local -a garr=() ok_i=()
   spdir="$(mktemp -d "${TMPDIR:-/tmp}/adopt-spx.XXXXXX")" || die "specialized: could not create a private snapshot directory"
   for ((i = 0; i < n; i++)); do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"
     if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi
     if [ -n "${IDX[$rel]:-}" ]; then continue; fi
+    # A hand-mirror location for an agent nobody asked about is no one's source: not read at all.
+    if [ "$kind" = rule ] && [ "$a" != claude ] && ! _sp_sel "$a"; then continue; fi
     if ! _ad_sp_readable "$root" "$rel" || ! head -c 1048577 "$root/$rel" > "$spdir/$i" 2>/dev/null \
        || ! _ad_size_ok "$spdir/$i" 1048576 || ! adb_nul_free "$spdir/$i"; then
-      _sp_unk "$a" "$rel" "$kind" unreadable; continue
+      rm -f "$spdir/$i" 2>/dev/null; _sp_unk "$a" "$rel" "$kind" unreadable; continue
     fi
+    # THE STAGED WORKLOAD IS BOUNDED as a whole (64 MiB), not only per file: past it a surface is
+    # not judged, and nothing more is staged.
+    spbytes=$(( spbytes + $(LC_ALL=C wc -c < "$spdir/$i") ))
+    if [ "$spbytes" -gt 67108864 ]; then rm -f "$spdir/$i" 2>/dev/null; _sp_unk "$a" "$rel" "$kind" staging-bound; continue; fi
     SNAP["$rel"]="$spdir/$i"
     key=-; scope=-
     if [ "$kind" = rule ] && [ "$a" = claude ]; then
@@ -3480,14 +3514,25 @@ cmd_specialized() {
     IDX["$rel"]="$i"; ok_i+=("$i")
     KEY["$rel"]="$key"; SCOPE["$rel"]="$scope"
     REACH["$rel"]="$(_ad_sp_reach "$kind" "$a" "$key" "${rel##*/}")"
-    # A rule that resolves outside the project is an external import for Claude.
-    if [ "$kind" = rule ] && [ "$a" = claude ] && ext="$(_ad_sp_external "$root" "$rel")"; then
-      if [ "$ext" = network ]; then REACH["$rel"]=none
-      else case "$key" in paths|both) REACH["$rel"]=none ;; *) REACH["$rel"]="claude:after-approval" ;; esac; fi
+    # Claude reads an AGENTS.md when no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md sits in its
+    # directory or any above it, up to the root (code.claude.com/docs/en/memory, "AGENTS.md").
+    if [ "${rel##*/}" = AGENTS.md ]; then
+      cd_="${rel%/*}"; [ "$cd_" != "$rel" ] || cd_=""; cm_=""
+      while :; do
+        for f in CLAUDE.md .claude/CLAUDE.md CLAUDE.local.md; do
+          [ -e "$root/${cd_:+$cd_/}$f" ] && { cm_=1; break; }
+        done
+        [ -z "$cm_" ] && [ -n "$cd_" ] || break
+        case "$cd_" in */*) cd_="${cd_%/*}" ;; *) cd_="" ;; esac
+      done
+      if [ -z "$cm_" ]; then
+        if [ "$kind" = rootdoc ]; then REACH["$rel"]="${REACH[$rel]}+claude:every-session"
+        else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi
+      fi
     fi
     # Codex reads one document per directory, the override first.
-    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi
-    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -n "${OVR[.]:-}" ]; then REACH["$rel"]="codex:shadowed"; fi
+    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi
+    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -n "${OVR[.]:-}" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:every-session}"; fi
   done
   # Mirror sources: every Claude rule, root doc and nested doc, by whole-file and body digest —
   # whichever agents are asked about.
@@ -3575,7 +3620,7 @@ cmd_specialized() {
         { print }' "$jsnap")"; then
       jok=0
     fi
-    [ -z "$jsnap" ] || rm -f "$jsnap"
+    if [ -n "$jsnap" ] && { ! rm -f "$jsnap" 2>/dev/null || [ -e "$jsnap" ]; }; then _sp_unk - - - snapshot-not-removed; fi
     if [ "$jok" -eq 1 ]; then
       while IFS="$TAB" read -r jp jd js je jc jdest; do
         [ -n "$jp" ] || continue
@@ -3664,7 +3709,7 @@ cmd_specialized() {
     else
       _sp_unk - - - workflows-record-not-whole; ptxt="pointers=not-judged"
     fi
-    [ -z "${wsnap:-}" ] || rm -f "$wsnap"
+    if [ -n "${wsnap:-}" ] && { ! rm -f "$wsnap" 2>/dev/null || [ -e "$wsnap" ]; }; then _sp_unk - - - snapshot-not-removed; fi
   fi
   [ -n "$broot$wf" ] || ptxt="pointers=not-evaluated"
   # shellcheck disable=SC2086  # word-split on purpose; every name is in [A-Za-z0-9._-], so no glob
@@ -3675,7 +3720,9 @@ cmd_specialized() {
   local nroot=0 nrule=0 nnest=0 nmir=0 nfact=0 nmix=0 nwf=0 nun=0 nresp=0 nunj=0 hits pln pnm prose jw
   for i in "${ok_i[@]}"; do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"; st="${ST[$rel]}"
-    _sp_sel "$a" || continue
+    if ! _sp_sel "$a"; then
+      case "${REACH[$rel]}" in *claude:*) _sp_sel claude || continue ;; *) continue ;; esac
+    fi
     _ad_sp_rec surface "$rel" "$kind" "$a" "${KEY[$rel]}" "${SCOPE[$rel]}" "${REACH[$rel]}" "$st" "${JUD[$rel]}"
     case "$st:$kind" in
       mirror:*) nmir=$((nmir + 1)) ;;
@@ -3685,7 +3732,8 @@ cmd_specialized() {
     esac
     case "$st" in unhomed:*) nun=$((nun + 1)) ;; respell|extra-key) nresp=$((nresp + 1)) ;; exempt) nexm=$((nexm + 1)) ;; esac
     jw="${JUD[$rel]}"
-    case "$st" in mirror:*) jw=- ;; esac
+    # A mirror is counted once, as its source is: its own unjudged or stale source still leaves it open.
+    case "$st:$jw" in mirror:unjudged|mirror:stale) ;; mirror:*) jw=- ;; esac
     case "$jw" in
       facts) nfact=$((nfact + 1)) ;; mixed) nmix=$((nmix + 1)) ;; workflows) nwf=$((nwf + 1)) ;;
       unjudged|stale) nunj=$((nunj + 1)) ;;
@@ -3709,7 +3757,7 @@ cmd_specialized() {
   [ -n "$ptxt" ] || ptxt="pointers=$npt"
   local jtxt=not-given
   [ -z "$jgiven" ] || jtxt=given
-  rm -rf "$spdir"
+  if ! rm -rf "$spdir" 2>/dev/null || [ -e "$spdir" ]; then _sp_unk - - - snapshot-not-removed; fi
   _ad_sp_rec summary - - - - - - - "specialized: rootdocs=$nroot rules=$nrule $nested_txt mirrors=$nmir facts=$nfact mixed=$nmix workflows=$nwf unhomed=$nun respell=$nresp exempt=$nexm refused=$nref unjudged=$nunj $ptxt unknown=$nunk judgment=$jtxt"
   [ "$nunk" -eq 0 ] || return 11
   local nfind=$((nun + nresp + nref + npt))
@@ -3732,19 +3780,29 @@ cmd_sclass() {
   if ! snap="$(_ad_sp_snapshot "$f" 1073741824)" || [ ! -s "$snap" ]; then
     [ -z "${snap:-}" ] || rm -f "$snap"; printf 'unjudged\n'; return 0
   fi
-  out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" '
+  # The trailer, exactly as `specialized` writes it: every count, in order, each in its domain.
+  local sumre='^specialized: rootdocs=[0-9]+ rules=[0-9]+ nested=([0-9]+|not-judged) mirrors=[0-9]+ facts=[0-9]+ mixed=[0-9]+ workflows=[0-9]+ unhomed=[0-9]+ respell=[0-9]+ exempt=[0-9]+ refused=[0-9]+ unjudged=[0-9]+ pointers=([0-9]+|not-judged|not-evaluated) unknown=[0-9]+ judgment=(given|not-given)$'
+  out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" -v SUMRE="$sumre" '
     # A path the writer emits: the closed charset, relative, no empty or `..` component.
     function pth(x) { return x ~ /^[A-Za-z0-9._\/-]+$/ && x !~ /^\// && x !~ /\/\// && x !~ /\/$/ && x !~ /(^|\/)\.\.(\/|$)/ }
     function scp(x) { return x == "-" || x ~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+( [A-Za-z0-9._\/*?{},!@+\[\]\\-]+)*$/ }
-    function rch(x) { return x ~ /^(none|claude:(every-session|on-path-match|on-demand|after-approval)|codex:(every-session|cwd-at-or-below|shadowed)|gemini:(every-session|on-access))$/ }
+    function rch1(x) { return x ~ /^(claude:(every-session|on-path-match|on-demand)|codex:(every-session|cwd-at-or-below|shadowed)|gemini:(every-session|on-access))$/ }
+    function rch(x,  m, P, i) { if (x == "none") return 1
+                                m = split(x, P, "+"); for (i = 1; i <= m; i++) if (!rch1(P[i])) return 0
+                                return 1 }
     function knd(x) { return x ~ /^(rootdoc|rule|nested-doc)$/ }
     function agt(x) { return x ~ /^(claude|codex|gemini)$/ }
     function rowok(  m) {
       if (NF != 9) return 0
-      if ($1 == "summary") return ($2 $3 $4 $5 $6 $7 $8 == "-------" && $9 ~ /^specialized: [a-z]+=[a-z0-9-]+( [a-z]+=[a-z0-9-]+)*$/)
+      if ($1 == "summary") return ($2 $3 $4 $5 $6 $7 $8 == "-------" && $9 ~ SUMRE)
       if ($1 == "surface") {
         if (!(pth($2) && knd($3) && agt($4) && $5 ~ /^(paths|globs|both|none|-)$/ && scp($6) && rch($7) \
               && $9 ~ /^(facts|mixed|workflows|stale|unjudged|-)$/)) return 0
+        # the reach speaks for the agent of the record first (an AGENTS.md may add Claude after it)
+        if ($7 != "none" && substr($7, 1, length($4) + 1) != $4 ":") return 0
+        # a key and a scope belong to a Claude rule, and to nothing else
+        if (($3 == "rule" && $4 == "claude") != ($5 != "-")) return 0
+        if (($5 == "none" || $5 == "-") != ($6 == "-")) return 0
         if ($8 ~ /^(homed|exempt|respell|extra-key|unhomed:rootdoc|unhomed:rules)$/) return 1
         if ($8 ~ /^unhomed:nested:/) { m = $8; sub(/^unhomed:nested:/, "", m); return pth(m) }
         if ($8 ~ /^mirror:/) { m = $8; sub(/^mirror:/, "", m); return pth(m) }
@@ -3761,12 +3819,14 @@ cmd_sclass() {
     !rowok() { bad = 1; next }
     $1 == "summary" { n++; last = NR }
     $1 == "surface" { if (($2 SUBSEP $4) in seen) bad = 1; seen[$2, $4] = 1
-                      if ($2 == r && $4 == g) { st = $8; jd = $9 } }
+                      if ($2 == r && ($4 == g || g == "-")) { hits++; st = $8; jd = $9 } }
     $1 == "unknown" && $2 == r { unk = 1 }
     END {
-      if (bad || n != 1 || last != NR) { print "unjudged"; exit }
+      if (bad || n != 1 || last != NR || hits > 1) { print "unjudged"; exit }
       if (unk) { print "unjudged"; exit }
       if (st == "") { print "none"; exit }
+      # a judgment that was asked for and is missing or stale decides nothing: it escalates
+      if (jd == "unjudged" || jd == "stale") { print "pending"; exit }
       if (jd == "mixed" || jd == "workflows") { print "split"; exit }
       if (st ~ /^mirror:/) { print "mirror"; exit }
       if (st == "respell" || st == "extra-key") { print st; exit }
@@ -3794,9 +3854,15 @@ cmd_prose() {
   [ -d "$root" ] || die "prose: not a directory: $(adb_display_value "$root")"
   _ad_sp_path_ok "$rel" || die "prose: <relpath> must be a plain repository path"
   _ad_sp_readable "$root" "$rel" || die "prose: cannot read $rel (missing, over 1 MiB, or holding a NUL byte)"
-  sha="$(adb_sha256 "$root/$rel")" || die "prose: could not digest $rel"
-  lines="$(_ad_sp_lines "$root/$rel")" || die "prose: could not count the lines of $rel"
-  pl="$(_ad_sp_prose_lines "$root/$rel")" || die "prose: could not read $rel as prose"
+  # Every field from ONE private snapshot, so the digest, the line count and the runs describe the
+  # same bytes.
+  local snap
+  snap="$(mktemp "${TMPDIR:-/tmp}/adopt-prose.XXXXXX")" || die "prose: could not create a private snapshot"
+  if ! head -c 1048577 "$root/$rel" > "$snap" 2>/dev/null || ! _ad_size_ok "$snap" 1048576 || ! adb_nul_free "$snap" \
+     || ! sha="$(adb_sha256 "$snap")" || ! lines="$(_ad_sp_lines "$snap")" || ! pl="$(_ad_sp_prose_lines "$snap")"; then
+    rm -f "$snap"; die "prose: could not read $rel whole"
+  fi
+  rm -f "$snap" 2>/dev/null && [ ! -e "$snap" ] || die "prose: could not remove its private snapshot"
   printf 'file\t%s\t%s\t%s\n' "$rel" "$sha" "$lines"
   printf '%s\n' "$pl" | LC_ALL=C awk '
     NF { if (s && $1 == e + 1) { e = $1; next } if (s) print "prose\t" s "\t" e; s = $1; e = $1 }

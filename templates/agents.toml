@@ -224,10 +224,7 @@ debug        = "claude"     # owns root-cause investigations.
 # build     = "pnpm build"          # a custom gate — blocks like the built-in four
 # test-api  = "pnpm --filter api test"   # a per-package command: a custom gate named for the
 #                                        # package, scoped below in [gates.scope]
-#
-# agents.toml carries CONFIGURATION only — commands, scopes, roles. A project fact ("migrations
-# are append-only") goes in the root doc, a nested root doc, or a .claude/rules/ file with paths:
-# (base/practices/handling-the-unknown.md, "Facts and workflows").
+# No prose here: project facts have their homes in base/practices/handling-the-unknown.md.
 
 # Optional: declare a gate explicitly Not-Applicable (reported, never a failure
 # or a detection miss) — e.g. a stdlib-only tool with no linter/type-checker.

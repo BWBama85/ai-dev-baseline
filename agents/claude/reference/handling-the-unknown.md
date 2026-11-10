@@ -68,7 +68,8 @@ home is the root doc.
 **Reach is reported, never assumed.** Claude loads a `paths:` rule when it touches a matching
 file, and a nested `CLAUDE.md` once it touches a file in that directory. Codex reads `AGENTS.md`
 only from the project root down to its working directory, one file per directory with
-`AGENTS.override.md` first, so a session started at the root never sees `apps/api/AGENTS.md`.
+`AGENTS.override.md` first, so a session started at the root never sees `apps/api/AGENTS.md`;
+Claude reads an `AGENTS.md` only where no `CLAUDE.md` sits beside or above it.
 Gemini CLI (0.35 and later) loads a nested `GEMINI.md` when a tool touches that directory. Nothing
 but Claude reads `.claude/rules/`, so carrying a kept rule to Codex and
 Gemini is the cross-agent mirror's job, not something a project improvises per file.

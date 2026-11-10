@@ -76,7 +76,9 @@ started in `apps/api/`, not one started at the root; an `AGENTS.override.md` bes
 instead. Gemini CLI (0.35 and later) loads a nested `GEMINI.md` when a tool touches that directory.
 Only Claude reads `.claude/rules/`.
 
-`/adopt` inventories all of it (`adopt-lib.sh specialized`): every rules file, every tracked
+A linked rule or rules directory is reported as not judged rather than followed: which linked
+rules Claude loads depends on approving external imports and on `paths:`, so the owner resolves
+it. `/adopt` inventories all of it (`adopt-lib.sh specialized`): every rules file, every tracked
 nested root doc, and any `.codex/rules*` or `.gemini/rules*` hand mirror. It reports where each
 belongs, and a mixed file is split by an owner-approved judgment. To keep a surface where it is,
 record a `project-delta` entry with a `keeps:` line naming the path in

@@ -247,7 +247,8 @@ the owner approve it. The completion contract's `conformance` rung (step 12) re-
 one `summary` whose last field counts every class, zeros included:
 `specialized: rootdocs=… rules=… nested=… mirrors=… facts=… mixed=… workflows=… unhomed=… …`. It
 covers the top-level root docs (always in their home, judged so a mixed one can be split), a
-project's `.claude/rules/**/*.md` (followed through links, as Claude follows them), the hand-mirror
+project's `.claude/rules/**/*.md` (a linked rule or rules directory is not followed: it is
+`unknown … linked-rule`, for the owner to resolve), the hand-mirror
 locations `.codex/rules.md`, `.codex/rules/`, `.gemini/rules.md` and `.gemini/rules/`, and every
 **tracked** root doc below the top level, with or without a manifest beside it. Every agent's
 surfaces are read so a mirror's source is found; only the agents asked about are reported. `base/practices/handling-the-unknown.md` ("Facts and workflows") is
@@ -255,12 +256,14 @@ the rule it applies:
 
 - `surface` — one per file. `key` is the frontmatter key that scopes a rule (`paths`, `globs`,
   `both`, `none`), `scope` its globs, and `reach` which agent loads it and when
-  (`claude:on-path-match`, `claude:every-session`, `claude:on-demand`, `claude:after-approval` (a
-  rule linked from outside the project: an external import, which loads only once approved and
-  only without `paths:`; a scoped one is `none`), `codex:every-session`,
+  (`claude:on-path-match`, `claude:every-session`, `claude:on-demand`, `codex:every-session`,
   `codex:cwd-at-or-below`, `codex:shadowed` (an `AGENTS.md` beside an `AGENTS.override.md`, which
   Codex reads instead), `gemini:every-session`, `gemini:on-access` (Gemini CLI 0.35+ loads a nested
-  `GEMINI.md` when a tool touches that directory), `none`). `status` is the home: `homed`;
+  `GEMINI.md` when a tool touches that directory), `none`). An `AGENTS.md` with no `CLAUDE.md`,
+  `.claude/CLAUDE.md` or `CLAUDE.local.md` beside or above it reaches Claude too, so its reach adds
+  `+claude:every-session` (at the root) or `+claude:on-demand`, and `--agents claude` reports it. A
+  rule's frontmatter is read in a strict YAML subset: anything outside it is
+  `malformed-frontmatter`, because Claude loads a rule whose YAML does not parse with no scope. `status` is the home: `homed`;
   `unhomed:rootdoc` (an unscoped rule, so repo-wide facts); `unhomed:nested:<package>` (every glob
   lies in one package); `unhomed:rules` (a nested doc outside every package, or a mirror location
   that copies nothing); `respell` (scoped only by `globs:`); `extra-key` (scoped by `paths:`, with a
@@ -331,7 +334,8 @@ Write `{{STATE_DIR}}/adopt-split.tsv`, one row per range,
 `<path>TAB<sha256>TAB<start>TAB<end>TAB<fact|workflow>TAB<destination>`. The ranges for a file are
 contiguous, cover lines 1 to its last line in order, and carry the digest `prose` printed; an empty
 file is one `0 0` `fact` row. A mirror carries its source's judgment, so a split source splits
-its copies too. A `fact` range's destination is `keep`, `rootdoc`, `rule:<path>` or
+its copies too: `--apply` re-copies a mirror from its split source (or retires it), so the mirror
+needs no rows of its own. A `fact` range's destination is `keep`, `rootdoc`, `rule:<path>` or
 `nested:<dir>`, a plain repository path. A `workflow`
 range's is `retire` or `baseline-issue`, and it must hold a prose line: a fence is never judged. A
 `pointer` record's line is a workflow range unless the owner says otherwise. Then re-run:
