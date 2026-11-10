@@ -1766,7 +1766,7 @@ eq "$(bash "$AD" specialized "$SPH" --judgment "$WORK/does-not-exist" >/dev/null
 eq "$(bash "$AD" specialized >/dev/null 2>&1; echo $?)" 2 "specialized: no project root is usage (exit 2)"
 eq "$(bash "$AD" specialized "$SPH" --bogus >/dev/null 2>&1; echo $?)" 2 "specialized: an unknown option is usage (exit 2)"
 eq "$(bash "$AD" prose "$SPH" ../etc/passwd >/dev/null 2>&1; echo $?)" 2 "prose: a path leaving the project is refused"
-# --- 4g (review round 1): the shapes the first cut got wrong ------------------------------------
+# --- 4g, continued: frontmatter shapes, mirrors' bytes, root docs, empty files and decision entries -
 SPR="$WORK/sp-r1"; mkdir -p "$SPR/.claude/rules" "$SPR/.codex/rules" "$SPR/apps/api/src" "$SPR/pkg/empty"
 printf '{}\n' > "$SPR/apps/api/package.json"; printf '{}\n' > "$SPR/pkg/package.json"
 printf -- '---\npaths: ["src/**", "tests/**"]\n---\nflow list\n' > "$SPR/.claude/rules/flow.md"
@@ -1813,7 +1813,10 @@ has "$(bash "$AD" specialized "$SPX" --agents claude)" "surface${TAB}apps/web/AG
 hasnt "$(bash "$AD" specialized "$SPR" --agents claude)" "surface${TAB}AGENTS.md${TAB}" "reach: ...and not one a CLAUDE.md beside it hides from Claude"
 r1c="$(bash "$AD" specialized "$SPR" --agents codex)"
 has "$r1c" "surface${TAB}.codex/rules/exact.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:.claude/rules/mirrored.md" "mirror: its source is found when only codex is asked about"
-hasnt "$r1c" "surface${TAB}.claude/rules/" "mirror: ...and Claude's surfaces are not reported then"
+has "$r1c" "surface${TAB}.claude/rules/mirrored.md${TAB}rule${TAB}claude" "mirror: ...and its source is reported beside it, so it can be judged"
+hasnt "$r1c" "surface${TAB}.claude/rules/flow.md" "mirror: ...while Claude's other surfaces are not"
+: > "$WORK/sp-r1-empty.tsv"
+bash "$AD" specialized "$SPR" --agents codex --judgment "$WORK/sp-r1-empty.tsv" >/dev/null; eq "$?" 10 "mirror: an unjudged source keeps a codex-only scan open (exit 10)"
 eq "$(bash "$AD" prose "$SPR" .claude/rules/crlf.md | tail -n +2 | tr '\t\n' ' ;')" "prose 4 4;" "prose: CRLF frontmatter is not prose"
 r1f="$WORK/sp-r1.tsv"
 r1d() { bash "$AD" prose "$SPR" "$1" | awk -F'\t' '$1=="file" {print $3}'; }
@@ -1870,7 +1873,7 @@ dir/CLAUDE.md"; git init -q "$NLD" >/dev/null 2>&1; check_git "$NLD" add -A; che
 else
   check_note "SKIP: this filesystem refuses a newline in a directory name"
 fi
-# --- 4g (review round 2) -------------------------------------------------------------------------
+# --- 4g, continued: links, the YAML subset, reach and record grammar --------------------------------
 # NO LINK IS FOLLOWED (owner, 2026-11-09): a linked rules directory, or a linked rule, is not judged.
 SPL="$WORK/sp-links"; mkdir -p "$SPL/.claude" "$SPL/shared" "$SPL/other/.claude/rules" "$WORK/sp-outside"
 printf -- '---
@@ -1944,6 +1947,21 @@ printf 'surface\tx.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\
 eq "$(bash "$AD" sclass "$WORK/sp-good.tsv" x.md claude)" homed "sclass: ...while the same record with every field in its grammar is read"
 printf 'surface\t../x.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rootdocs=0 rules=1 nested=0 mirrors=0 facts=1 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=0 unknown=0 judgment=given\n' > "$WORK/sp-bad.tsv"
 eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" ../x.md claude)" unjudged "sclass: a traversal-shaped surface path judges nothing"
+# --- 4g, continued: pointers in every root doc, current links, tabs, Claude's AGENTS.md in scan ---
+SP5="$WORK/sp-r5"; mkdir -p "$SP5/.claude/rules" "$SP5/pkg"
+printf 'Run /implement 42.\n' > "$SP5/.claude/CLAUDE.md"; printf 'Run /implement 43.\n' > "$SP5/AGENTS.override.md"
+printf -- '---\npaths:\n\t- "src/**"\n---\nx\n' > "$SP5/.claude/rules/tab.md"
+printf -- '---\npaths: "src/**"\nmetadata:\n  broken: [unterminated\n---\nx\n' > "$SP5/.claude/rules/nested.md"
+printf '{}\n' > "$SP5/pkg/package.json"; printf 'pkg facts\n' > "$SP5/pkg/CLAUDE.md"
+git init -q "$SP5" >/dev/null 2>&1; check_git "$SP5" add -A; check_git "$SP5" commit -q -m r5
+rm -f "$SP5/pkg/CLAUDE.md"; printf 'elsewhere\n' > "$WORK/sp-r5-target.md"; ln -s "$WORK/sp-r5-target.md" "$SP5/pkg/CLAUDE.md"
+r5="$(bash "$AD" specialized "$SP5" --agents claude,codex --baseline "$ROOT")"
+has "$r5" "pointer${TAB}.claude/CLAUDE.md:1${TAB}rootdoc" "pointers: .claude/CLAUDE.md is read for pointers"
+has "$r5" "pointer${TAB}AGENTS.override.md:1${TAB}rootdoc" "pointers: ...and so is AGENTS.override.md"
+has "$r5" "unknown${TAB}.claude/rules/tab.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a tab-indented list is not YAML"
+has "$r5" "unknown${TAB}.claude/rules/nested.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a nested mapping is outside the subset"
+has "$r5" "unknown${TAB}pkg/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}linked-doc" "links: a tracked doc now a link in the working tree is not judged"
+has "$(bash "$AD" scan "$SPX" --agents claude)" "nested-doc${TAB}apps/web/AGENTS.md${TAB}AGENTS.md${TAB}codex" "scan: --agents claude lists an AGENTS.md Claude reads, as specialized does"
 # An EMPTY judgment is a valid one: the writer emits it for a project with nothing to judge.
 : > "$spf"
 spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
@@ -3723,10 +3741,6 @@ shmutant_mut specialized-other-key-unchecked \
     '        if (i > length(v) || q != "") { bad = 1; return }' \
     '        if (0) { bad = 1; return }' \
     'an unclosed flow value under another key'
-shmutant_mut specialized-agents-md-claude-reach-dropped \
-    '        else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi' \
-    '        else :; fi' \
-    'a nested AGENTS.md with NO manifest beside it is still enumerated'
 shmutant_mut scan-linked-rules-dir-is-other \
     '        _ad_emit rule "$_ad_rf" "${_ad_rf##*/}" "$a"; _ad_emitted="$_ad_emitted$_ad_rf$nl"; continue' \
     '        continue' \
@@ -3755,14 +3769,34 @@ shmutant_mut yaml-alias-accepted \
     'v ~ /^[*&!|>' \
     'v ~ /^[&!|>' \
     'a plain scalar starting with * is a YAML alias'
-shmutant_mut yaml-empty-flow-item \
-    '        if (c == "," && d == 0) { if (trim(cur) == "") bad = 1; arr[++m] = cur; cur = "" } else cur = cur c' \
-    '        if (c == "," && d == 0) { arr[++m] = cur; cur = "" } else cur = cur c' \
-    'an empty flow item under another key'
 shmutant_mut scan-dot-claude-claude-md-other \
     '  if [ -f "$root/.claude/CLAUDE.md" ]; then' \
     '  if false; then' \
     'scan: .claude/CLAUDE.md is a root doc'
+shmutant_mut specialized-rootdoc-pointers-skipped \
+    '    case "$kind:$rel" in rootdoc:CLAUDE.md|rootdoc:AGENTS.md|rootdoc:GEMINI.md) continue ;; esac' \
+    '    case "$kind" in rootdoc) continue ;; esac' \
+    '.claude/CLAUDE.md is read for pointers'
+shmutant_mut specialized-current-link-ignored \
+    '      if [ "$mode" = 120000 ] || _ad_has_link "$root" "$rel"; then' \
+    '      if [ "$mode" = 120000 ]; then' \
+    'a tracked doc now a link in the working tree is not judged'
+shmutant_mut specialized-mirror-source-unreported \
+    '    case "${ST[$rel]}" in mirror:*) [ -n "${REP[$rel]:-}" ] && REP["${ST[$rel]#mirror:}"]=1 ;; esac' \
+    '    :' \
+    'its source is reported beside it'
+shmutant_mut scan-claude-agents-md-dropped \
+    '        *",claude,"*) _ad_sp_claude_reads "$root" "$_ad_ent" || continue ;;   # an AGENTS.md Claude reads' \
+    '        *",claude,"*) continue ;;' \
+    'scan: --agents claude lists an AGENTS.md Claude reads'
+shmutant_mut specialized-agents-md-claude-reach-dropped \
+    '      else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi' \
+    '      else :; fi' \
+    'a nested AGENTS.md with NO manifest beside it is still enumerated'
+shmutant_mut yaml-tab-indent-accepted \
+    '    /^ *\t/ { bad = 1; next }' \
+    '    /^ *\tNEVERMATCHES/ { bad = 1; next }' \
+    'a tab-indented list is not YAML'
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \

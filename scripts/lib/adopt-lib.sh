@@ -1449,8 +1449,14 @@ EOF
       case "$_AD_SP_DOCS" in *" $_ad_b "*) ;; *) continue ;; esac
       case "/$_ad_ent" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
       _ad_ag="$(_ad_sp_doc_agent "$_ad_b")"
-      case ",$agents," in *",$_ad_ag,"*) ;; *) continue ;; esac
+      case ",$agents," in
+        *",$_ad_ag,"*) ;;
+        *",claude,"*) _ad_sp_claude_reads "$root" "$_ad_ent" || continue ;;   # an AGENTS.md Claude reads
+        *) continue ;;
+      esac
       _ad_owns "$_ad_owned" "$_ad_ent" && continue
+      case "$nl$_ad_emitted" in *"$nl$_ad_ent$nl"*) continue ;; esac   # an unmerged path is listed per stage
+      _ad_emitted="$_ad_emitted$_ad_ent$nl"
       _ad_emit nested-doc "$_ad_ent" "$_ad_b" "$_ad_ag"
     done
   fi
@@ -3047,13 +3053,15 @@ cmd_wclass() {
 #   adopt-lib.sh sclass      <specialized-tsv> <relpath> <agent>   # one surface's class, for classify
 #   adopt-lib.sh prose       <project-root> <relpath>              # the scaffold a judgment fills
 #
-# THE SURFACES: the top-level root docs (kind `rootdoc`, always in their home, judged so a mixed one
-# can be split); a project's `.claude/rules/**/*.md` (kind `rule`, Claude), followed through links
-# as Claude follows them; `.codex/rules.md`, `.codex/rules/**/*.md` and the `.gemini/` equivalents
+# THE SURFACES: the top-level root docs and `.claude/CLAUDE.md` (kind `rootdoc`, always in their
+# home, judged so a mixed one can be split); a project's `.claude/rules/**/*.md` (kind `rule`,
+# Claude), where a linked rule or rules directory is reported as not judged, never followed; `.codex/rules.md`, `.codex/rules/**/*.md` and the `.gemini/` equivalents
 # (kind `rule`, a hand-mirror location); and every TRACKED root doc below the top level (kind
 # `nested-doc`: CLAUDE.md, AGENTS.md, AGENTS.override.md, GEMINI.md), whether or not a manifest
 # sits beside it (owner, 2026-10-17). Every agent's surfaces are read, so a mirror's source is found
-# whichever agents are asked about; only the asked-about agents' surfaces are reported.
+# whichever agents are asked about. A surface is reported when its agent is asked about, when it is
+# an AGENTS.md Claude reads and Claude is asked about, or when it is the source of a reported mirror
+# (so the source can be judged and counted).
 #
 # DECIDED BY PATH AND FRONTMATTER ONLY. The fact-vs-workflow judgment is prose, so it is the
 # agent's, made in /adopt and written to the `--judgment` file this command VALIDATES; nothing here
@@ -3127,6 +3135,22 @@ _ad_sp_rule_walk() {
     printf '\0%s' "$(( _sp_ps[0] | _sp_ps[1] ))" )
 }
 
+# _ad_sp_claude_reads <root> <relpath> — true when Claude reads this AGENTS.md by default: no
+# CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md sits in its directory or any above it, up to the
+# root (code.claude.com/docs/en/memory, "AGENTS.md"). ONE rule for `scan` and `specialized`.
+_ad_sp_claude_reads() {
+  local root="$1" d f
+  case "$2" in AGENTS.md|*/AGENTS.md) ;; *) return 1 ;; esac
+  d="${2%/*}"; [ "$d" != "$2" ] || d=""
+  while :; do
+    for f in CLAUDE.md .claude/CLAUDE.md CLAUDE.local.md; do
+      [ -e "$root/${d:+$d/}$f" ] && return 1
+    done
+    [ -n "$d" ] || return 0
+    case "$d" in */*) d="${d%/*}" ;; *) d="" ;; esac
+  done
+}
+
 # _ad_sp_fm_lines <file> — how many lines the frontmatter block takes (0 when the first line is not
 # `---`, or the block never closes). A `\r` before the newline is the same delimiter, for every
 # reader of the block: the scope, the body digest and the prose scaffold.
@@ -3140,7 +3164,8 @@ _ad_sp_fm_lines() {
 # _ad_sp_scope <file> — the rule's frontmatter scope: `<key>TAB<globs, space-joined, or ->`.
 # THE FRONTMATTER IS READ IN A STRICT SUBSET OF YAML (owner, 2026-11-09): `key: value` lines whose
 # value is a plain scalar, a quoted one with no escapes, a one-line flow list of those, or (for
-# another key) a block scalar or nested mapping; `- item` lists under a key with no inline value.
+# another key) a block scalar; `- item` lists under a key with no inline value, indented by spaces.
+# A nested mapping and a tab-indented line are outside it.
 # Anything outside the subset is malformed (rc 1) — never "unscoped" and never "scoped", because
 # Claude loads a rule whose YAML does not parse with no scope at all, and a reader emulating every
 # corner of YAML in shell is where the guesses came from. So is an unclosed block, a key given
@@ -3197,7 +3222,7 @@ _ad_sp_scope() {
       m = splitq(it, parts)
       for (i = 1; i <= m; i++) item(k, trim(parts[i]))
     }
-    # splitq <s> <arr> — split on commas outside quotes and braces; an empty part is bad.
+    # splitq <s> <arr> — split on commas outside quotes and braces (an empty part is refused by sval).
     function splitq(s, arr,  i, c, q, d, cur, m) {
       q = ""; d = 0; cur = ""; m = 0
       for (i = 1; i <= length(s); i++) {
@@ -3205,9 +3230,8 @@ _ad_sp_scope() {
         if (q != "") { if (c == q) q = ""; cur = cur c; continue }
         if (c == D || c == Q) { q = c; cur = cur c; continue }
         if (c == "{") d++; else if (c == "}") d--
-        if (c == "," && d == 0) { if (trim(cur) == "") bad = 1; arr[++m] = cur; cur = "" } else cur = cur c
+        if (c == "," && d == 0) { arr[++m] = cur; cur = "" } else cur = cur c
       }
-      if (trim(cur) == "") bad = 1
       arr[++m] = cur
       return m
     }
@@ -3231,8 +3255,9 @@ _ad_sp_scope() {
       if (v == "" || v ~ /^#/) { open = 1; if (ours) want[k] = 1; next }
       open = 0; value(k, v); next
     }
-    # An indented line belongs to the key above: its block list (`- item`), the text of a block
-    # scalar, or (under another key with no inline value) a nested mapping.
+    # An indented line belongs to the key above: its block list (`- item`) or the text of a block
+    # scalar. A tab in the indentation is not YAML.
+    /^ *\t/ { bad = 1; next }
     /^[ \t]+/ {
       if (blk) next
       if (!open) { bad = 1; next }
@@ -3243,7 +3268,6 @@ _ad_sp_scope() {
         if (!bad && ours) item(under, it)
         lst = 1; next
       }
-      if (!ours && !lst && $0 ~ /^[ \t]+[A-Za-z_][A-Za-z0-9_-]*:([ \t]|$)/) { nest = 1; next }
       bad = 1; next
     }
     { bad = 1 }
@@ -3471,7 +3495,8 @@ cmd_specialized() {
       case "/$rel" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
       ag="$(_ad_sp_doc_agent "$b")"
       _ad_owns "$_ad_owned" "$rel" && continue
-      if [ "$mode" = 120000 ]; then _sp_unk "$ag" "$rel" nested-doc linked-doc; continue; fi
+      # the CURRENT file decides, not the index: a tracked doc later replaced by a link is a link
+      if [ "$mode" = 120000 ] || _ad_has_link "$root" "$rel"; then _sp_unk "$ag" "$rel" nested-doc linked-doc; continue; fi
       [ "$b" = AGENTS.override.md ] && OVR["${rel%/*}"]=1
       S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag")
     done
@@ -3482,7 +3507,7 @@ cmd_specialized() {
   # count, prose, pointers, the judgment's checks — is derived from those bytes, so a file replaced
   # mid-run cannot pair one version's digest with another version's text.
   local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=() SNAP=()
-  local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st spdir="" spbytes=0 cd_ cm_
+  local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st spdir="" spbytes=0 sz
   local -a garr=() ok_i=()
   spdir="$(mktemp -d "${TMPDIR:-/tmp}/adopt-spx.XXXXXX")" || die "specialized: could not create a private snapshot directory"
   for ((i = 0; i < n; i++)); do
@@ -3491,14 +3516,16 @@ cmd_specialized() {
     if [ -n "${IDX[$rel]:-}" ]; then continue; fi
     # A hand-mirror location for an agent nobody asked about is no one's source: not read at all.
     if [ "$kind" = rule ] && [ "$a" != claude ] && ! _sp_sel "$a"; then continue; fi
-    if ! _ad_sp_readable "$root" "$rel" || ! head -c 1048577 "$root/$rel" > "$spdir/$i" 2>/dev/null \
-       || ! _ad_size_ok "$spdir/$i" 1048576 || ! adb_nul_free "$spdir/$i"; then
+    if ! _ad_sp_readable "$root" "$rel"; then _sp_unk "$a" "$rel" "$kind" unreadable; continue; fi
+    # THE STAGED WORKLOAD IS BOUNDED as a whole: a file that would take the staged bytes past 64 MiB
+    # is not copied and not judged. Each copy is itself cut at 1 MiB + 1, so staging never exceeds
+    # the bound by more than that one byte.
+    sz="$(LC_ALL=C wc -c < "$root/$rel" 2>/dev/null)"; sz="${sz//[!0-9]/}"
+    if [ -z "$sz" ] || [ $(( spbytes + sz )) -gt 67108864 ]; then _sp_unk "$a" "$rel" "$kind" staging-bound; continue; fi
+    if ! head -c 1048577 "$root/$rel" > "$spdir/$i" 2>/dev/null || ! _ad_size_ok "$spdir/$i" 1048576 || ! adb_nul_free "$spdir/$i"; then
       rm -f "$spdir/$i" 2>/dev/null; _sp_unk "$a" "$rel" "$kind" unreadable; continue
     fi
-    # THE STAGED WORKLOAD IS BOUNDED as a whole (64 MiB), not only per file: past it a surface is
-    # not judged, and nothing more is staged.
     spbytes=$(( spbytes + $(LC_ALL=C wc -c < "$spdir/$i") ))
-    if [ "$spbytes" -gt 67108864 ]; then rm -f "$spdir/$i" 2>/dev/null; _sp_unk "$a" "$rel" "$kind" staging-bound; continue; fi
     SNAP["$rel"]="$spdir/$i"
     key=-; scope=-
     if [ "$kind" = rule ] && [ "$a" = claude ]; then
@@ -3514,21 +3541,9 @@ cmd_specialized() {
     IDX["$rel"]="$i"; ok_i+=("$i")
     KEY["$rel"]="$key"; SCOPE["$rel"]="$scope"
     REACH["$rel"]="$(_ad_sp_reach "$kind" "$a" "$key" "${rel##*/}")"
-    # Claude reads an AGENTS.md when no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md sits in its
-    # directory or any above it, up to the root (code.claude.com/docs/en/memory, "AGENTS.md").
-    if [ "${rel##*/}" = AGENTS.md ]; then
-      cd_="${rel%/*}"; [ "$cd_" != "$rel" ] || cd_=""; cm_=""
-      while :; do
-        for f in CLAUDE.md .claude/CLAUDE.md CLAUDE.local.md; do
-          [ -e "$root/${cd_:+$cd_/}$f" ] && { cm_=1; break; }
-        done
-        [ -z "$cm_" ] && [ -n "$cd_" ] || break
-        case "$cd_" in */*) cd_="${cd_%/*}" ;; *) cd_="" ;; esac
-      done
-      if [ -z "$cm_" ]; then
-        if [ "$kind" = rootdoc ]; then REACH["$rel"]="${REACH[$rel]}+claude:every-session"
-        else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi
-      fi
+    if _ad_sp_claude_reads "$root" "$rel"; then
+      if [ "$kind" = rootdoc ]; then REACH["$rel"]="${REACH[$rel]}+claude:every-session"
+      else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi
     fi
     # Codex reads one document per directory, the override first.
     if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi
@@ -3718,11 +3733,21 @@ cmd_specialized() {
 
   # --- emit: the asked-about agents' surfaces --------------------------------------------------------
   local nroot=0 nrule=0 nnest=0 nmir=0 nfact=0 nmix=0 nwf=0 nun=0 nresp=0 nunj=0 hits pln pnm prose jw
+  # WHICH SURFACES ARE REPORTED: an asked-about agent's; an AGENTS.md Claude reads, when Claude is
+  # asked about; and the source of any reported mirror, so the source can be judged and counted.
+  local -A REP=()
+  for i in "${ok_i[@]}"; do
+    rel="${S_PATH[$i]}"; a="${S_AGENT[$i]}"
+    if _sp_sel "$a"; then REP["$rel"]=1
+    else case "${REACH[$rel]}" in *claude:*) _sp_sel claude && REP["$rel"]=1 ;; esac; fi
+  done
+  for i in "${ok_i[@]}"; do
+    rel="${S_PATH[$i]}"
+    case "${ST[$rel]}" in mirror:*) [ -n "${REP[$rel]:-}" ] && REP["${ST[$rel]#mirror:}"]=1 ;; esac
+  done
   for i in "${ok_i[@]}"; do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"; st="${ST[$rel]}"
-    if ! _sp_sel "$a"; then
-      case "${REACH[$rel]}" in *claude:*) _sp_sel claude || continue ;; *) continue ;; esac
-    fi
+    [ -n "${REP[$rel]:-}" ] || continue
     _ad_sp_rec surface "$rel" "$kind" "$a" "${KEY[$rel]}" "${SCOPE[$rel]}" "${REACH[$rel]}" "$st" "${JUD[$rel]}"
     case "$st:$kind" in
       mirror:*) nmir=$((nmir + 1)) ;;
@@ -3732,17 +3757,18 @@ cmd_specialized() {
     esac
     case "$st" in unhomed:*) nun=$((nun + 1)) ;; respell|extra-key) nresp=$((nresp + 1)) ;; exempt) nexm=$((nexm + 1)) ;; esac
     jw="${JUD[$rel]}"
-    # A mirror is counted once, as its source is: its own unjudged or stale source still leaves it open.
-    case "$st:$jw" in mirror:unjudged|mirror:stale) ;; mirror:*) jw=- ;; esac
+    # A mirror is counted through its source, which is always reported beside it.
+    case "$st" in mirror:*) jw=- ;; esac
     case "$jw" in
       facts) nfact=$((nfact + 1)) ;; mixed) nmix=$((nmix + 1)) ;; workflows) nwf=$((nwf + 1)) ;;
       unjudged|stale) nunj=$((nunj + 1)) ;;
     esac
     case "$st" in respell|extra-key) _ad_sp_rec key-spelling "$rel" rule "$a" "${KEY[$rel]}" "${SCOPE[$rel]}" "${REACH[$rel]}" paths - ;; esac
     [ "$st" = exempt ] && _ad_sp_rec exempt "$rel" "$kind" "$a" - - - "${KEPT[$rel]}" -
-    # Pointers: a prose line of a kept surface routing work to a project or legacy skill. A root
-    # doc's are `workflows`' stale-pointer records already.
-    case "$st:$kind" in mirror:*|*:rootdoc) continue ;; esac
+    # Pointers: a prose line of a kept surface routing work to a project or legacy skill. The three
+    # root docs `workflows` reads are its stale-pointer records already; every other surface is here.
+    case "$st" in mirror:*) continue ;; esac
+    case "$kind:$rel" in rootdoc:CLAUDE.md|rootdoc:AGENTS.md|rootdoc:GEMINI.md) continue ;; esac
     [ -n "$names" ] || continue
     if ! prose="$(_ad_sp_prose "${SNAP[$rel]}")" || ! hits="$(printf '%s\n' "$prose" | _ad_pointer_hits "$names")"; then
       _sp_unk "$a" "$rel" "$kind" pointers-not-judged; continue
@@ -3835,7 +3861,7 @@ cmd_sclass() {
       if (jd == "facts") { print st; exit }
       print "pending"
     }' "$snap")" || out=unjudged
-  rm -f "$snap"
+  { rm -f "$snap" 2>/dev/null && [ ! -e "$snap" ]; } || out=unjudged   # a snapshot left behind judges nothing
   case "$out" in
     homed|exempt|mirror|split|respell|extra-key|unhomed:rootdoc|unhomed:rules|unhomed:nested|pending|none) printf '%s\n' "$out" ;;
     *) printf 'unjudged\n' ;;

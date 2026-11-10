@@ -330,8 +330,8 @@ Write `.gemini/state/adopt-split.tsv`, one row per range,
 `<path>TAB<sha256>TAB<start>TAB<end>TAB<fact|workflow>TAB<destination>`. The ranges for a file are
 contiguous, cover lines 1 to its last line in order, and carry the digest `prose` printed; an empty
 file is one `0 0` `fact` row. A mirror carries its source's judgment, so a split source splits
-its copies too: `--apply` re-copies a mirror from its split source (or retires it), so the mirror
-needs no rows of its own. A `fact` range's destination is `keep`, `rootdoc`, `rule:<path>` or
+its copies too, and the mirror needs no rows of its own: carrying out a split, and re-copying or
+retiring its mirrors, is the executor #326 adds, never this run. A `fact` range's destination is `keep`, `rootdoc`, `rule:<path>` or
 `nested:<dir>`, a plain repository path. A `workflow`
 range's is `retire` or `baseline-issue`, and it must hold a prose line: a fence is never judged. A
 `pointer` record's line is a workflow range unless the owner says otherwise. Then re-run:
@@ -872,7 +872,7 @@ hygiene finding, including any axis that could not look; every conformance findi
 remedy, every deviation with its id, and the conformance summary's files and rules; every
 `escalate` as a question for the owner; every fact surface with its reach and home, every
 key-spelling and pointer finding, and the approved split proposal — each row of `adopt-split.tsv`
-(path, digest, range, fact or workflow, destination), since `--apply` carries it out from this
+(path, digest, range, fact or workflow, destination), since the split executor (#326) works from this
 report once the state dir is swept; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
 with its outstanding and undetermined rungs. The scratch files under `.gemini/state` are swept, so
 this report is the only copy of that evidence a later reader will have. Every value in it that came
