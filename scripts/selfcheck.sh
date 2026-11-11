@@ -580,7 +580,7 @@ add common-lib          bash scripts/check-common-lib.sh
 # red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is not evidence, and a mutation whose
 # edit silently fails to apply reports itself observed while checking nothing.
 add common-lib-mutation bash scripts/check-common-lib.sh --mutation
-inputs common-lib-mutation      scripts/check-common-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/role-dispatch.sh install.sh uninstall.sh bin/agent-init bin/baseline
+inputs common-lib-mutation      scripts/check-common-lib.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/role-dispatch.sh install.sh uninstall.sh bin/agent-init bin/baseline scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json
 
 # The shared mutation harness's blocks and per-test rows (#468): selection and its dependency closure,
 # every declaration refusal, preflight before any copy is built, each block's unmutated control, and
@@ -706,7 +706,7 @@ add adopt               bash scripts/check-adopt.sh
 # witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
 # message's claim that mutations "were observed" with something the repo can re-run.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
-inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh bin/agent-init scripts/lib/project-gates.sh scripts/build.sh scripts/skill-description.awk base/workflows base/practices templates agents install.sh uninstall.sh
+inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh bin/agent-init scripts/lib/project-gates.sh scripts/build.sh scripts/skill-description.awk base/workflows base/practices templates agents install.sh uninstall.sh scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json
 
 # The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
 # question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's
@@ -725,7 +725,7 @@ add adopt-readiness     bash scripts/check-adopt-readiness.sh
 # count that grepped a display string, and a jq filter whose failure was swallowed into "every
 # milestone is dispositioned").
 add adopt-readiness-mutation bash scripts/check-adopt-readiness.sh --mutation
-inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/adopt-lib.sh scripts/skill-description.awk scripts/lib/project-gates.sh scripts/lib/role-dispatch.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh base/workflows/adopt.md bin/baseline agents/claude/settings.hooks.json
+inputs adopt-readiness-mutation scripts/check-adopt-readiness.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh scripts/lib/adopt-lib.sh scripts/skill-description.awk scripts/lib/project-gates.sh scripts/lib/role-dispatch.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh base/workflows/adopt.md bin/baseline agents/claude/settings.hooks.json scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json
 
 # Behavioral tests for the /roadmap decision predicates (scripts/lib/roadmap-lib.sh): in-flight
 # targeting (#69 — a bare `Refs #N` must never freeze a ready member) and release readiness
@@ -853,7 +853,17 @@ add settings-fragment   bash scripts/check-settings-fragment.sh
 # broken in a COPY — of the library, of the payload, of install.sh — and required RED on its own
 # witness.
 add settings-fragment-mutation bash scripts/check-settings-fragment.sh --mutation
-inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh scripts/mutation-gate.sh scripts/selfcheck.sh
+inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/check-lib.sh scripts/lib/common.sh agents/claude/settings.fragment.json install.sh uninstall.sh bin/baseline scripts/lib/pinned-install.sh scripts/lib/currency-lib.sh scripts/mutation-gate.sh scripts/selfcheck.sh scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json
+
+# The installer's THIRD settings surface (#288, D155): the command allowlist. Which
+# `permissions.allow` entries are ours, and what would still prompt? Drives the union's entry
+# states, the receipt, the version probe against a stub CLI, the auditor on every prompt source it
+# names, and the real install.sh/uninstall.sh over a fake HOME.
+add permissions         bash scripts/check-permissions.sh
+
+# ...and each of those rules broken in a COPY of the library, required RED on its own witness.
+add permissions-mutation bash scripts/check-permissions.sh --mutation
+inputs permissions-mutation scripts/check-permissions.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/project-gates.sh agents/claude/settings.permissions.json agents/claude/skills base/workflows/adopt.md docs/installation.md scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
@@ -880,7 +890,7 @@ add bootstrap           bash scripts/check-bootstrap.sh
 # SKIPPED with a printed reason rather than counted as passing (D64's correction, which #343's
 # evidence list did not carry over).
 add bootstrap-mutation  bash scripts/check-bootstrap.sh --mutation
-inputs bootstrap-mutation       scripts/check-bootstrap.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh install.sh uninstall.sh bin/baseline bin/agent-init agents/codex/adapter.sh agents/gemini/adapter.sh scripts/build.sh .claude/skills/release/release.sh .claude/skills/release/release-lib.sh
+inputs bootstrap-mutation       scripts/check-bootstrap.sh scripts/check-lib.sh scripts/lib/common.sh scripts/lib/adopt-readiness.sh install.sh uninstall.sh bin/baseline bin/agent-init agents/codex/adapter.sh agents/gemini/adapter.sh scripts/build.sh .claude/skills/release/release.sh .claude/skills/release/release-lib.sh scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json
 
 # The SECOND install model writes into somebody else's repository (#285), so its refusals are the
 # load-bearing part: an unverified or escaping archive, a re-anchor that silently did nothing, an

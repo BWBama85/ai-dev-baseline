@@ -763,7 +763,8 @@ HOME="$wd_home" PATH="$work/bin:$PATH" bash "$wd_repo/install.sh" --agent claude
   && ok || { bad "an install whose refusal withdraws must still succeed"; sed 's/^/  /' "$work/wd-v2.log" >&2; }
 grep -q 'sandbox  withdrawn' "$work/wd-v2.log" && ok \
   || { bad "the installer must report the keys a refusal withdraws"; sed 's/^/  /' "$work/wd-v2.log" >&2; }
-[ "$(jq -c . "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
+# `permissions` is the command allowlist's (#288), a separate surface this install also applies.
+[ "$(jq -c 'del(.permissions)' "$wd_home/.claude/settings.json")" = '{"model":"opus","sandbox":{"enabled":false}}' ] && ok \
   || bad "the installer must publish the withdrawal, leaving only the operator's keys; got $(jq -c . "$wd_home/.claude/settings.json")"
 [ "$(adb_claude_settings_disposition "$wd_home/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
   || bad "the withdrawal must still be recorded as a refusal"
@@ -2566,7 +2567,9 @@ printf '{\n  "sandbox": { "enabled": false },\n  "model": "opus"\n}\n' > "$nt/re
 ln -s "$nt/real/settings.json" "$nt/.claude/settings.json"
 nt_sum="$(adb_sha256 "$nt/real/settings.json")"
 stub "2.1.259 (Claude Code)"
-HOME="$nt" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+# `--no-permissions`: the command allowlist (#288) WOULD write to the file, and this block is about
+# an install that writes nothing to it.
+HOME="$nt" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-permissions >/dev/null 2>&1
 [ "$(adb_claude_settings_disposition "$nt/.claude/.adb-settings-owned")" = skipped-blocked ] && ok \
   || bad "precondition: the operator already owns a shipped key, so the install must refuse and record no rows"
 HOME="$nt" bash "$ROOT/uninstall.sh" --agent claude >"$work/nt.log" 2>&1

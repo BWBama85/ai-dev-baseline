@@ -1083,7 +1083,8 @@ jobs:
     name: install-guard
     runs-on: ubuntu-26.04
     # 15 since #456: the 240 it had was for settings-fragment-mutation (D101), which no longer runs
-    # per PR — 816s of a 918s job on run 38081150119. The two suites left took about 100s there.
+    # per PR — 816s of a 918s job on run 38081150119. The two suites left took about 100s there;
+    # the third (#288) joined after that run: about 30 CPU-seconds on macOS, 2026-11-11.
     timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1106,6 +1107,10 @@ jobs:
       # made required (docs/repo-settings.md).
       - name: The settings fragment must own only its own leaves (#248)
         run: bash scripts/check-settings-fragment.sh
+
+      # The third settings surface (#288), on this job for the reason the step above gives.
+      - name: The command allowlist must own only the entries it added (#288)
+        run: bash scripts/check-permissions.sh
 
   pinned-install:
     name: pinned-install

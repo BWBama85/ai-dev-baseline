@@ -130,9 +130,9 @@ base/roles.md       the multi-agent role registry
 agents/<agent>/     per-agent rendering: root doc + procedures (reference/, Claude rules/) + skills + scripts + adapter
 scripts/build.sh    renders base/practices → root docs + procedures, base/workflows → every agent's skills
 templates/          the per-project agents.toml
-install.sh          global installer (per --agent, symlinks + wires gates + least-privilege sandbox settings)
+install.sh          global installer (per --agent, symlinks + wires gates + least-privilege sandbox settings + command allowlist)
 bin/agent-init      per-project role setup
-bin/baseline        keep the installed baseline current; also `baseline release init|status|roll` (opt-in release-goal convention) and `baseline repo apply` (required checks + auto-merge)
+bin/baseline        keep the installed baseline current; also `baseline release init|status|roll` (opt-in release-goal convention) `baseline repo apply` (required checks + auto-merge) and `baseline permissions audit` (what would still prompt)
 docs/               installation, roles, per-project overrides, release-goal convention, repo settings, roadmap acceptance, adding an agent
 ```
 

@@ -27,6 +27,11 @@
 #                              #   'status' / 'upgrade --to X.Y.Z' / 'uninstall'. It operates on
 #                              #   the PROJECT you are standing in, never on the install-source
 #                              #   clone ('baseline pinned -h' for more)
+#   baseline permissions …     # the COMMAND ALLOWLIST (#288): 'audit' reports what would still
+#                              #   prompt, be refused or reach the classifier in this project
+#                              #   (0 clean / 10 findings / 11 not evaluated); 'missing' prints
+#                              #   the shipped allow entries your user settings lack; 'entries'
+#                              #   prints them all. Read-only
 #   baseline adopt status      # the ADOPTION COMPLETION CONTRACT (#81): is this project actually
 #                              #   ready to run the loop? Every rung fail-closed — a fact that
 #                              #   could not be established is never a pass. Re-runnable any time;
@@ -120,6 +125,9 @@ REPO="$_adb_boot_abs"
 # bash 5.3 runtime floor (#256) — after the symlink-resolving REPO bootstrap, for the same
 # reason as bin/agent-init: this command is reached through a symlink on PATH.
 adb_require_bash "$@"
+# The command allowlist's currency question (#288): adb_permissions_pending.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/permissions-lib.sh"
 
 # Print the top comment block as --help (the shared idiom in common.sh, sourced not copied).
 usage() { adb_usage "$0"; }
@@ -169,6 +177,13 @@ fi
 if [ "${1:-}" = "adopt" ]; then
   shift
   exec bash "$REPO/scripts/lib/adopt-readiness.sh" "$@"
+fi
+
+# Delegate the command-allowlist audit to its library (#288) — before the wrong-clone guard for the
+# same reason as `adopt`: it answers about the project the operator is standing in.
+if [ "${1:-}" = "permissions" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/permissions-lib.sh" "$@"
 fi
 
 # The newest stable release of the repository THIS clone's origin names (#534), validated — the one
@@ -862,11 +877,22 @@ _bl_current_arm() {
     esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-current
     SETTINGS_SIG_BEFORE="$(adb_settings_receipt_sig)"   # sig-before-current
-    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
+    # ...and the command allowlist is pending on the same terms (#288): a version skip the CLI has
+    # since cleared, or a payload a pull changed without moving a link.
+    PERMISSIONS_PENDING=0; adb_permissions_pending "$SRC"; PPRC=$?
+    case "$PPRC" in
+      0)      PERMISSIONS_PENDING=1 ;;
+      2[0-9]) echo "baseline: the command-allowlist record $(adb_permissions_receipt "$HOME") cannot be read or classified (code $PPRC)." >&2
+              echo "          Restore it, or remove it and re-run ./install.sh — every entry then present is read as yours." >&2
+              exit 1 ;;   # allowlist-pending-unanswerable
+    esac
+    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ] && [ "$PERMISSIONS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
-    if [ "$LINKS_OK" -eq 1 ]; then
+    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
+      echo "baseline: links are current, but the command allowlist is not applied yet (#288) — installing it …"
+    elif [ "$LINKS_OK" -eq 1 ]; then
       echo "baseline: links are current, but the least-privilege sandbox settings are not applied yet (#248) — installing them …"
     else
       echo "baseline: an installed path is broken though up to date — repairing …"
@@ -918,6 +944,15 @@ _bl_current_arm() {
             echo "baseline: refreshed the sandbox ownership record; no link or setting was changed."
           fi
           exit 8 ;;
+      esac
+    fi
+    # THE ALLOWLIST WAS THE ONLY THING PENDING: report what the installer recorded, not that a repair
+    # happened. A refusal and a version skip write a record and change no setting.
+    if [ "$PERMISSIONS_PENDING" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ] && [ "$LINKS_OK" -eq 1 ]; then
+      case "$(adb_permissions_disposition "$(adb_permissions_receipt "$HOME")" 2>/dev/null)" in
+        installed) ;;
+        *) echo "baseline: the command allowlist was not applied; run ./install.sh in $SRC to see why. No link or setting was changed."
+           exit 0 ;;   # allowlist-not-applied
       esac
     fi
     echo "baseline: repaired."

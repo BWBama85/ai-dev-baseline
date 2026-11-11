@@ -84,12 +84,16 @@ the baseline does not yet have. Say so when you report; do not imply the plan ap
 4. an **upstream pin** recording which baseline this project inherited;
 5. an **ordered migration plan** — escalations first, then re-homing, then removal;
 6. a **completion-contract verdict** (#81) — green, or a precise list of what remains **and who
-   must decide it**. It is fail-closed: a rung nobody could report is `unknown`, never a pass.
+   must decide it**. It is fail-closed: a rung nobody could report is `unknown`, never a pass;
+7. a **permission audit** (#288) — what would prompt, be refused, or reach the Auto Mode
+   classifier when the loop runs here. Read-only, and a scope it could not read is never clean.
 
-Every decision above is made by one of two tested predicate libraries — `bash "$HOME/.claude/scripts/lib/adopt-lib.sh"`
-(`scripts/lib/adopt-lib.sh`, regression-tested by `scripts/check-adopt.sh`) for 1–5, and
+Every decision above is made by one of three tested predicate libraries — `bash "$HOME/.claude/scripts/lib/adopt-lib.sh"`
+(`scripts/lib/adopt-lib.sh`, regression-tested by `scripts/check-adopt.sh`) for 1–5,
 `bash "$HOME/.claude/scripts/lib/adopt-readiness.sh"` (`scripts/lib/adopt-readiness.sh`, regression-tested by
-`scripts/check-adopt-readiness.sh`) for 6. This document tells you *what the answers mean and
+`scripts/check-adopt-readiness.sh`) for 6, and `bash "$HOME/.claude/scripts/lib/permissions-lib.sh"`
+(`scripts/lib/permissions-lib.sh`, regression-tested by `scripts/check-permissions.sh`) for 7.
+This document tells you *what the answers mean and
 what to do with them*; it does not restate how they are computed.
 
 ---
@@ -583,6 +587,40 @@ report, a PR body, or a CI log (`base/practices/logging-and-secrets.md`). And th
 reports that layering **exists**; it does not claim which layer wins. Do not resolve that for the
 operator — verify it or say it is unverified.
 
+### 6b. Audit the permission surface (#288)
+
+A permission prompt mid-run stalls the loop this adoption sets up, so say now what would raise
+one. The audit reads Claude Code's settings — the managed file, the user file, and this project's
+shared and local files — and writes nothing. Skip it, and say so, when `claude` is not among the
+agents this adoption covers.
+
+```bash
+# ADB-SNIPPET: permissions-audit
+# 0 clean · 10 prompt sources found · 11 not evaluated (report it; never read it as clean).
+PERM_RC=0
+bash "$HOME/.claude/scripts/lib/permissions-lib.sh" audit --repo "$BASELINE" --project "$PROJECT" \
+  > ".claude/state/adopt-permissions.tsv" || PERM_RC=$?
+case "$PERM_RC" in 0|10|11) : ;; *) echo "STOP: permissions-lib.sh audit failed (rc $PERM_RC)"; exit 1 ;; esac
+```
+
+Each record is `kind<TAB>level<TAB>where<TAB>text`, and the last is the `summary`. Report every
+record by its level, with the file it names:
+
+| Level | What it means |
+|---|---|
+| `prompt` | asks for approval: an `ask` rule, or a starting mode in which an unlisted command prompts |
+| `blocked` | refused rather than asked: a `deny` rule, or `dontAsk` |
+| `classifier` | no allow rule holds a command the baseline runs, so Auto Mode judges it on every use — and a run stops when that judge is unavailable |
+| `unevaluated` | a file or a mode the audit could not read; the verdict is then 11, never clean |
+
+`gate` records are report-only: each names a gate command this project runs and whether a direct
+call of it is allowlisted. Gates run through the gate wrapper, so they change no verdict.
+
+Propose nothing the audit did not find, and edit no settings file. A shipped entry that is missing
+is added by `./install.sh` in the baseline clone, which records the ones it adds; a `deny` or `ask`
+rule, a `defaultMode`, and anything in a managed file are the owner's to change. This audit is a
+report — it does not move step 12's verdict.
+
 ### 7. Reconcile a prior framework, if the scan found one
 
 A `foreign-pin` record means this project already carries another framework's adoption artifacts
@@ -875,7 +913,8 @@ State, in this order: the resolved shape and **what was outside your reach**; th
 per verdict; every `move` with its parity caveat; the proposed `agents.toml` — each live line with
 its evidence (the `[reviewers]` line names the pull requests it was read from, and how many were
 read), and whether the interview ran, with the answers it recorded or why it was skipped; every
-hygiene finding, including any axis that could not look; every conformance finding with its
+hygiene finding, including any axis that could not look; every permission-audit record that is
+not `ok` or `info`, with its `summary`; every conformance finding with its
 remedy, every deviation with its id, and the conformance summary's files and rules; every
 `escalate` as a question for the owner; every fact surface with its reach and home, every
 key-spelling and pointer finding, and the approved split proposal — each row of `adopt-split.tsv`
