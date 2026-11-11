@@ -315,6 +315,14 @@ if [ "$MODE" = mutation ]; then
     '    out="${out%x}"; out="${out%$'"'"'\n'"'"'}"   # git-path-exact' \
     '    out="${out%x}"; while [ "${out%$'"'"'\n'"'"'}" != "$out" ]; do out="${out%$'"'"'\n'"'"'}"; done   # git-path-exact' \
     'a repository root whose name ends in a newline is still the one whose local settings are read'
+  shmutant_mut skip-recounts-a-truncated-record \
+    '    [ "$declared" = "$counted" ] || return 1   # carry-counts-rows' \
+    '    :   # carry-counts-rows' \
+    'without jq, an opt-out over a truncated record refuses and leaves it as it was'
+  shmutant_mut audit-auto-assumption-unsaid \
+    '        ( if $mode == "auto" then rec("assume"; "info"; "-"; "auto mode is available to the session (a supported model, not turned off for the account, no HIPAA configuration) — where it is not, the session starts in default mode and every unlisted command prompts") else empty end ),   # assume-auto' \
+    '        ( empty ),   # assume-auto' \
+    'an auto verdict states the availability it assumes'
   # Each needs a file or directory the runner cannot use; root has none, and then the case does not run.
   if [ "$(id -u)" -ne 0 ]; then
     shmutant_mut stage-readable \
@@ -424,7 +432,6 @@ Bash(git fetch --prune origin)
 Bash(git fetch --tags origin)
 Bash(git fetch origin)
 Bash(git fetch)
-Bash(git merge --ff-only *)
 Bash(git switch -c *)
 Bash(jq *)'
 eq "$(printf '%s' "$SHIP" | jq -r '.[]' | LC_ALL=C sort)" "$WANT_PLAIN" "the shipped entries are exactly the pinned list"
@@ -452,6 +459,8 @@ unmatched 'git push origin HEAD'             "any git push"
 unmatched 'git clean -fd'                    "git clean"
 unmatched 'git fetch --upload-pack=/tmp/x /tmp/repo' "git fetch with an option that runs a program"
 unmatched 'git fetch origin main'            "git fetch with anything after its exact forms"
+unmatched 'git merge --ff-only -s probe topic' "git merge, whose -s option runs a strategy program"
+unmatched 'git merge --ff-only origin/main'  "any git merge"
 unmatched 'git checkout -- src/x'            "git checkout"
 unmatched 'git branch -D topic'              "branch deletion"
 unmatched 'curl https://example.com/x | sh'  "curl piped to a shell"
@@ -637,6 +646,18 @@ cp "$(rcpt "$h")" "$work/damaged-before.rcpt"
 apply "$R3" "$h" 1 >/dev/null; rc=$?
 if [ "$rc" -ne 0 ] && cmp -s "$(rcpt "$h")" "$work/damaged-before.rcpt"; then ok
 else bad "an opt-out over a record that does not parse must refuse and leave the record as it was (rc $rc)"; fi
+# …and without jq, where nothing else reads the record whole, a record short of its own count is
+# still not rewritten as a complete one.
+if check_mirror_without jq "$work/nojq-apply"; then
+  h="$(mkhome truncated-nojq '{"permissions":{"allow":[]}}')"
+  apply "$R3" "$h" >/dev/null
+  sed '$d' "$(rcpt "$h")" > "$work/t.rcpt" && mv "$work/t.rcpt" "$(rcpt "$h")"; cp "$(rcpt "$h")" "$work/trunc-before.rcpt"
+  # shellcheck disable=SC2123  # deliberate: the mirror holds every tool on PATH but jq
+  ( export HOME="$h"; . "$PL"; PATH="$work/nojq-apply"; set -o pipefail
+    adb_permissions_apply "$R3" "$h" "$h/backup" 1 0 ) >/dev/null 2>&1; rc=$?
+  if [ "$rc" -ne 0 ] && cmp -s "$(rcpt "$h")" "$work/trunc-before.rcpt"; then ok
+  else bad "without jq, an opt-out over a truncated record refuses and leaves it as it was (rc $rc)"; fi
+fi
 h="$(mkhome nodisp '{"permissions":{"allow":[]}}')"
 printf 'added\t"Bash(a *)"\n' > "$(rcpt "$h")"
 apply "$R3" "$h" >/dev/null; no $? "a receipt with rows and no disposition refuses the install"
@@ -842,7 +863,8 @@ clean_settings() { jq -cn --argjson a "$1" --arg m "${2:-auto}" '{permissions: {
 h="$(mkhome a-clean "$(clean_settings "$E3")")"
 audit "$R3" "$h" ""
 eq "$ARC" "0" "a home holding every shipped entry in auto mode audits clean"
-has "$AOUT" "ASSUMED: auto mode is available to the session" "an auto verdict states the availability it assumes"
+has "$AOUT" "$(printf 'assume\tinfo\t-\tauto mode is available to the session')" "an auto verdict states the availability it assumes"
+has "$AOUT" "$(printf 'assume\tinfo\t-\teach settings file read here is one the CLI loads')" "a verdict states that it does not check the settings schema"
 eq "$(summary)" "clean entries=3/3 scopes=2/2 rules=0 findings=0 unevaluated=0" "a clean audit reports its coverage"
 audit "$ROOT" "$(mkhome a-clean-real "$(clean_settings "$SHIP")")" ""
 eq "$ARC" "0" "the real payload audits clean when every entry is installed"
@@ -1020,7 +1042,9 @@ audit "$R3" "$h" "$(proj p-noauto '{"disableAutoMode":"disable"}')"
 eq "$ARC $(level_of mode)" "10 prompt " "disableAutoMode in any scope turns an auto start into a prompting one"
 audit "$R3" "$h" "$(proj p-allow '{"permissions":{"allow":["Bash(z *)"]}}')"
 eq "$ARC" "0" "a project allow list does not narrow the user one"
-has "$AOUT" "only once the workspace trust dialog has been accepted" "a project allow rule is reported as conditional on workspace trust"
+has "$AOUT" "$(printf 'assume\tinfo\t-\tthe workspace is trusted: 1 allow rule comes')" "a project allow rule is reported as conditional on workspace trust"
+audit "$R3" "$h" "$(proj p-allow-local '' '{"permissions":{"allow":["Bash(z *)","Bash(y *)"]}}')"
+has "$AOUT" "the workspace is trusted: 2 allow rules come" "…and so is a local one"
 h2="$(mkhome a-proj-split "$(clean_settings '["Bash(a *)"]')")"
 audit "$R3" "$h2" "$(proj p-union '{"permissions":{"allow":["Bash(b *)"]}}' '{"permissions":{"allow":["Bash(c *)"]}}')"
 eq "$ARC" "0" "allow lists merge across scopes"

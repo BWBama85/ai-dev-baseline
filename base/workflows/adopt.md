@@ -609,7 +609,7 @@ record that is not `ok`, by its level, with the file it names:
 | `blocked` | refused rather than asked: a `deny` rule, or what would prompt under `dontAsk` or `denyInsteadOfPrompting` |
 | `classifier` | no allow rule holds a command the baseline runs, so Auto Mode judges it on every use — and a run stops when that judge is unavailable |
 | `unevaluated` | a file, a rule or a mode the audit could not read or cannot model; the verdict is then 11, never clean |
-| `info` | listed, not judged: a gate command, a rule about another tool, an assumption the verdict rests on, and what the audit did not inspect |
+| `info` | listed, not judged: a gate command, a rule about another tool, each `assume` record the verdict rests on, and what the audit did not inspect |
 
 `gate` records are report-only: each names a gate command this project runs and whether a direct
 call of it matches an allow rule. They never change the verdict. A `rule` record at `info` names

@@ -25,9 +25,11 @@
 # that can match one, the starting permission mode, and the settings that make allow rules inert.
 # CLEAN (0) says: the starting mode is one this audit can state and is `auto`, `acceptEdits` or
 # `bypassPermissions`; and, outside `bypassPermissions`, every shipped entry is held by an allow
-# rule in effect and matched by no deny or ask rule. It says nothing about any other command, it
-# assumes auto mode is available where it reports `auto`, a rule about another tool is listed and
-# not judged, and the sandbox is not modelled. A scope it could not read, a rule or a mode it cannot model, or an audit
+# rule in effect and matched by no deny or ask rule. It says nothing about any other command. What
+# it rests on and cannot see is printed as `assume` records: that auto mode is available where it
+# reports `auto`, that each file it parsed is one the CLI loads (it does not check the settings
+# schema), and that the workspace is trusted where project rules count. A rule about another tool
+# is listed and not judged, and the sandbox is not modelled. A scope it could not read, a rule or a mode it cannot model, or an audit
 # that evaluated nothing, is NOT EVALUATED (11) and never clean.
 #
 # Usage (executed):
@@ -40,7 +42,7 @@
 #       command is matched part by part by the CLI, never by this
 #   permissions-lib.sh audit [--repo <clone>] [--home <home>] [--project <root>] [--managed <file>]
 #       stdout: `<kind>\t<level>\t<where>\t<text>` records, then one `summary` record
-#       kind   scope | mode | entry | rule | gate | note
+#       kind   scope | mode | entry | rule | gate | note | assume
 #       level  ok | info | classifier | prompt | blocked | unevaluated
 #       exit   0 clean · 10 prompt sources found · 11 not evaluated · 2 usage
 #   --repo defaults to the clone the global install points into; --project to the working
@@ -233,18 +235,23 @@ _adb_perm_rendered_ok() {
 # first whenever jq is there to do it.
 # Usage: _adb_perm_record_skip <disposition> <version> <floor> <digest|-> <receipt> <clone>
 #   <digest> `-` keeps the digest already recorded, so the skip does not claim a payload it never applied.
-# Returns: 0 recorded · 1 the receipt could not be read or written (the previous one is left as it was)
+# Returns: 0 recorded · 1 the receipt could not be read or written, or holds fewer rows than it
+#          counts (the previous one is left as it was)
 _adb_perm_record_skip() {
   local disposition="$1" version="$2" floor="$3" digest="$4" receipt="$5" repo="$6"
-  local rows="" prior="-" line st
+  local rows="" prior="-" line st counted=0 declared=""
   st="$(_adb_perm_receipt_state "$receipt")" || return 1
   if [ "$st" = present ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
-        "added$_ADB_PERM_TAB"*|"declined$_ADB_PERM_TAB"*|"created$_ADB_PERM_TAB"*) rows+="$line"$'\n' ;;
+        "added$_ADB_PERM_TAB"*|"declined$_ADB_PERM_TAB"*|"created$_ADB_PERM_TAB"*) rows+="$line"$'\n'; counted=$((counted + 1)) ;;
         "payload "*) prior="${line#payload }" ;;
+        "rows "*) declared="${line#rows }" ;;
       esac
     done < "$receipt" || return 1
+    # A record short of its own count is not rewritten as a whole one: re-rendering would recount
+    # the surviving rows and erase the only sign that some are gone. This holds without jq.
+    [ "$declared" = "$counted" ] || return 1   # carry-counts-rows
   fi
   [ "$digest" != "-" ] || digest="$prior"
   if printf '%s' "$rows" | adb_permissions_receipt_render "$disposition" "$version" "$floor" "$digest" "$repo" \
@@ -719,7 +726,7 @@ adb_permissions_allow_sig() {
   out="$(jq -c 'if type == "object" and has("permissions") and (.permissions | type) == "object" and (.permissions | has("allow"))
                 then .permissions.allow else "absent" end' "$settings" 2>/dev/null)" || { printf 'unread'; return 0; }
   if [ "$out" = '"absent"' ]; then printf 'absent'; return 0; fi
-  printf '%s' "$out" | cksum | tr -d ' \t\n'
+  printf '%s' "$out" | adb_sha256_stdin || printf 'unread'
 }
 
 # After a self-heal, say what happened to the allowlist — from what CHANGED, never from what the
@@ -1116,7 +1123,7 @@ adb_permissions_audit() (
                 (if $m.why == "local-auto" then "defaultMode \"auto\" does not take effect from project or local settings, so the built-in default applies, and on claude v\($cli) an interactive terminal session starts in auto"
                  elif $m.why == "builtin" then "no defaultMode is set; on claude v\($cli) an interactive terminal session starts in auto (`claude -p` and SDK runs start in default mode)"
                  else "auto" end)
-                + ": no routine prompts; a command no allow rule matches is judged by the classifier. ASSUMED: auto mode is available to the session (a supported model, not turned off for the account, no HIPAA configuration) — where it is not, the session starts in default mode and every unlisted command prompts")   # auto-assumption
+                + ": no routine prompts; a command no allow rule matches is judged by the classifier")
           elif $mode == "acceptEdits" then
             rec("mode"; "ok"; $m.src; "acceptEdits: edits run unasked; a Bash command that no allow rule or sandbox covers \(if $asked == "blocked" then "is refused" else "prompts" end)")
           elif $mode == "bypassPermissions" then
@@ -1136,8 +1143,11 @@ adb_permissions_audit() (
              elif $dp_ok == "no" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting needs CLI v2.1.319 and claude v\($cli) ignores it")
              else rec("note"; "unevaluated"; ($dp_where | join(", ")); "denyInsteadOfPrompting is set, and whether it takes effect depends on the CLI version, which could not be read") end)
           else empty end ),
-        ( [ $R[] | select(.name == "project") | .allow[] ] as $pa
-          | if ($pa | length) > 0 then rec("note"; "info"; ".claude/settings.json"; "\($pa | length) project allow \(plural($pa | length; "rule counts"; "rules count")) here only once the workspace trust dialog has been accepted") else empty end ),
+        # WHAT THE VERDICT RESTS ON AND CANNOT SEE, said rather than left implied
+        ( if $mode == "auto" then rec("assume"; "info"; "-"; "auto mode is available to the session (a supported model, not turned off for the account, no HIPAA configuration) — where it is not, the session starts in default mode and every unlisted command prompts") else empty end ),   # assume-auto
+        ( if ([ $S[] | select(.state == "read") ] | length) > 0 then rec("assume"; "info"; "-"; "each settings file read here is one the CLI loads: this audit parses JSON as jq does and does not check the settings schema, so a file the CLI rejects at startup (it reports a Settings Error) is counted as if it had loaded") else empty end ),   # assume-loads
+        ( [ $R[] | select(.name == "project" or .name == "local" or .name == "local2") | .allow[] ] as $pa
+          | if ($pa | length) > 0 then rec("assume"; "info"; "-"; "the workspace is trusted: \($pa | length) allow \(plural($pa | length; "rule comes"; "rules come")) from the settings of this project, which count only once its trust dialog has been accepted (the local file too, when it is tracked or `.claude` is a link)") else empty end ),   # assume-trust
         ( if $allow_inert then rec("note"; "classifier"; "autoMode.classifyAllShell"; "is on: in auto mode every shell allow rule is suspended, so no shipped entry skips the classifier") else empty end ),
         ( if ($set_aside | length) > 0 then rec("note"; "info"; "-"; "auto mode sets aside \($set_aside | length) allow \(plural($set_aside | length; "rule"; "rules")) that would run arbitrary code, so \(plural($set_aside | length; "it holds"; "they hold")) no shipped entry: \($set_aside[:3] | join(", "))\(if ($set_aside | length) > 3 then ", …" else "" end)") else empty end ),
 

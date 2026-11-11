@@ -412,7 +412,7 @@ followed by ` *`:
 
 | Family | Rules |
 |---|---|
-| git | `git add *` · `git commit -m *` · `git fetch` · `git fetch origin` · `git fetch --prune origin` · `git fetch --tags origin` · `git merge --ff-only *` · `git switch -c *` |
+| git | `git add *` · `git commit -m *` · `git fetch` · `git fetch origin` · `git fetch --prune origin` · `git fetch --tags origin` · `git switch -c *` |
 | gh, read | `gh auth status` · `gh issue list *` · `gh issue view *` · `gh label list *` · `gh pr checks *` · `gh pr diff *` · `gh pr list *` · `gh pr view *` · `gh release list *` · `gh release view *` · `gh repo view *` · `gh run list *` · `gh run view *` |
 | gh, write | `gh issue create *` · `gh issue edit *` · `gh label create *` · `gh pr create *` · `gh pr edit *` · `gh workflow run *` |
 | jq | `jq *` |
@@ -426,9 +426,10 @@ be as narrow as the words before its `*`:
   `implement-lib.sh open-pr`, a library call that is not allowlisted either.
 - **Anything that discards or deletes**: `git reset --hard`, `git checkout`, `git restore`,
   `git clean`, `git stash`, branch and ref deletion, `rm`.
-- **`git fetch` with anything after it.** `git fetch --upload-pack=<program>` runs that program,
-  and `git` is outside the sandbox, so a `git fetch *` rule would run arbitrary code unasked. Only
-  the four exact forms in the table are allowed.
+- **`git fetch` with anything after it, and `git merge`.** `git fetch --upload-pack=<program>`
+  runs that program, and `git merge -s <strategy>` runs a `git-merge-<strategy>` program found on
+  your `PATH`. `git` is outside the sandbox, so a wildcard rule for either would run code unasked.
+  `git fetch` is allowed in the four exact forms in the table; `git merge` not at all.
 - **`gh api`, `gh pr merge`, `gh pr close`, `gh run rerun`, `gh auth token`.** `gh api` is every
   REST and GraphQL call, deletions included. Merging and closing are decisions. `gh auth status` is
   allowed only as that exact command, so `--show-token` is not.
@@ -464,8 +465,6 @@ what that text can induce:
   put there.
 - `jq *` reads any file you can read, including one outside the project that would otherwise
   prompt on first read.
-- `git merge --ff-only *` also accepts `-s <strategy>`, which runs a `git-merge-<strategy>`
-  program if one is on your `PATH`.
 - `agent-init` writes `agents.toml`, a `.gitignore` entry and the state directory in the project it
   is run in. Only the bare command is allowed, so `--force`, which overwrites, is not.
 
@@ -561,7 +560,11 @@ is held by an allow rule in effect and matched by no `deny` or `ask` rule. So th
 run unasked. It says nothing about any other command: in `acceptEdits` an unlisted Bash command
 the sandbox does not cover still prompts, and in `auto` it is judged. Where it reports `auto` it
 assumes auto mode is available to the session — a supported model, not turned off for the
-account, no HIPAA configuration — because where it is not, the session starts in default mode. A
+account, no HIPAA configuration — because where it is not, the session starts in default mode. It
+also assumes each file it parsed is one the CLI loads: it reads JSON as `jq` does and does not
+check the settings schema, so a file the CLI rejects at startup with a Settings Error is counted as
+if it had loaded. And where project or local allow rules count, it assumes the workspace is
+trusted. Each assumption is printed as an `assume` line. A
 rule about another tool (`Read(./.env)`, `mcp__*`) is listed as `info` and not judged: whether a
 workflow step runs into it is outside the audit. The one exception is an `ask` or `deny` rule on
 the whole of `Read`, `Edit` or `Write`, which stops every workflow step and is a finding. The sandbox is not modelled either — a sandboxed
