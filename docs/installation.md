@@ -523,11 +523,15 @@ tracked. `baseline permissions missing` prints the shipped entries your user set
 #### Auditing a project
 
 `baseline permissions audit`, run in a project, reports what would prompt, be refused, or reach
-the classifier there, for the shipped commands, in an interactive terminal session. `/adopt` runs
-it. It reads the managed `managed-settings.json`, your user
-settings, the project's `.claude/settings.json`, and its `.claude/settings.local.json` — in a
-linked worktree, the main checkout's, which is the one Claude Code reads. It takes only the rule
-lists and mode keys out of each file, and writes nothing. Each line is `kind`, `level`, where it
+the classifier there, for the shipped commands, in an interactive terminal session started in that
+directory. `/adopt` runs it. It reads the files such a session loads: the managed
+`managed-settings.json`; your user settings; the `.claude/settings.json` of the directory itself,
+which is where Claude Code reads the shared file from, not the repository root; and the
+`.claude/settings.local.json` at the repository root — the main checkout's, in a linked worktree.
+The local file is read beside the shared one instead when there is no repository, when the root is
+your home directory, or when the root, its `.git` or its `.claude` is not yours. A local file an
+older CLI left in the directory itself is read as well. It takes only the rule lists and mode keys
+out of each file, and writes nothing. Each line is `kind`, `level`, where it
 was found, and what it means:
 
 | Level | Meaning |

@@ -43,8 +43,9 @@
 #       kind   scope | mode | entry | rule | gate | note
 #       level  ok | info | classifier | prompt | blocked | unevaluated
 #       exit   0 clean · 10 prompt sources found · 11 not evaluated · 2 usage
-#   --repo defaults to the clone the global install points into; --project to the git root of the
-#   working directory; --managed to the platform's managed-settings.json.
+#   --repo defaults to the clone the global install points into; --project to the working
+#   directory — the directory a session would be started in, which is where Claude Code reads the
+#   shared project file from; --managed to the platform's managed-settings.json.
 #
 # Sourced (install.sh, uninstall.sh, bin/baseline): adb_permissions_apply, adb_permissions_remove,
 # adb_permissions_pending, adb_permissions_allow_sig, adb_permissions_heal_report. apply and remove
@@ -275,6 +276,8 @@ _adb_perm_merge() {
         {verdict: "blocked", why: "`permissions` is not an object"}
       elif ($cur | has("permissions")) and ($cur.permissions | has("allow")) and ($cur.permissions.allow | type) != "array" then   # allow-shape
         {verdict: "blocked", why: "`permissions.allow` is not an array"}
+      elif ($cur | has("permissions")) and ($cur.permissions | has("allow")) and ($cur.permissions.allow | all(.[]; type == "string") | not) then   # allow-elements
+        {verdict: "blocked", why: "`permissions.allow` holds an entry that is not a string"}
       else
         (if ($cur | has("permissions")) and ($cur.permissions | has("allow")) then $cur.permissions.allow else [] end) as $live
         | [ $rc.added[] | select(. as $e | has_el($ship; $e) | not) | select(. as $e | has_el($live; $e)) ] as $retire
@@ -609,8 +612,9 @@ adb_permissions_remove() {
   docst="$(adb_settings_doc_state "$settings")"
   case "$docst" in
     absent|empty)
-      rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ] || {
-        adb_info "  ERROR  $receipt could not be deleted — remove it by hand."; return 1; }
+      _adb_perm_receipt_clear "$receipt" || {   # clear-without-settings
+        adb_info "  ERROR  $receipt could not be deleted or emptied — remove it by hand: a later install"
+        adb_info "         would read every entry it lists as one you declined."; return 1; }
       return 0 ;;
     present) ;;
     *)
@@ -649,9 +653,7 @@ adb_permissions_remove() {
       return 1
     fi
   fi
-  # GONE, OR FAILING THAT, EMPTY. An empty record reads as none, so a later install cannot take the
-  # entries just removed for ones the operator declined.
-  if ! { rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ]; } && ! { : > "$receipt"; } 2>/dev/null; then   # receipt-emptied
+  if ! _adb_perm_receipt_clear "$receipt"; then
     adb_settings_lock_resume_signals
     adb_info "  ERROR  the allow entries were removed but $receipt could not be deleted or emptied. Remove it by"
     adb_info "         hand: a later install would read every entry it lists as one you declined."
@@ -660,6 +662,13 @@ adb_permissions_remove() {
   adb_settings_lock_resume_signals
   adb_info "  allowlist  removed $n_removed allow entr$([ "$n_removed" = 1 ] && printf 'y' || printf 'ies') this install added to ~/.claude/settings.json"
   return 0
+}
+
+# Clear the record after a removal: gone, or failing that, EMPTY. An empty record reads as none,
+# so a later install cannot take the entries just removed for ones the operator declined.
+# Usage: _adb_perm_receipt_clear <receipt>   Returns: 0 gone or empty · 1 neither
+_adb_perm_receipt_clear() {
+  { rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; } || { : > "$1"; } 2>/dev/null   # receipt-emptied
 }
 
 # Would an install change the allowlist or its record? Asked by `baseline update` when every link
@@ -852,7 +861,15 @@ _adb_perm_scope() {
   printf '%s\n' '{"state":"unread"}' > "$out"
 }
 
-# Usage: adb_permissions_audit <clone> <home> <project-root|""> <managed-file>
+# Is the repository root one the CLI keeps the local settings file at: the root, its `.git` and its
+# `.claude` (when there is one) all owned by this user?
+# Usage: _adb_perm_owned <repository-root>
+_adb_perm_owned() {
+  [ -O "$1" ] && [ -O "$1/.git" ] && { [ ! -e "$1/.claude" ] || [ -O "$1/.claude" ]; }
+}
+
+# Usage: adb_permissions_audit <clone> <home> <session-directory|""> <managed-file>
+#   <session-directory> the directory a Claude Code session would be started in
 # Outputs: the records documented in this file's header, on stdout
 # Returns: 0 clean · 10 prompt sources found · 11 not evaluated
 # A subshell body: its temp directory is removed on every way out.
@@ -872,38 +889,59 @@ adb_permissions_audit() (
     _adb_perm_unevaluated "$(adb_permissions_payload "$repo")" "the shipped allowlist could not be read, so no entry was evaluated"; return 11
   fi
 
-  # WHERE CLAUDE CODE READS THE PROJECT'S FILES (vendor settings page, read 2026-11-11): the shared
-  # file at the repository root, and the local file at the repository root too — in a linked
-  # worktree, at the MAIN checkout's root.
+  # WHICH FILES A SESSION STARTED IN <project> LOADS (vendor settings page, "Where Claude Code keeps
+  # the local file in a git repository", read 2026-11-11):
+  #   shared  `.claude/settings.json` of the SESSION's directory — not the repository root
+  #   local   `.claude/settings.local.json` at the repository root (the MAIN checkout's, in a
+  #           linked worktree) — but beside the shared file when there is no repository, when the
+  #           root is the home directory, or when the root, its `.git` or its `.claude` is not
+  #           the user's own
+  #   also    a local file an older CLI left in the session's directory: its rules apply too
   local_file=""; local_where=".claude/settings.local.json"; local_unresolved=false; gates_state=none
-  printf '%s\n' '{"state":"none"}' > "$d/proj.json"; cp "$d/proj.json" "$d/local.json"
+  local2_file=""; gates_root="$project"
+  printf '%s\n' '{"state":"none"}' > "$d/proj.json"; cp "$d/proj.json" "$d/local.json"; cp "$d/proj.json" "$d/local2.json"
   printf '%s\n' '[]' > "$d/gates.json"
   if [ -n "$project" ]; then
+    sess_local="$project/.claude/settings.local.json"
+    local_file="$sess_local"
     if top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
-      project="$top"
-      local_file="$project/.claude/settings.local.json"
+      gates_root="$top"; root="$top"
       if gd="$(git -C "$project" rev-parse --path-format=absolute --git-dir 2>/dev/null)" \
          && cdir="$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
         if [ "$gd" != "$cdir" ]; then   # worktree-local-file
           case "$cdir" in
-            */.git) local_file="${cdir%/.git}/.claude/settings.local.json"; local_where="the main checkout's .claude/settings.local.json" ;;
-            *) local_file=""; local_unresolved=true ;;
+            */.git) root="${cdir%/.git}" ;;
+            *) root=""; local_unresolved=true ;;
           esac
         fi
       else
-        local_file=""; local_unresolved=true
+        root=""; local_unresolved=true
       fi
-    else
-      local_file="$project/.claude/settings.local.json"
+      if [ -n "$root" ]; then
+        if [ "$root" -ef "$home" ] || ! _adb_perm_owned "$root"; then   # local-stays-with-session
+          local_file="$sess_local"
+        else
+          local_file="$root/.claude/settings.local.json"
+          if [ ! "$local_file" -ef "$sess_local" ] && [ "$local_file" != "$sess_local" ]; then
+            local_where="the repository root's .claude/settings.local.json"
+            local2_file="$sess_local"   # legacy-local
+          fi
+        fi
+      else
+        local_file=""
+      fi
     fi
-    _adb_perm_scope "$project/.claude/settings.json" "$d/proj.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
+    _adb_perm_scope "$project/.claude/settings.json" "$d/proj.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }   # shared-from-session
     if [ -n "$local_file" ]; then
       _adb_perm_scope "$local_file" "$d/local.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
     else
       printf '%s\n' '{"state":"unread"}' > "$d/local.json"
     fi
+    if [ -n "$local2_file" ]; then
+      _adb_perm_scope "$local2_file" "$d/local2.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
+    fi
     grc=0
-    g="$(bash "$_adb_perm_libdir/project-gates.sh" detect "$project" 2>/dev/null)" || grc=$?
+    g="$(bash "$_adb_perm_libdir/project-gates.sh" detect "$gates_root" 2>/dev/null)" || grc=$?
     if [ "$grc" -eq 0 ] && printf '%s' "$g" \
          | jq -c -R -s '[ split("\n")[] | select(length > 0) | split("\t") | {label: .[0], cmd: (.[1:] | join("\t"))} ]' > "$d/gates.json" 2>/dev/null; then
       gates_state=detected
@@ -934,7 +972,8 @@ adb_permissions_audit() (
   fi
 
   out="$(jq -n -r --slurpfile ship "$d/ship.json" --slurpfile mgd "$d/mgd.json" --slurpfile user "$d/user.json" \
-      --slurpfile proj "$d/proj.json" --slurpfile local "$d/local.json" --slurpfile gates "$d/gates.json" \
+      --slurpfile proj "$d/proj.json" --slurpfile local "$d/local.json" --slurpfile local2 "$d/local2.json" \
+      --slurpfile gates "$d/gates.json" \
       --arg gates_state "$gates_state" --arg cli "$cli" --argjson auto_default "$auto_default" \
       --arg bypass_local "$bypass_local" --arg dp_ok "$dp_ok" --argjson cfg_other "$cfg_other" \
       --argjson mgd_dir "$mgd_dir" --argjson local_unresolved "$local_unresolved" \
@@ -950,7 +989,8 @@ adb_permissions_audit() (
     | [ {name: "managed", s: $mgd[0], where: $managed},
         {name: "user", s: $user[0], where: "~/.claude/settings.json"},
         {name: "project", s: $proj[0], where: ".claude/settings.json"},
-        {name: "local", s: $local[0], where: $local_where} ] as $scopes
+        {name: "local", s: $local[0], where: $local_where},
+        {name: "local2", s: $local2[0], where: ".claude/settings.local.json (left in the session directory by an older CLI)"} ] as $scopes
     | [ $scopes[] | select(.s.state != "none") | . as $sc | $sc.s as $x
         | ($x.state == "read" and $x.p_shape != "bad" and ($x.allow | strs) and ($x.deny | strs) and ($x.ask | strs)) as $ok
         | {name, where, state: $x.state, shape_ok: ($x.state != "read" or $ok),
@@ -965,13 +1005,14 @@ adb_permissions_audit() (
 
     # --- the starting mode of an INTERACTIVE TERMINAL session (vendor "Which mode a session starts
     #     in", read 2026-11-11): the `defaultMode` of the highest of managed > local > project > user
-    #     that sets one, else the built-in default. Two values do not take effect from project or
+    #     that sets one, else the built-in default. Where the root local file and one left in the
+    #     session directory both set it, the root value applies. Two values do not take effect from project or
     #     local settings: `auto` falls to the BUILT-IN default (not to the user value), and
     #     `bypassPermissions` starts the session in default mode — it took effect before v2.1.257.
     | ([ $S[] | select(.no_auto) | .where ]) as $no_auto
     | ([ $S[] | select(.no_bypass) | .where ]) as $no_bypass
-    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence
-    | ($top != null and ($top.name == "local" or $top.name == "project")) as $top_local
+    | ([ ("managed", "local", "local2", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence
+    | ($top != null and ($top.name == "local" or $top.name == "local2" or $top.name == "project")) as $top_local
     | (if $auto_default then "auto" else null end) as $builtin
     | (if $top == null then {mode: $builtin, src: "built-in default", why: "builtin"}
        elif $top_local and $top.mode == "auto" then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin
@@ -1034,7 +1075,7 @@ adb_permissions_audit() (
         ( if $local_unresolved then rec("scope"; "unevaluated"; ".claude/settings.local.json"; "this is a linked worktree whose main checkout could not be located, so the local settings a session reads were not evaluated") else empty end ),
         ( if $cfg_other then rec("scope"; "unevaluated"; "CLAUDE_CONFIG_DIR"; "names another configuration root; the user settings a session there reads were not evaluated") else empty end ),
         ( if $mgd_dir then rec("scope"; "unevaluated"; "managed-settings.d"; "holds managed settings fragments this audit does not read") else empty end ),
-        ( if $managed_only then rec("note"; $asked; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included") else empty end ),
+        ( if $managed_only then rec("note"; "info"; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included — only the managed rules were counted") else empty end ),   # managed-only-notice
 
         # mode
         ( if ($mode_known | not) then
@@ -1190,7 +1231,7 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
         printf 'permissions-lib: could not stage %s for reading\n' "$_adb_perm_home/.claude/settings.json" >&2
         exit 11; }
       _adb_perm_m="$(jq -r --argjson ship "$_adb_perm_e" '
-        if .state == "unread" or (.state == "read" and (.p_shape == "bad" or (.allow | type) != "array")) then error("unread")
+        if .state == "unread" or (.state == "read" and (.p_shape == "bad" or (.allow | type) != "array" or (.allow | all(.[]; type == "string") | not))) then error("unread")   # missing-elements
         else (if .state == "read" then .allow else [] end) as $live
           | $ship[] | select(. as $e | any($live[]; . == $e) | not) end' "$_adb_perm_t" 2>/dev/null)" || {
         rm -f "$_adb_perm_t"
@@ -1207,7 +1248,7 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
       printf '%s\n' "$_adb_perm_m" ;;
     audit)
       if [ "$_adb_perm_project_set" -eq 0 ]; then
-        _adb_perm_project="$(git rev-parse --show-toplevel 2>/dev/null)" || _adb_perm_project=""
+        _adb_perm_project="$PWD"
       fi
       if [ -z "$_adb_perm_managed" ]; then
         case "$(uname -s 2>/dev/null)" in

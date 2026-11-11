@@ -160,7 +160,7 @@ if [ "$MODE" = mutation ]; then
     'def norm: .;' \
     'an ask rule in the legacy :* spelling must be named'
   shmutant_mut audit-mode-precedence \
-    '    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
+    '    | ([ ("managed", "local", "local2", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
     '    | ([ ("user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
     'a project defaultMode that narrows the user one must be named'
   shmutant_mut audit-classify-all \
@@ -271,6 +271,34 @@ if [ "$MODE" = mutation ]; then
     '           elif ($p | tool_is("Bash")) and $p.spec != null and ($p.spec | test("^\\s|\\s$")) then {cls: "unparsed"}   # spec-whitespace' \
     '           elif false then {cls: "unparsed"}   # spec-whitespace' \
     'a Bash rule whose specifier has outer whitespace is NOT EVALUATED'
+  shmutant_mut allow-elements-unchecked \
+    '      elif ($cur | has("permissions")) and ($cur.permissions | has("allow")) and ($cur.permissions.allow | all(.[]; type == "string") | not) then   # allow-elements' \
+    '      elif false then   # allow-elements' \
+    'a permissions.allow holding a non-string must block the install'
+  shmutant_mut missing-elements-unchecked \
+    '        if .state == "unread" or (.state == "read" and (.p_shape == "bad" or (.allow | type) != "array" or (.allow | all(.[]; type == "string") | not))) then error("unread")   # missing-elements' \
+    '        if .state == "unread" or (.state == "read" and (.p_shape == "bad" or (.allow | type) != "array")) then error("unread")   # missing-elements' \
+    'missing refuses an allow list holding a non-string'
+  shmutant_mut audit-managed-only-is-a-finding \
+    '        ( if $managed_only then rec("note"; "info"; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included — only the managed rules were counted") else empty end ),   # managed-only-notice' \
+    '        ( if $managed_only then rec("note"; $asked; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included — only the managed rules were counted") else empty end ),   # managed-only-notice' \
+    'allowManagedPermissionRulesOnly over a managed list that holds every entry is clean'
+  shmutant_mut audit-shared-from-root \
+    '    _adb_perm_scope "$project/.claude/settings.json" "$d/proj.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }   # shared-from-session' \
+    '    _adb_perm_scope "$gates_root/.claude/settings.json" "$d/proj.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }   # shared-from-session' \
+    'a rule in the session directory'"'"'s own settings is audited'
+  shmutant_mut audit-legacy-local-unread \
+    '            local2_file="$sess_local"   # legacy-local' \
+    '            local2_file=""   # legacy-local' \
+    'a local file an older CLI left in the session directory still applies'
+  shmutant_mut audit-local-always-at-root \
+    '        if [ "$root" -ef "$home" ] || ! _adb_perm_owned "$root"; then   # local-stays-with-session' \
+    '        if false; then   # local-stays-with-session' \
+    'a repository rooted at the home directory keeps the local file with the session directory'
+  shmutant_mut audit-root-ownership-unchecked \
+    '        if [ "$root" -ef "$home" ] || ! _adb_perm_owned "$root"; then   # local-stays-with-session' \
+    '        if [ "$root" -ef "$home" ]; then   # local-stays-with-session' \
+    'a repository root the user does not own keeps the local file with the session directory'
   # Each needs a file or directory the runner cannot use; root has none, and then the case does not run.
   if [ "$(id -u)" -ne 0 ]; then
     shmutant_mut audit-unsearchable-read-as-absent \
@@ -282,9 +310,13 @@ if [ "$MODE" = mutation ]; then
       '        ( if $gates_state == "unread" then rec("gate"; "unevaluated"; "-"; "the gate commands of the project could not be detected, so none is listed")   # gate-report-only' \
       'an undetectable gate set does not change the verdict'
     shmutant_mut stuck-record-left-claiming \
-      '  if ! { rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ]; } && ! { : > "$receipt"; } 2>/dev/null; then   # receipt-emptied' \
-      '  if ! { rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ]; }; then   # receipt-emptied' \
+      '  { rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; } || { : > "$1"; } 2>/dev/null   # receipt-emptied' \
+      '  { rm -f "$1" 2>/dev/null && [ ! -e "$1" ]; }   # receipt-emptied' \
       'a record that cannot be deleted at uninstall must be emptied'
+    shmutant_mut stuck-record-no-settings \
+      '      _adb_perm_receipt_clear "$receipt" || {   # clear-without-settings' \
+      '      { rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ]; } || {   # clear-without-settings' \
+      'with no settings file, a record that cannot be deleted is emptied too'
   fi
 
   prep() { check_copy_subtrees "$ROOT" "$1" scripts base agents docs bin >/dev/null 2>&1; }
@@ -511,6 +543,7 @@ blocked() {   # blocked <name> <settings-json> <label>
 }
 blocked blk-allow '{"permissions":{"allow":"Bash(x)"}}' "a permissions.allow that is not an array must block the install"
 blocked blk-perm  '{"permissions":"nope"}'              "a permissions that is not an object must block the install"
+blocked blk-elem  '{"permissions":{"allow":[7]}}'       "a permissions.allow holding a non-string must block the install"
 blocked blk-root  '[1,2]'                               "a settings.json that is not an object must block the install"
 h="$(mkhome invalid '{ not json')"
 apply "$R3" "$h" >/dev/null; no $? "a settings.json that is not valid JSON fails the install"
@@ -669,6 +702,16 @@ remove "$R3" "$h" >/dev/null; yes $? "an uninstall with no settings.json succeed
 [ ! -e "$(rcpt "$h")" ] && ok || bad "…and deletes the record of entries that cannot exist"
 h="$(mkhome never)"
 remove "$R3" "$h" >/dev/null; yes $? "an uninstall with no record is a no-op"
+if [ "$(id -u)" -ne 0 ]; then
+  # …and with no settings file left, a record that cannot be unlinked is emptied all the same.
+  h="$(mkhome stuck-record-no-settings '{"permissions":{"allow":[]}}')"
+  apply "$R3" "$h" >/dev/null; rm -f "$h/.claude/settings.json"
+  chmod 555 "$h/.claude"
+  remove "$R3" "$h" >/dev/null; rc=$?
+  chmod 755 "$h/.claude"
+  if [ "$rc" -eq 0 ] && [ "$(disp "$h")" = none ]; then ok
+  else bad "with no settings file, a record that cannot be deleted is emptied too (rc $rc)"; fi
+fi
 # A record that cannot be unlinked is emptied instead. Needs a directory the runner cannot write
 # to, which does not exist for root.
 if [ "$(id -u)" -ne 0 ]; then
@@ -951,6 +994,9 @@ printf '%s\n' '{"allowManagedPermissionRulesOnly":true}' > "$work/managed-only.j
 audit "$R3" "$h" "" "$work/managed-only.json"
 eq "$ARC" "10" "allowManagedPermissionRulesOnly makes the user allowlist inert"
 has "$AOUT" "allowManagedPermissionRulesOnly is set" "…and the audit names it"
+clean_settings "$E3" | jq -c '.allowManagedPermissionRulesOnly = true' > "$work/managed-only-covered.json"
+audit "$R3" "$(mkhome a-managed-only-covered '{}')" "" "$work/managed-only-covered.json"
+eq "$ARC" "0" "allowManagedPermissionRulesOnly over a managed list that holds every entry is clean"
 h3="$(mkhome a-classify "$(clean_settings "$E3" | jq -c '.autoMode = {classifyAllShell: true}')")"
 audit "$R3" "$h3" ""
 eq "$ARC" "10" "autoMode.classifyAllShell must be reported as suspending the allowlist"
@@ -981,6 +1027,43 @@ eq "$ARC" "11" "a permissions.allow of false is NOT EVALUATED"
 jq -cn --argjson a "$E3" '{permissions: {allow: $a, defaultMode: "auto"}, env: {BLOB: ("x" * 400000)}}' > "$work/big.json"
 audit "$R3" "$(mkhome a-big "$(cat "$work/big.json")")" ""
 eq "$ARC" "0" "a settings file too large for a process argument is still audited"
+
+# A session reads the SHARED file of the directory it starts in, and the LOCAL file of the repository root.
+if command -v git >/dev/null 2>&1; then
+  sr="$work/sess-repo"; mkdir -p "$sr/.claude" "$sr/sub/.claude"
+  check_git "$sr" init -q . 2>/dev/null || git -C "$sr" init -q
+  printf '%s\n' '{"permissions":{"ask":["Bash(a *)"]}}' > "$sr/sub/.claude/settings.json"
+  hsd="$(mkhome a-session-dir "$(clean_settings "$E3")")"
+  audit "$R3" "$hsd" "$sr/sub"
+  eq "$ARC" "10" "a rule in the session directory's own settings is audited"
+  audit "$R3" "$hsd" "$sr"
+  eq "$ARC" "0" "a subdirectory's settings are not read for a session started at the root"
+  rm -f "$sr/sub/.claude/settings.json"
+  printf '%s\n' '{"permissions":{"deny":["Bash(b *)"]}}' > "$sr/.claude/settings.json"
+  audit "$R3" "$hsd" "$sr/sub"
+  eq "$ARC" "0" "the root's shared settings are not read for a session started in a subdirectory"
+  rm -f "$sr/.claude/settings.json"
+  printf '%s\n' '{"permissions":{"ask":["Bash(c *)"]}}' > "$sr/.claude/settings.local.json"
+  audit "$R3" "$hsd" "$sr/sub"
+  has "$AOUT" "$(printf "rule\tprompt\tthe repository root's .claude/settings.local.json")" "the repository root's local settings are read for a session started in a subdirectory"
+  rm -f "$sr/.claude/settings.local.json"
+  printf '%s\n' '{"permissions":{"ask":["Bash(b *)"]}}' > "$sr/sub/.claude/settings.local.json"
+  audit "$R3" "$hsd" "$sr/sub"
+  eq "$ARC" "10" "a local file an older CLI left in the session directory still applies"
+  # The root's local file is not the one used when the root is not the user's own…
+  printf '%s\n' '{"permissions":{"ask":["Bash(c *)"]}}' > "$sr/.claude/settings.local.json"
+  rm -f "$sr/sub/.claude/settings.local.json"
+  AOUT="$( ( export HOME="$hsd"; PATH="$STUB:$PATH"; . "$PL"; _adb_perm_owned() { return 1; }
+            adb_permissions_audit "$R3" "$hsd" "$sr/sub" "$work/no-managed.json" ) 2>&1 )"; ARC=$?
+  eq "$ARC" "0" "a repository root the user does not own keeps the local file with the session directory"
+  rm -f "$sr/.claude/settings.local.json"
+  # …nor when the repository root is the home directory.
+  hh="$(mkhome a-home-repo "$(clean_settings "$E3")")"; mkdir -p "$hh/sub/.claude"
+  check_git "$hh" init -q . 2>/dev/null || git -C "$hh" init -q
+  printf '%s\n' '{"permissions":{"ask":["Bash(c *)"]}}' > "$hh/.claude/settings.local.json"
+  audit "$R3" "$hh" "$hh/sub"
+  eq "$ARC" "0" "a repository rooted at the home directory keeps the local file with the session directory"
+fi
 
 # A linked worktree: the local file a session reads is the MAIN checkout's.
 if command -v git >/dev/null 2>&1; then
@@ -1069,6 +1152,7 @@ has "$AOUT" "no project: only the managed file and user settings were read" "an 
 out="$(bash "$PL" missing --repo "$R3" --home "$(mkhome miss '{"permissions":{"allow":["Bash(b *)"]}}')")"; yes $? "missing succeeds on a readable home"
 eq "$out" "$(printf 'Bash(a *)\nBash(c *)')" "missing prints the shipped entries the user settings lack"
 bash "$PL" missing --repo "$R3" --home "$(mkhome miss-bad '{ nope')" >/dev/null 2>&1; eq "$?" "11" "missing refuses a settings file it cannot read"
+bash "$PL" missing --repo "$R3" --home "$(mkhome miss-elem '{"permissions":{"allow":[7]}}')" >/dev/null 2>&1; eq "$?" "11" "missing refuses an allow list holding a non-string"
 bash "$PL" nope >/dev/null 2>&1; eq "$?" "2" "an unknown subcommand is usage"
 
 # ================================ 4. wiring: workflow, docs, installer ===========================
