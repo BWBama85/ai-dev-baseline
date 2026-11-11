@@ -15,7 +15,8 @@ only by a release it upgrades to. These entries are the notes for both.
   (#288).** `./install.sh` now merges `agents/claude/settings.permissions.json` into
   `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, the
   baseline's read-only commands, and one rule per library a Claude skill invokes. A matched command
-  runs without a prompt and, in Auto Mode, without a classifier call. The merge is a union: an
+  runs without a prompt and, in Auto Mode, without a classifier call, unless an `ask` or `deny`
+  rule also matches it or Auto Mode has set the rule aside. The merge is a union: an
   entry you already have is yours and is never recorded, one you remove by hand is not written
   again, and `./uninstall.sh` removes only the entries the install added
   (`~/.claude/.adb-permissions-owned`). `permissions.defaultMode` is never written. `git push`,

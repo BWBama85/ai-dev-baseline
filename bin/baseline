@@ -882,6 +882,9 @@ _bl_current_arm() {
     PERMISSIONS_PENDING=0; adb_permissions_pending "$SRC"; PPRC=$?
     case "$PPRC" in
       0)      PERMISSIONS_PENDING=1 ;;
+      24)     echo "baseline: the command-allowlist payload $(adb_permissions_payload "$SRC") is missing or cannot be hashed (code 24)," >&2
+              echo "          so this run cannot tell whether the installed allowlist is current. Restore it in $SRC." >&2
+              exit 1 ;;   # allowlist-payload-unanswerable
       2[0-9]) echo "baseline: the command-allowlist record $(adb_permissions_receipt "$HOME") cannot be read or classified (code $PPRC)." >&2
               echo "          Restore it, or remove it and re-run ./install.sh — every entry then present is read as yours." >&2
               exit 1 ;;   # allowlist-pending-unanswerable
@@ -897,7 +900,13 @@ _bl_current_arm() {
     else
       echo "baseline: an installed path is broken though up to date — repairing …"
     fi
+    # BEFORE THE HEAL, so what it did to the allowlist is read from what changed.
+    PERM_ALLOW_BEFORE="$(adb_permissions_allow_sig "$HOME")"
+    PERM_RCPT_BEFORE="$(adb_sha256 "$(adb_permissions_receipt "$HOME")" 2>/dev/null)" || PERM_RCPT_BEFORE="none"
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
+    # SAID ON EVERY EXIT BELOW, whichever surface chooses the code: a refused or skipped allowlist
+    # is one stderr line, and it is not withheld because something else was repaired too.
+    PERM_CHANGED=0; adb_permissions_heal_report "$SRC" "$HOME" "$PERM_ALLOW_BEFORE" "$PERM_RCPT_BEFORE" && PERM_CHANGED=1
     # A SUCCESSFUL INSTALLER RUN IS NOT THE SAME AS A REPAIR. When the sandbox settings were the
     # thing pending and the operator already owns one of the shipped keys, the all-or-nothing
     # contract makes `install.sh` write `skipped-blocked` and return 0 — nothing was applied, and
@@ -946,14 +955,11 @@ _bl_current_arm() {
           exit 8 ;;
       esac
     fi
-    # THE ALLOWLIST WAS THE ONLY THING PENDING: report what the installer recorded, not that a repair
-    # happened. A refusal and a version skip write a record and change no setting.
-    if [ "$PERMISSIONS_PENDING" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ] && [ "$LINKS_OK" -eq 1 ]; then
-      case "$(adb_permissions_disposition "$(adb_permissions_receipt "$HOME")" 2>/dev/null)" in
-        installed) ;;
-        *) echo "baseline: the command allowlist was not applied; run ./install.sh in $SRC to see why. No link or setting was changed."
-           exit 0 ;;   # allowlist-not-applied
-      esac
+    # NOTHING BUT THE ALLOWLIST WAS PENDING, AND ITS LIST DID NOT CHANGE: no link and no setting
+    # moved, so this is not a repair. The line above already said what happened to the record.
+    if [ "$PERMISSIONS_PENDING" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ] && [ "$LINKS_OK" -eq 1 ] && [ "$PERM_CHANGED" -eq 0 ]; then
+      echo "baseline: no link or setting was changed."
+      exit 0   # allowlist-nothing-changed
     fi
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
@@ -978,7 +984,11 @@ _bl_after_move() {
     esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind
     BEHIND_SIG_BEFORE="$(adb_settings_receipt_sig)"   # sig-before-behind
+    BEHIND_PERM_ALLOW_BEFORE="$(adb_permissions_allow_sig "$HOME")"
+    BEHIND_PERM_RCPT_BEFORE="$(adb_sha256 "$(adb_permissions_receipt "$HOME")" 2>/dev/null)" || BEHIND_PERM_RCPT_BEFORE="none"
     if adb_self_heal && adb_verify_links "$SRC"; then
+      # The allowlist's outcome, from what changed — said before any of the exits below.
+      adb_permissions_heal_report "$SRC" "$HOME" "$BEHIND_PERM_ALLOW_BEFORE" "$BEHIND_PERM_RCPT_BEFORE" || true
       # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an
       # update that also refused the policy was rendered as a plain `updated` with the installer's
       # own output suppressed. The clone really did advance, and the message says so — but the

@@ -12,17 +12,18 @@
 #
 #   added     absent when this install met it, appended by it. Recorded; uninstall removes it.
 #   theirs    already present. Never recorded, never removed.
-#   declined  recorded as `added` once and since removed by hand. Not written again. The row only
-#             ever SUPPRESSES a write; it authorises no removal, so an entry the operator puts back
-#             is theirs.
+#   declined  recorded as `added`, and gone when a later install looked. Not written again. The row
+#             only ever SUPPRESSES a write; it authorises no removal, so an entry put back after
+#             that is theirs. (Removed and put back BETWEEN two installs, it was never seen gone
+#             and is still `added`.)
 #
 # A recorded entry the payload no longer ships is retired: removed while still present, forgotten
 # either way. Only `permissions.allow` is ever written — never `defaultMode`, `deny` or `ask`.
 #
 # THE AUDIT IS READ-ONLY and reports, per scope it could read: a shipped entry no allow rule holds,
 # a `deny` or `ask` rule that can match one, the starting permission mode, and the settings that
-# make allow rules inert. A scope it could not read, or an audit that evaluated nothing, is NOT
-# EVALUATED (11) and never clean.
+# make allow rules inert. A scope it could not read, a rule it cannot model, or an audit that
+# evaluated nothing, is NOT EVALUATED (11) and never clean.
 #
 # Usage (executed):
 #   permissions-lib.sh entries [--repo <clone>]
@@ -41,8 +42,9 @@
 #   working directory; --managed to the platform's managed-settings.json.
 #
 # Sourced (install.sh, uninstall.sh, bin/baseline): adb_permissions_apply, adb_permissions_remove,
-# adb_permissions_pending. apply and remove expect the caller to HOLD the settings lock
-# (adb_settings_lock_take): each defers and resumes that lock's signal traps around its two writes.
+# adb_permissions_pending, adb_permissions_allow_sig, adb_permissions_heal_report. apply and remove
+# expect the caller to HOLD the settings lock (adb_settings_lock_take): each defers and resumes that
+# lock's signal traps around its two writes.
 #
 # Requires: jq for everything but recording an opt-out.
 
@@ -62,6 +64,7 @@ fi
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then adb_require_bash "$@"; fi
 
 _ADB_PERM_TAB="$(printf '\t')"
+_ADB_PERM_RECEIPT_MAX=1048576   # bytes; a receipt is a few KiB
 
 # Usage: adb_permissions_payload <clone>
 adb_permissions_payload() { printf '%s/agents/claude/settings.permissions.json' "$1"; }
@@ -92,16 +95,41 @@ adb_permissions_entries() {
   ' "$1" 2>/dev/null || return 1
 }
 
-# The receipt's disposition, readable without jq: `none` for an absent or empty receipt.
-# Usage: adb_permissions_disposition <receipt>
-# Returns: 0 · 20 the receipt could not be read · 21 it carries no recognised disposition
-adb_permissions_disposition() {
-  local receipt="$1" line grc
-  case "$(adb_settings_doc_state "$receipt")" in
+# --- the receipt ---------------------------------------------------------------------------------
+#
+#   # <comment>
+#   disposition installed|skipped-optout|skipped-below-floor|skipped-unprobeable|skipped-blocked
+#   version <cli version, or ->
+#   floor <version>
+#   payload <sha-256 of the payload applied, or ->
+#   rows <N>                      how many added/declined/created rows follow — a truncated record
+#   source<TAB><clone>            is then short of its own count, not merely short
+#   added<TAB><json string>
+#   declined<TAB><json string>
+#   created<TAB>allow|permissions
+
+# The byte rules every reader of a present receipt shares: a regular file, no NUL, a final newline.
+# Usage: _adb_perm_receipt_state <receipt>
+# Outputs: `none` (absent or empty) or `present`
+# Returns: 0 · 20 it could not be read · 21 it breaks a byte rule
+_adb_perm_receipt_state() {
+  case "$(adb_settings_doc_state "$1")" in
     absent|empty) printf 'none'; return 0 ;;
     present) ;;
     *) return 20 ;;
   esac
+  adb_bytes_whole "$1" "$_ADB_PERM_RECEIPT_MAX"
+  case "$?" in 0) printf 'present'; return 0 ;; 18) return 21 ;; *) return 20 ;; esac
+}
+
+# The receipt's disposition, readable without jq: `none` for an absent or empty receipt. It checks
+# the byte rules and the disposition line only; `_adb_perm_receipt_json` is the whole validation.
+# Usage: adb_permissions_disposition <receipt>
+# Returns: 0 · 20 the receipt could not be read · 21 it is damaged
+adb_permissions_disposition() {
+  local receipt="$1" line grc st
+  st="$(_adb_perm_receipt_state "$receipt")" || return "$?"
+  [ "$st" = present ] || { printf 'none'; return 0; }
   line="$(grep -m1 '^disposition ' "$receipt" 2>/dev/null)"; grc=$?
   [ "$grc" -le 1 ] || return 20
   [ "$grc" -eq 0 ] || return 21
@@ -111,35 +139,34 @@ adb_permissions_disposition() {
   esac
 }
 
-# The whole receipt as JSON, validated whole: one unrecognised line, an entry that is not a JSON
-# string, or an entry recorded both `added` and `declined` refuses the lot.
+# The whole receipt as JSON, validated whole against the grammar above: every metadata line exactly
+# once and well-formed, no line it does not know, every entry a JSON string, no entry recorded
+# twice or both `added` and `declined`, and as many rows as `rows` says.
 #   {"disposition","payload","source","added":[…],"declined":[…],"created":[…]}
 # Usage: _adb_perm_receipt_json <receipt>
 # Returns: 0 · 2 no jq · 20 unreadable · 21 damaged
 _adb_perm_receipt_json() {
-  local receipt="$1"
+  local receipt="$1" st
   command -v jq >/dev/null 2>&1 || return 2
-  case "$(adb_settings_doc_state "$receipt")" in
-    absent|empty)
-      printf '%s\n' '{"disposition":"none","payload":null,"source":null,"added":[],"declined":[],"created":[]}'
-      return 0 ;;
-    present) ;;
-    *) return 20 ;;
-  esac
-  local raw
-  raw="$(cat "$receipt" 2>/dev/null)" || return 20
-  printf '%s\n' "$raw" | jq -c -R -s '
+  st="$(_adb_perm_receipt_state "$receipt")" || return "$?"
+  if [ "$st" != present ]; then
+    printf '%s\n' '{"disposition":"none","payload":null,"source":null,"added":[],"declined":[],"created":[]}'
+    return 0
+  fi
+  jq -c -R -s '
     def entry($prefix; $l): ($l[($prefix | length):] | try fromjson catch null);
-    [ split("\n")[] | select(length > 0 and (startswith("#") | not)) ] as $ls
-    | reduce $ls[] as $l (
-        {disposition: null, version: null, floor: null, payload: null, source: null,
+    def once($k; $v): if .[$k] == null then .[$k] = $v else .bad = true end;
+    (split("\n") | if .[-1] == "" then .[:-1] else . end) as $all
+    | reduce ($all[] | select(startswith("#") | not)) as $l (
+        {disposition: null, version: null, floor: null, payload: null, rows: null, source: null,
          added: [], declined: [], created: [], bad: false};
         if .bad then .
-        elif ($l | startswith("disposition ")) and .disposition == null then .disposition = $l[12:]
-        elif ($l | startswith("version ")) and .version == null then .version = $l[8:]
-        elif ($l | startswith("floor ")) and .floor == null then .floor = $l[6:]
-        elif ($l | startswith("payload ")) and .payload == null then .payload = $l[8:]
-        elif ($l | startswith("source\t")) and .source == null then .source = $l[7:]
+        elif ($l | startswith("disposition ")) then once("disposition"; $l[12:])
+        elif ($l | startswith("version ")) then once("version"; $l[8:])
+        elif ($l | startswith("floor ")) then once("floor"; $l[6:])
+        elif ($l | startswith("payload ")) then once("payload"; $l[8:])
+        elif ($l | startswith("rows ")) then once("rows"; $l[5:])
+        elif ($l | startswith("source\t")) then once("source"; $l[7:])
         elif ($l | startswith("added\t")) then
           (entry("added\t"; $l)) as $v
           | if ($v | type) == "string" and ($v | length) > 0 then .added += [$v] else .bad = true end
@@ -147,47 +174,58 @@ _adb_perm_receipt_json() {
           (entry("declined\t"; $l)) as $v
           | if ($v | type) == "string" and ($v | length) > 0 then .declined += [$v] else .bad = true end
         elif $l == "created\tallow" or $l == "created\tpermissions" then .created += [$l[8:]]
-        else .bad = true end)
+        else .bad = true end)   # unknown-line
     | (.disposition) as $d
     | if .bad
+         or any((.disposition, .version, .floor, .payload, .rows, .source); . == null)   # metadata-required
          or (["installed","skipped-optout","skipped-below-floor","skipped-unprobeable","skipped-blocked"] | any(.[]; . == $d) | not)
+         or (.version | test("^(-|[0-9]+(\\.[0-9]+)*)$") | not)
+         or (.floor | test("^[0-9]+(\\.[0-9]+)*$") | not)
+         or (.payload | test("^(-|[0-9a-f]{64})$") | not)
+         or (.rows | test("^(0|[1-9][0-9]*)$") | not)
+         or (.source | length) == 0
+         or ((.rows | tonumber) != ((.added | length) + (.declined | length) + (.created | length)))   # row-count
          or ((.added + .declined) | length != (unique | length))
+         or (.created | length != (unique | length))
       then error("damaged receipt")
-      else {disposition, payload, source, added, declined, created: (.created | unique)} end
-  ' 2>/dev/null || return 21
+      else {disposition, payload, source, added, declined, created} end
+  ' "$receipt" 2>/dev/null || return 21
 }
 
-# Render a receipt. Rows arrive on stdin exactly as they are stored (`added<TAB><json string>`,
-# `declined<TAB><json string>`, `created<TAB>allow|permissions`).
+# Render a receipt. Rows arrive on stdin exactly as they are stored; the count is taken from them.
 # Usage: adb_permissions_receipt_render <disposition> <version> <floor> <payload-digest> <clone>
 adb_permissions_receipt_render() {
+  local rows line n=0
+  rows="$(cat)"
+  if [ -n "$rows" ]; then
+    while IFS= read -r line; do n=$((n + 1)); done <<EOF
+$rows
+EOF
+  fi
   printf '# ai-dev-baseline command allowlist (#288) — written by install.sh; do not hand-edit.\n'
-  printf 'disposition %s\nversion %s\nfloor %s\npayload %s\n' "$1" "$2" "$3" "$4"
+  printf 'disposition %s\nversion %s\nfloor %s\npayload %s\nrows %s\n' "$1" "$2" "$3" "$4" "$n"
   printf 'source\t%s\n' "$5"
-  cat
+  [ -z "$rows" ] || printf '%s\n' "$rows"
 }
 
 # Record a run that wrote no entry, keeping every row an earlier install recorded: a skip means
-# "write nothing new", never "forget what is there". Needs no jq.
+# "write nothing new", never "forget what is there". Needs no jq; the caller validates the record
+# first whenever jq is there to do it.
 # Usage: _adb_perm_record_skip <disposition> <version> <floor> <digest|-> <receipt> <clone>
 #   <digest> `-` keeps the digest already recorded, so the skip does not claim a payload it never applied.
 # Returns: 0 recorded · 1 the receipt could not be read or written (the previous one is left as it was)
 _adb_perm_record_skip() {
   local disposition="$1" version="$2" floor="$3" digest="$4" receipt="$5" repo="$6"
-  local rows="" prior="-" line state
-  state="$(adb_settings_doc_state "$receipt")"
-  case "$state" in
-    absent|empty) ;;
-    present)
-      while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in
-          "added$_ADB_PERM_TAB"*|"declined$_ADB_PERM_TAB"*|"created$_ADB_PERM_TAB"*) rows+="$line"$'\n' ;;
-          "payload "*) prior="${line#payload }" ;;
-        esac
-      done < "$receipt" || return 1
-      ;;
-    *) return 1 ;;
-  esac
+  local rows="" prior="-" line st
+  st="$(_adb_perm_receipt_state "$receipt")" || return 1
+  if [ "$st" = present ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        "added$_ADB_PERM_TAB"*|"declined$_ADB_PERM_TAB"*|"created$_ADB_PERM_TAB"*) rows+="$line"$'\n' ;;
+        "payload "*) prior="${line#payload }" ;;
+      esac
+    done < "$receipt" || return 1
+  fi
   [ "$digest" != "-" ] || digest="$prior"
   if printf '%s' "$rows" | adb_permissions_receipt_render "$disposition" "$version" "$floor" "$digest" "$repo" \
        > "$receipt.adb.$$.tmp" && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
@@ -196,6 +234,8 @@ _adb_perm_record_skip() {
   rm -f "$receipt.adb.$$.tmp"
   return 1
 }
+
+# --- the union -----------------------------------------------------------------------------------
 
 # The union, as arithmetic over three inputs and nothing else: the live document, the shipped
 # entries, and the prior record. Prints
@@ -212,10 +252,10 @@ _adb_perm_merge() {
     | if ($cur | type) != "object" then {verdict: "blocked", why: "settings.json does not hold a JSON object"}
       elif ($cur | has("permissions")) and ($cur.permissions | type) != "object" then
         {verdict: "blocked", why: "`permissions` is not an object"}
-      elif (($cur.permissions // {}) | has("allow")) and ($cur.permissions.allow | type) != "array" then
+      elif ($cur | has("permissions")) and ($cur.permissions | has("allow")) and ($cur.permissions.allow | type) != "array" then   # allow-shape
         {verdict: "blocked", why: "`permissions.allow` is not an array"}
       else
-        ($cur.permissions.allow // []) as $live
+        (if ($cur | has("permissions")) and ($cur.permissions | has("allow")) then $cur.permissions.allow else [] end) as $live
         | [ $rc.added[] | select(. as $e | has_el($ship; $e) | not) | select(. as $e | has_el($live; $e)) ] as $retire
         | [ $live[] | select(. as $e | has_el($retire; $e) | not) ] as $kept
         | (reduce $ship[] as $e ({wrote: [], added: [], declined: []};
@@ -224,10 +264,11 @@ _adb_perm_merge() {
              else .wrote += [$e] | .added += [$e] end)) as $r
         | ($kept + $r.wrote) as $new
         | ([ (if ($cur | has("permissions")) then empty else "permissions" end),
-             (if (($cur.permissions // {}) | has("allow")) then empty else "allow" end) ]
+             (if ($cur | has("permissions")) and ($cur.permissions | has("allow")) then empty else "allow" end) ]
            | if ($r.wrote | length) > 0 then . else [] end) as $made
         | {verdict: (if $new == $live then "unchanged" else "write" end), why: "",
-           settings: (if $new == $live then $cur else ($cur | .permissions = ((.permissions // {}) | .allow = $new)) end),
+           settings: (if $new == $live then $cur
+                      else ($cur | .permissions = ((if has("permissions") then .permissions else {} end) | .allow = $new)) end),
            wrote: $r.wrote, retired: $retire, added: $r.added, declined: $r.declined,
            created: (($rc.created + $made) | unique)}
       end
@@ -241,16 +282,65 @@ _adb_perm_rows() {
     (.added[] | "added\t" + tojson), (.declined[] | "declined\t" + tojson), (.created[] | "created\t" + .)'
 }
 
-# Put the pre-image of settings.json back after a receipt that would not publish, so no entry is
-# left installed with nothing recording it. <pre> is a copy of the original, or empty when there
-# was no file. Usage: _adb_perm_restore <settings> <pre>   Returns: 0 restored · 1 it could not be
-_adb_perm_restore() {
-  local settings="$1" pre="$2"
-  if [ -n "$pre" ]; then
-    adb_publish_json "$pre" "$settings" --allow-empty
-  else
-    rm -f "$settings" 2>/dev/null && [ ! -e "$settings" ]
+# What a failed transaction must put back, captured BEFORE the first write: the bytes, or the fact
+# that there was no file, and the link itself when settings.json is one — a rollback that restored
+# only the bytes behind a link would leave a regular file where the operator had a link.
+# Usage: _adb_perm_snapshot <settings>
+# Globals (written): _ADB_PERM_PRE (the pre-image file, or empty), _ADB_PERM_HAD (0|1),
+#   _ADB_PERM_WAS_LINK (0|1), _ADB_PERM_LINK (its target)
+# Returns: 0 · 1 it could not be captured, and nothing was left behind
+_ADB_PERM_PRE=""; _ADB_PERM_HAD=0; _ADB_PERM_WAS_LINK=0; _ADB_PERM_LINK=""
+_adb_perm_snapshot() {
+  local settings="$1" t
+  _ADB_PERM_PRE=""; _ADB_PERM_HAD=0; _ADB_PERM_WAS_LINK=0; _ADB_PERM_LINK=""
+  if [ -L "$settings" ]; then
+    # `&&`: with `;` a failed readlink would still yield the sentinel and read as an empty target.
+    t="$(readlink -n "$settings" && printf x)" || return 1
+    [ "$t" != x ] || return 1
+    _ADB_PERM_WAS_LINK=1; _ADB_PERM_LINK="${t%x}"
   fi
+  if [ -e "$settings" ]; then
+    _ADB_PERM_HAD=1
+    _ADB_PERM_PRE="$settings.adb.$$.pre"
+    rm -f "$_ADB_PERM_PRE"
+    # Owner-only before it is populated: it is a copy of a file that can hold an `env` block.
+    if ! { ( umask 077; : > "$_ADB_PERM_PRE" ) && cat "$settings" > "$_ADB_PERM_PRE"; }; then
+      rm -f "$_ADB_PERM_PRE"; _ADB_PERM_PRE=""
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Usage: _adb_perm_snapshot_drop
+_adb_perm_snapshot_drop() { [ -z "$_ADB_PERM_PRE" ] || rm -f "$_ADB_PERM_PRE"; _ADB_PERM_PRE=""; }
+
+# Put back what `_adb_perm_snapshot` captured.
+# Usage: _adb_perm_restore <settings>   Returns: 0 restored · 1 it could not be
+_adb_perm_restore() {
+  local settings="$1"
+  if [ "$_ADB_PERM_WAS_LINK" -eq 1 ]; then   # restore-link
+    _adb_perm_snapshot_drop
+    rm -f "$settings" 2>/dev/null && ln -s "$_ADB_PERM_LINK" "$settings" 2>/dev/null
+  elif [ "$_ADB_PERM_HAD" -eq 1 ]; then
+    adb_publish_json "$_ADB_PERM_PRE" "$settings" --allow-empty && _ADB_PERM_PRE=""
+  else
+    rm -f "$settings" 2>/dev/null && [ ! -e "$settings" ] && [ ! -L "$settings" ]
+  fi
+}
+
+# Stage `.settings` of a result beside its destination and publish it. The stage is owner-only
+# before it holds anything, and `--strict` refuses rather than publish at a mode it could not carry
+# over from the original.
+# Usage: _adb_perm_publish_settings <result-json> <settings>   Returns: 0 published · 1 not
+_adb_perm_publish_settings() {
+  local tmp="$2.adb.$$.tmp"
+  rm -f "$tmp"
+  if ! { ( umask 077; : > "$tmp" ) && printf '%s' "$1" | jq '.settings' > "$tmp" 2>/dev/null && [ -s "$tmp" ]; }; then   # stage-owner-only
+    rm -f "$tmp"
+    return 1
+  fi
+  adb_publish_json "$tmp" "$2" --strict   # publish-strict
 }
 
 # Add the shipped entries that are missing, record which, retire what is no longer shipped.
@@ -372,28 +462,23 @@ adb_permissions_apply() {
     adb_info "  WARN   the allowlist merge result could not be read — allow entries NOT written."
     return 1; }
 
-  local pre=""
   if [ "$verdict" = write ]; then
-    # `empty` too: a zero-byte file is a file, and a rollback that deleted it would not be one.
-    if [ "$docst" != absent ]; then   # pre-image-of-empty
-      if [ ! -e "$backup$settings" ]; then
-        mkdir -p "$backup$(dirname "$settings")" 2>/dev/null && cp -p "$settings" "$backup$settings" 2>/dev/null || {
-          adb_info "  WARN   could not back up $settings under $backup — allow entries NOT written"
-          return 1; }
-      fi
-      pre="$(mktemp "${TMPDIR:-/tmp}/adb-allow.XXXXXX" 2>/dev/null)" && cp "$settings" "$pre" 2>/dev/null || {
-        rm -f "${pre:-}"
-        adb_info "  WARN   could not stage a copy of $settings to roll back to — allow entries NOT written"
+    if [ -e "$settings" ] && [ ! -e "$backup$settings" ]; then
+      mkdir -p "$backup$(dirname "$settings")" 2>/dev/null && cp -p "$settings" "$backup$settings" 2>/dev/null || {
+        adb_info "  WARN   could not back up $settings under $backup — allow entries NOT written"
         return 1; }
+    fi
+    if ! _adb_perm_snapshot "$settings"; then
+      adb_info "  WARN   could not capture $settings to roll back to — allow entries NOT written"
+      return 1
     fi
   fi
 
   # TWO PUBLICATIONS, ONE TRANSACTION: the settings, then the record of what in them is ours.
   adb_settings_lock_defer_signals
   if [ "$verdict" = write ]; then
-    if ! { printf '%s' "$result" | jq '.settings' > "$settings.adb.$$.tmp" 2>/dev/null \
-           && adb_publish_json "$settings.adb.$$.tmp" "$settings"; }; then
-      rm -f "$settings.adb.$$.tmp" "$pre"
+    if ! _adb_perm_publish_settings "$result" "$settings"; then
+      _adb_perm_snapshot_drop
       adb_settings_lock_resume_signals
       adb_info "  WARN   could not rewrite ~/.claude/settings.json — allow entries NOT written"
       return 1
@@ -405,7 +490,7 @@ adb_permissions_apply() {
          && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; }; then
     rm -f "$receipt.adb.$$.tmp"
     if [ "$verdict" = write ]; then
-      if _adb_perm_restore "$settings" "$pre"; then
+      if _adb_perm_restore "$settings"; then
         adb_info "  WARN   could not write $receipt — the allow entries were taken back out, so nothing is"
         adb_info "         installed without a record. Make it writable and re-run."
       else
@@ -418,7 +503,7 @@ adb_permissions_apply() {
     adb_settings_lock_resume_signals
     return 1   # receipt-publish-failed
   fi
-  [ -z "$pre" ] || rm -f "$pre"
+  _adb_perm_snapshot_drop
   adb_settings_lock_resume_signals
 
   local n_ours n_ship
@@ -497,8 +582,8 @@ adb_permissions_remove() {
   result="$(jq -c --argjson rc "$rj" '
     def has_el($xs; $x): any($xs[]; . == $x);
     . as $cur
-    | if ($cur | type) != "object" or (($cur.permissions // null) | type) != "object"
-         or (($cur.permissions.allow // null) | type) != "array"
+    | if ($cur | type) != "object" or ($cur | has("permissions") | not) or ($cur.permissions | type) != "object"
+         or ($cur.permissions | has("allow") | not) or ($cur.permissions.allow | type) != "array"
       then {changed: false, removed: 0, settings: $cur}
       else
         ($cur.permissions.allow) as $live
@@ -519,9 +604,7 @@ adb_permissions_remove() {
 
   adb_settings_lock_defer_signals
   if [ "$changed" = true ]; then
-    if ! { printf '%s' "$result" | jq '.settings' > "$settings.adb.$$.tmp" 2>/dev/null \
-           && adb_publish_json "$settings.adb.$$.tmp" "$settings"; }; then
-      rm -f "$settings.adb.$$.tmp"
+    if ! _adb_perm_publish_settings "$result" "$settings"; then
       adb_settings_lock_resume_signals
       adb_info "  WARN   could not rewrite ~/.claude/settings.json — allow entries NOT removed; $receipt lists them."
       return 1
@@ -546,51 +629,94 @@ adb_permissions_remove() {
 # whatever it says: the installer rewrites its source, so that converges after one visit.
 # Usage: adb_permissions_pending <clone> [home]
 # Returns: 0 pending · 1 not pending · 20 the receipt could not be read · 21 it is damaged
-#          24 the payload could not be hashed
+#          24 the payload is missing, or could not be hashed
 adb_permissions_pending() {
-  local src="$1" home="${2:-$HOME}" receipt payload disp drc have want version
+  local src="$1" home="${2:-$HOME}" receipt payload disp drc rj rrc fields source have want version
   adb_agent_ours claude "$src" "$home" || return 1
   payload="$(adb_permissions_payload "$src")"
-  [ -s "$payload" ] || return 1
+  [ -s "$payload" ] || return 24   # payload-missing
   receipt="$(adb_permissions_receipt "$home")"
   disp="$(adb_permissions_disposition "$receipt")"; drc=$?
   case "$drc" in 0) ;; 20|21) return "$drc" ;; *) return 1 ;; esac
   command -v jq >/dev/null 2>&1 || return 1
-  if [ "$disp" != none ]; then
-    local grc=0
-    have="$(grep -m1 "^source$_ADB_PERM_TAB" "$receipt" 2>/dev/null)" || grc=$?
-    [ "$grc" -le 1 ] || return 20
-    if [ -n "$have" ] && [ "${have#source"$_ADB_PERM_TAB"}" != "$src" ]; then return 0; fi   # foreign-source-pending
-  fi
+  # THE SAME WHOLE VALIDATION apply and remove perform: a record they would refuse is not current.
+  rj="$(_adb_perm_receipt_json "$receipt")"; rrc=$?
+  case "$rrc" in 0) ;; 20|21) return "$rrc" ;; *) return 21 ;; esac   # pending-validates-whole
+  fields="$(printf '%s' "$rj" | jq -r '[.source // "", .payload // ""] | join("\t")' 2>/dev/null)" || return 21
+  source="${fields%%"$_ADB_PERM_TAB"*}"; have="${fields#*"$_ADB_PERM_TAB"}"
+  if [ "$disp" != none ] && [ "$source" != "$src" ]; then return 0; fi   # foreign-source-pending
   case "$disp" in
     skipped-optout) return 1 ;;
     installed|skipped-blocked)
-      have="$(grep -m1 '^payload ' "$receipt" 2>/dev/null)" || return 0
       want="$(adb_sha256 "$payload")" || return 24
-      [ "${have#payload }" = "$want" ] && return 1
+      [ "$have" = "$want" ] && return 1
       return 0 ;;
   esac
   version="$(adb_claude_cli_version)" || return 1
   adb_version_ge "$version" "$(adb_permissions_floor)"
 }
 
+# The live allow list as one comparable word, for a before/after comparison across a self-heal:
+# its digest, `absent` when there is no list, `unread` when it could not be read.
+# Usage: adb_permissions_allow_sig [home]
+adb_permissions_allow_sig() {
+  local settings="${1:-$HOME}/.claude/settings.json" out
+  case "$(adb_settings_doc_state "$settings")" in
+    absent|empty) printf 'absent'; return 0 ;;
+    present) ;;
+    *) printf 'unread'; return 0 ;;
+  esac
+  out="$(jq -c 'if type == "object" and has("permissions") and (.permissions | type) == "object" and (.permissions | has("allow"))
+                then .permissions.allow else "absent" end' "$settings" 2>/dev/null)" || { printf 'unread'; return 0; }
+  if [ "$out" = '"absent"' ]; then printf 'absent'; return 0; fi
+  printf '%s' "$out" | cksum | tr -d ' \t\n'
+}
+
+# After a self-heal, say what happened to the allowlist — from what CHANGED, never from what the
+# record now says. Prints at most one line on stderr.
+# Usage: adb_permissions_heal_report <clone> <home> <allow-sig-before> <receipt-sig-before>
+# Returns: 0 the allow list changed · 1 it did not
+adb_permissions_heal_report() {
+  local src="$1" home="$2" allow_before="$3" rcpt_before="$4" receipt allow_now rcpt_now disp
+  receipt="$(adb_permissions_receipt "$home")"
+  allow_now="$(adb_permissions_allow_sig "$home")"
+  rcpt_now="$(adb_sha256 "$receipt" 2>/dev/null)" || rcpt_now="none"
+  if [ "$allow_now" != "$allow_before" ]; then
+    printf 'baseline: the command allowlist in ~/.claude/settings.json was updated.\n' >&2
+    return 0
+  fi
+  [ "$rcpt_now" != "$rcpt_before" ] || return 1
+  disp="$(adb_permissions_disposition "$receipt" 2>/dev/null)" || disp="unreadable"
+  case "$disp" in
+    installed) printf 'baseline: refreshed the command-allowlist record; no allow entry was added or removed.\n' >&2 ;;
+    *) printf 'baseline: the command allowlist was NOT applied (%s) — run ./install.sh in %s to see why.\n' "$disp" "$src" >&2 ;;
+  esac
+  return 1
+}
+
 # --- the audit -----------------------------------------------------------------------------------
 
 # The jq definitions the rule readers share, prepended to each program that asks, so matching has
-# ONE spelling:
-#   norm                 the legacy `:*` suffix is the other vendor spelling of a trailing ` *`
-#   spec                 the Bash specifier of a rule: "*" for the whole tool, null for another tool
+# ONE spelling. Vendor rules they encode, read 2026-11-11 (code.claude.com/docs/en/permissions):
+#   norm                 the legacy `:*` suffix is the other spelling of a trailing ` *`
 #   gmatch($t; $p)       does glob $p — `*` is its only special character — match the whole of $t?
-#   rmatch($t; $p)       gmatch, plus: a trailing ` *` also matches the bare command (vendor:
-#                        `Bash(npm run *)` matches `npm run`)
+#   rmatch($t; $p)       gmatch, plus: a pattern whose ONLY wildcard is a trailing ` *` also matches
+#                        the bare command (`Bash(npm run *)` matches `npm run`)
+#   parse                a rule as {tool, spec}: `spec` null for a rule naming a whole tool; null
+#                        when the text is not rule-shaped at all
+#   tool_is($t)          does a parsed rule name tool $t? A deny or ask rule may glob the tool name
+#   aspec                the Bash specifier of an ALLOW rule ("*" for the whole tool), or null: an
+#                        allow rule names its tool literally, a glob there approves nothing
 #   overlaps($d; $e)     can specifier $d match a command that specifier $e matches?
-#   subsumes($a; $e)     does allow RULE $a hold every command RULE $e does? The same rule, or a
-#                        `<prefix> *` rule whose prefix is a whole-word prefix of $e. Anything
-#                        else answers no, so a miss is over-reported and never under-reported.
+#   subsumes($a; $e)     does allow RULE $a hold every command RULE $e does? The same rule, the
+#                        whole tool, or a `<prefix> *` rule whose prefix is a whole-word prefix of
+#                        $e. Anything else answers no: a miss is over-reported, never under-reported
+#   suspended            is an allow rule one Auto Mode sets aside — the whole tool, or a wildcard
+#                        directly after an interpreter, a wrapper or a package-manager run command?
+#                        The vendor gives this class by example, so the list is this audit's reading
 _adb_perm_jq_defs() {
   printf '%s\n' '
 def norm: if endswith(":*)") then .[:-3] + " *)" else . end;
-def spec: norm | if . == "Bash" then "*" elif startswith("Bash(") and endswith(")") then .[5:-1] else null end;
 def gmatch($t; $p):
   ($p | split("*")) as $s
   | if ($s | length) == 1 then $t == $p
@@ -603,146 +729,222 @@ def gmatch($t; $p):
          end)) as $st
       | $st.ok and ($st.rest | endswith($s[-1]))
     end;
-def rmatch($t; $p): gmatch($t; $p) or (($p | endswith(" *")) and gmatch($t; $p[:-2]));
+def rmatch($t; $p): gmatch($t; $p) or (($p | endswith(" *")) and ($p[:-2] | contains("*") | not) and $t == $p[:-2]);
+def parse: norm | (capture("^(?<tool>[^()]+)\\((?<spec>.*)\\)$") // (if test("^[^()]+$") then {tool: ., spec: null} else null end));
+def tool_is($t): if (.tool | contains("*")) then gmatch($t; .tool) else .tool == $t end;
+def aspec: parse as $p | if $p != null and $p.tool == "Bash" then (if $p.spec == null then "*" else $p.spec end) else null end;
 def lit: split("*")[0];
-def subsumes($a; $e):
-  ($a | norm) as $a | ($e | norm) as $e
-  | $a == $e
-    or (($a | spec) as $as | ($e | spec) as $es
-        | $as != null and $es != null and ($as | endswith(" *")) and ($as[:-2] | contains("*") | not)
-          and (($es | if endswith(" *") then .[:-2] else . end) as $q
-               | ($q | contains("*") | not) and ($q == $as[:-2] or ($q | startswith($as[:-1])))));
 def overlaps($d; $e):
   if ($d | contains("*") | not) then rmatch($d; $e)
   elif ($e | contains("*") | not) then rmatch($e; $d)
-  else (($d | lit) as $a | ($e | lit) as $b | ($a | startswith($b)) or ($b | startswith($a))) end;'
+  else (($d | lit) as $a | ($e | lit) as $b | ($a | startswith($b)) or ($b | startswith($a))) end;
+def subsumes($a; $e):
+  ($a | norm) == ($e | norm)
+  or (($a | aspec) as $as | ($e | aspec) as $es
+      | $as != null and $es != null
+        and ($as == "*"
+             or (($as | endswith(" *")) and ($as[:-2] | contains("*") | not)
+                 and (($es | if endswith(" *") then .[:-2] else . end) as $q
+                      | ($q | contains("*") | not) and ($q == $as[:-2] or ($q | startswith($as[:-1])))))));
+def suspended:
+  aspec as $s
+  | $s != null and ($s | contains("*"))
+    and (($s | lit | rtrimstr(" ")) as $head
+         | $head == "" or any(("bash", "sh", "zsh", "dash", "ksh", "fish", "python", "python2", "python3", "node",
+                               "deno", "ruby", "perl", "php", "env", "sudo", "xargs", "eval", "exec", "npx", "bunx",
+                               "npm run", "npm exec", "pnpm run", "pnpm exec", "pnpm dlx", "yarn", "yarn run",
+                               "bun run", "bun x"); . == $head));'
 }
 
-
-# One settings scope as `{"state":"absent"|"read"|"unread","doc":{…}}`.
-# Usage: _adb_perm_scope <file>
+# One settings scope, reduced to the fields the audit reads and written to <out>. Never the whole
+# document: a settings file also carries `env`, and nothing here is handed more than it needs.
+#   {"state":"absent"} · {"state":"unread"} · {"state":"read", p_shape, allow, deny, ask, mode,
+#    no_auto, deny_prompts, classify_all, managed_only}
+# `p_shape` is absent | object | bad, so a `permissions` of the wrong type is not read as absent.
+# Usage: _adb_perm_scope <file> <out>   Returns: 0 written · 1 <out> could not be written
 _adb_perm_scope() {
-  local f="$1" doc
+  local f="$1" out="$2"
   case "$(adb_settings_doc_state "$f")" in
-    absent|empty) printf '%s' '{"state":"absent","doc":{}}'; return 0 ;;
+    absent|empty) printf '%s\n' '{"state":"absent"}' > "$out"; return "$?" ;;
     present) ;;
-    *) printf '%s' '{"state":"unread","doc":{}}'; return 0 ;;
+    *) printf '%s\n' '{"state":"unread"}' > "$out"; return "$?" ;;
   esac
-  if doc="$(jq -c 'if type == "object" then . else error("not an object") end' "$f" 2>/dev/null)" && [ -n "$doc" ]; then
-    printf '{"state":"read","doc":%s}' "$doc"
-  else
-    printf '%s' '{"state":"unread","doc":{}}'
+  if jq -c '
+      def key($o; $k): if ($o | type) == "object" and ($o | has($k)) then $o[$k] else null end;
+      if type != "object" then error("not an object") else
+        . as $doc
+        | key($doc; "permissions") as $p
+        | {state: "read",
+           p_shape: (if ($doc | has("permissions") | not) then "absent" elif ($p | type) == "object" then "object" else "bad" end),   # shape-of-permissions
+           allow: (if ($p | type) == "object" and ($p | has("allow")) then $p.allow else [] end),
+           deny:  (if ($p | type) == "object" and ($p | has("deny")) then $p.deny else [] end),
+           ask:   (if ($p | type) == "object" and ($p | has("ask")) then $p.ask else [] end),
+           mode: key($p; "defaultMode"),
+           no_auto: (key($doc; "disableAutoMode") == "disable" or key($p; "disableAutoMode") == "disable"),
+           deny_prompts: (key($p; "denyInsteadOfPrompting") == true),
+           classify_all: (key(key($doc; "autoMode"); "classifyAllShell") == true),
+           managed_only: (key($doc; "allowManagedPermissionRulesOnly") == true)}
+      end' "$f" > "$out" 2>/dev/null && [ -s "$out" ]; then
+    return 0
   fi
+  printf '%s\n' '{"state":"unread"}' > "$out"
 }
 
 # Usage: adb_permissions_audit <clone> <home> <project-root|""> <managed-file>
 # Outputs: the records documented in this file's header, on stdout
 # Returns: 0 clean · 10 prompt sources found · 11 not evaluated
-adb_permissions_audit() {
-  local repo="$1" home="$2" project="$3" managed="$4"
-  local ship user proj local_ mgd gates="" gates_state=none cli="" cfg_other=false mgd_dir=false out rc
+# A subshell body: its temp directory is removed on every way out.
+adb_permissions_audit() (
+  repo="$1"; home="$2"; project="$3"; managed="$4"
+  _adb_perm_unevaluated() {
+    printf 'note\tunevaluated\t%s\t%s\n' "$1" "$2"
+    printf 'summary\tunevaluated\t-\tentries=0/0 scopes=0/0 rules=0 findings=0 unevaluated=1\n'
+  }
   if ! command -v jq >/dev/null 2>&1; then
-    printf 'note\tunevaluated\t-\tjq is not installed, so no settings file was read\n'
-    printf 'summary\tunevaluated\t-\tentries=0/0 scopes=0/0 rules=0 findings=0 unevaluated=1\n'
-    return 11
+    _adb_perm_unevaluated - "jq is not installed, so no settings file was read"; return 11
   fi
-  if ! ship="$(adb_permissions_entries "$(adb_permissions_payload "$repo")")"; then
-    printf 'note\tunevaluated\t%s\tthe shipped allowlist could not be read, so no entry was evaluated\n' "$(adb_permissions_payload "$repo")"
-    printf 'summary\tunevaluated\t-\tentries=0/0 scopes=0/0 rules=0 findings=0 unevaluated=1\n'
-    return 11
+  d="$(mktemp -d "${TMPDIR:-/tmp}/adb-audit.XXXXXX" 2>/dev/null)" || {
+    _adb_perm_unevaluated - "no temporary directory could be made, so no settings file was read"; return 11; }
+  trap 'rm -rf "$d"' EXIT
+  if ! adb_permissions_entries "$(adb_permissions_payload "$repo")" > "$d/ship.json"; then
+    _adb_perm_unevaluated "$(adb_permissions_payload "$repo")" "the shipped allowlist could not be read, so no entry was evaluated"; return 11
   fi
-  mgd="$(_adb_perm_scope "$managed")"
-  user="$(_adb_perm_scope "$home/.claude/settings.json")"
+
+  # WHERE CLAUDE CODE READS THE PROJECT'S FILES (vendor settings page, read 2026-11-11): the shared
+  # file at the repository root, and the local file at the repository root too — in a linked
+  # worktree, at the MAIN checkout's root.
+  local_file=""; local_where=".claude/settings.local.json"; local_unresolved=false; gates_state=none
+  printf '%s\n' '{"state":"none"}' > "$d/proj.json"; cp "$d/proj.json" "$d/local.json"
+  printf '%s\n' '[]' > "$d/gates.json"
   if [ -n "$project" ]; then
-    proj="$(_adb_perm_scope "$project/.claude/settings.json")"
-    local_="$(_adb_perm_scope "$project/.claude/settings.local.json")"
-    local g grc=0
-    g="$(bash "$_adb_perm_libdir/project-gates.sh" detect "$project" 2>/dev/null)" || grc=$?
-    if [ "$grc" -eq 0 ]; then
-      gates_state=detected
-      gates="$(printf '%s' "$g" | jq -c -R -s '[ split("\n")[] | select(length > 0) | split("\t") | {label: .[0], cmd: (.[1:] | join("\t"))} ]' 2>/dev/null)" || gates_state=unread
+    if top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
+      project="$top"
+      local_file="$project/.claude/settings.local.json"
+      if gd="$(git -C "$project" rev-parse --path-format=absolute --git-dir 2>/dev/null)" \
+         && cdir="$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+        if [ "$gd" != "$cdir" ]; then   # worktree-local-file
+          case "$cdir" in
+            */.git) local_file="${cdir%/.git}/.claude/settings.local.json"; local_where="the main checkout's .claude/settings.local.json" ;;
+            *) local_file=""; local_unresolved=true ;;
+          esac
+        fi
+      else
+        local_file=""; local_unresolved=true
+      fi
     else
-      gates_state=unread
+      local_file="$project/.claude/settings.local.json"
     fi
-  else
-    proj='{"state":"none","doc":{}}'; local_='{"state":"none","doc":{}}'
+    _adb_perm_scope "$project/.claude/settings.json" "$d/proj.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
+    if [ -n "$local_file" ]; then
+      _adb_perm_scope "$local_file" "$d/local.json" || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
+    else
+      printf '%s\n' '{"state":"unread"}' > "$d/local.json"
+    fi
+    grc=0
+    g="$(bash "$_adb_perm_libdir/project-gates.sh" detect "$project" 2>/dev/null)" || grc=$?
+    if [ "$grc" -eq 0 ] && printf '%s' "$g" \
+         | jq -c -R -s '[ split("\n")[] | select(length > 0) | split("\t") | {label: .[0], cmd: (.[1:] | join("\t"))} ]' > "$d/gates.json" 2>/dev/null; then
+      gates_state=detected
+    else
+      gates_state=unread; printf '%s\n' '[]' > "$d/gates.json"
+    fi
   fi
-  [ -n "$gates" ] || gates='[]'
+  { _adb_perm_scope "$managed" "$d/mgd.json" && _adb_perm_scope "$home/.claude/settings.json" "$d/user.json"; } \
+    || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
+
   cli="$(adb_claude_cli_version 2>/dev/null)" || cli=""
+  cfg_other=false; mgd_dir=false
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ ! "$CLAUDE_CONFIG_DIR" -ef "$home/.claude" ]; then cfg_other=true; fi
   if [ -d "$(dirname "$managed")/managed-settings.d" ]; then
-    local mgd_ls
     # A directory that cannot be listed is not an empty one.
     if ! mgd_ls="$(ls -A "$(dirname "$managed")/managed-settings.d" 2>/dev/null)" || [ -n "$mgd_ls" ]; then mgd_dir=true; fi
   fi
-  # v2.1.283: the release from which `auto` is the built-in starting mode of an interactive
-  # session on every plan (vendor permission-modes page, read 2026-11-11). Before it the built-in
-  # start depends on the plan, which this cannot see.
-  local auto_default=false
-  if [ -n "$cli" ] && adb_version_ge "$cli" 2.1.283; then auto_default=true; fi
+  # VERSION-SENSITIVE VENDOR RULES (permission-modes and settings-reference pages, read 2026-11-11):
+  #   v2.1.283  `auto` is the built-in starting mode of an interactive session on every plan;
+  #             before it the built-in start depends on the plan, which this cannot see
+  #   v2.1.257  `bypassPermissions` stops taking effect from project and local settings
+  #   v2.1.319  `permissions.denyInsteadOfPrompting` exists
+  auto_default=false; bypass_local=unknown; dp_ok=unknown
+  if [ -n "$cli" ]; then
+    if adb_version_ge "$cli" 2.1.283; then auto_default=true; fi
+    if adb_version_ge "$cli" 2.1.257; then bypass_local=ignored; else bypass_local=honoured; fi
+    if adb_version_ge "$cli" 2.1.319; then dp_ok=yes; else dp_ok=no; fi
+  fi
 
-  local defs; defs="$(_adb_perm_jq_defs)"
-  out="$(jq -n -r --argjson ship "$ship" --argjson mgd "$mgd" --argjson user "$user" --argjson proj "$proj" \
-      --argjson local "$local_" --argjson gates "$gates" --arg gates_state "$gates_state" --arg cli "$cli" \
-      --argjson auto_default "$auto_default" --argjson cfg_other "$cfg_other" --argjson mgd_dir "$mgd_dir" \
-      --arg managed "$managed" "$defs"'
+  out="$(jq -n -r --slurpfile ship "$d/ship.json" --slurpfile mgd "$d/mgd.json" --slurpfile user "$d/user.json" \
+      --slurpfile proj "$d/proj.json" --slurpfile local "$d/local.json" --slurpfile gates "$d/gates.json" \
+      --arg gates_state "$gates_state" --arg cli "$cli" --argjson auto_default "$auto_default" \
+      --arg bypass_local "$bypass_local" --arg dp_ok "$dp_ok" --argjson cfg_other "$cfg_other" \
+      --argjson mgd_dir "$mgd_dir" --argjson local_unresolved "$local_unresolved" \
+      --arg managed "$managed" --arg local_where "$local_where" "$(_adb_perm_jq_defs)"'
     # One record is one line of four fields: a control character in a rule, a path or a gate
     # command — text a project controls — is replaced, so it cannot end a field or start a record.
     def clean: explode | map(if . < 32 or . == 127 then 63 else . end) | implode;
     def rec($k; $l; $w; $t): [$k, $l, ($w | clean), ($t | clean)] | join("\t");   # record-one-line
-    def strs($v): if ($v | type) == "array" and all($v[]; type == "string") then $v else null end;
+    def strs: type == "array" and all(.[]; type == "string");
+    def plural($n; $one; $many): if $n == 1 then $one else $many end;
 
-    [ {name: "managed", s: $mgd, where: $managed},
-      {name: "user", s: $user, where: "~/.claude/settings.json"},
-      {name: "project", s: $proj, where: ".claude/settings.json"},
-      {name: "local", s: $local, where: ".claude/settings.local.json"} ] as $scopes
-    | [ $scopes[] | select(.s.state != "none") ] as $known
-    | [ $known[] | . as $sc
-        | ($sc.s.doc.permissions // {}) as $p
-        | {name, where, state: $sc.s.state,
-           shape_ok: (($p | type) == "object"
-                      and all(("allow", "deny", "ask"); . as $k | ($p | has($k) | not) or (strs($p[$k]) != null))),
-           allow: (if ($p | type) == "object" then (strs($p.allow // []) // []) else [] end),
-           deny:  (if ($p | type) == "object" then (strs($p.deny // []) // []) else [] end),
-           ask:   (if ($p | type) == "object" then (strs($p.ask // []) // []) else [] end),
-           mode:  (if ($p | type) == "object" then ($p.defaultMode // null) else null end),
-           no_auto: (($sc.s.doc.disableAutoMode // null) == "disable"
-                     or (($p | type) == "object" and (($p.disableAutoMode // null) == "disable"))),
-           classify_all: (($sc.s.doc.autoMode // {}) | if type == "object" then (.classifyAllShell // false) == true else false end),
-           managed_only: (($sc.s.doc.allowManagedPermissionRulesOnly // false) == true)} ] as $S
+    $ship[0] as $ship | $gates[0] as $gates
+    | [ {name: "managed", s: $mgd[0], where: $managed},
+        {name: "user", s: $user[0], where: "~/.claude/settings.json"},
+        {name: "project", s: $proj[0], where: ".claude/settings.json"},
+        {name: "local", s: $local[0], where: $local_where} ] as $scopes
+    | [ $scopes[] | select(.s.state != "none") | . as $sc | $sc.s as $x
+        | ($x.state == "read" and $x.p_shape != "bad" and ($x.allow | strs) and ($x.deny | strs) and ($x.ask | strs)) as $ok
+        | {name, where, state: $x.state, shape_ok: ($x.state != "read" or $ok),
+           allow: (if $ok then $x.allow else [] end), deny: (if $ok then $x.deny else [] end),
+           ask: (if $ok then $x.ask else [] end),
+           mode: (if $x.state == "read" then $x.mode else null end),
+           no_auto: ($x.state == "read" and $x.no_auto), deny_prompts: ($x.state == "read" and $x.deny_prompts),
+           classify_all: ($x.state == "read" and $x.classify_all), managed_only: ($x.state == "read" and $x.managed_only)} ] as $S
     | ([ $S[] | select(.name == "managed") | .managed_only ] | any) as $managed_only
     | [ $S[] | select(($managed_only | not) or .name == "managed") ] as $R       # the scopes whose rules count
-    | [ $R[] | .allow[] | norm ] as $allow
-    | [ $R[] | . as $sc | .deny[] | {rule: ., where: $sc.where} ] as $deny
-    | [ $R[] | . as $sc | .ask[]  | {rule: ., where: $sc.where} ] as $ask
-    | ($allow | any(.[]; . == "Bash" or . == "Bash(*)")) as $allow_all
 
-    # --- the starting mode: managed > local > project > user; `auto` and `bypassPermissions`
-    #     take effect only from user or managed settings
+    # --- the starting mode: managed > local > project > user. `auto` never takes effect from
+    #     project or local settings; `bypassPermissions` did before v2.1.257
     | ([ $S[] | select(.no_auto) | .where ]) as $no_auto
-    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null)
-         | select((.name == "local" or .name == "project") and (.mode == "auto" or .mode == "bypassPermissions") | not) ]
+    | ([ $S[] | select((.name == "local" or .name == "project") and .mode == "auto") ]) as $ign_auto
+    | ([ $S[] | select((.name == "local" or .name == "project") and .mode == "bypassPermissions") ]) as $loc_bypass
+    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null)   # mode-precedence
+         | select(((.name == "local" or .name == "project")
+                   and (.mode == "auto" or (.mode == "bypassPermissions" and $bypass_local != "honoured"))) | not) ]
        | .[0] // null) as $msrc
-    | ([ $S[] | select((.name == "local" or .name == "project") and (.mode == "auto" or .mode == "bypassPermissions")) ]) as $ignored
     | (if $msrc != null then $msrc.mode elif $auto_default then "auto" else null end) as $mode0
-    | (if $mode0 == "auto" and ($no_auto | length) > 0 then "default" else $mode0 end) as $mode
-    | (if $mode == "manual" then "default" else $mode end) as $mode
+    | (if $mode0 == "auto" and ($no_auto | length) > 0 then "default" elif $mode0 == "manual" then "default" else $mode0 end) as $mode
+    | (["auto", "acceptEdits", "bypassPermissions", "default", "plan", "dontAsk"] | any(.[]; . == $mode)) as $mode_known
     | ([ $S[] | select(.name == "managed" or .name == "user") | .classify_all ] | any) as $classify_all
-    | (($mode == "auto") and $classify_all) as $allow_inert
-    | (if $mode == "auto" then "classifier" else "prompt" end) as $miss_level
+    | (($mode == "auto") and $classify_all) as $allow_inert   # classify-all
+    | ([ $S[] | select((.name == "managed" or .name == "user") and .deny_prompts) | .where ]) as $dp_where
+    | (($dp_where | length) > 0 and $dp_ok == "yes") as $dp
+    # what a would-be prompt becomes
+    | (if $dp or $mode == "dontAsk" then "blocked" else "prompt" end) as $asked   # asked-level
+    | (if $mode == "auto" then "classifier" elif $mode == "bypassPermissions" then null
+       elif ($mode_known | not) then "unevaluated" else $asked end) as $miss_level
 
-    # --- every deny and ask rule, classified ONCE: the entries it can match
-    | ([ $deny[], $ask[] ] | length) as $nrules
-    | [ ($deny[] | . + {kind: "deny"}), ($ask[] | . + {kind: "ask"}) ] as $rules
-    | [ $rules[] | . as $r | ($r.rule | spec) as $d
-        | ($r.rule | test("^(Edit|Write|Read)(\\(\\*\\))?$")) as $whole
-        | [ $ship[] | select($d != null and overlaps($d; (. | spec))) ] as $hit
-        | select(($hit | length) > 0 or $whole)
-        | $r + {hit: $hit, whole: $whole} ] as $hits
+    # --- the allow rules in effect: Auto Mode sets the arbitrary-execution ones aside
+    | [ $R[] | .allow[] ] as $allow_all_rules
+    | [ $allow_all_rules[] | select($mode == "auto" and suspended) ] as $set_aside
+    | [ $allow_all_rules[] | select(($mode == "auto" and suspended) | not) ] as $allow   # auto-suspends
+
+    # --- every deny and ask rule, classified ONCE
+    | [ ($R[] | . as $sc | .deny[] | {rule: ., where: $sc.where, kind: "deny"}),
+        ($R[] | . as $sc | .ask[]  | {rule: ., where: $sc.where, kind: "ask"}) ] as $rules
+    | [ $rules[] | . as $r | ($r.rule | parse) as $p
+        | (if $p == null then {cls: "unparsed"}
+           elif ($p | tool_is("Bash")) then
+             (if $p.spec == null or $p.spec == "*" then {cls: "bash", spec: "*"}
+              elif ($p.spec | test("^[A-Za-z_][A-Za-z0-9_]*[ ]*:")) then
+                (if ($p.spec | test("^command[ ]*:")) then {cls: "ignored"} else {cls: "param"} end)
+              else {cls: "bash", spec: $p.spec} end)
+           elif ($p.spec == null or $p.spec == "*") and any(("Edit", "Write", "Read"); . as $t | $p | tool_is($t)) then {cls: "whole"}
+           else {cls: "other"} end) as $c
+        | $r + $c
+          + {hit: (if $c.cls == "bash" then [ $ship[] | select(. as $e | overlaps($c.spec; ($e | aspec))) ] else [] end)} ] as $classified
+    | [ $classified[] | select(.cls == "whole" or (.cls == "bash" and (.hit | length) > 0)) ] as $hits
     | [ $hits[] | .hit[] ] as $ruled
 
     # --- every shipped entry: held by an allow rule (its own, or a broader one), and by no deny or ask
-    | [ $ship[] | . as $e | {entry: $e, listed: ($allow_all or ($allow | any(.[]; . as $a | subsumes($a; $e))))} ] as $E
+    | [ $ship[] | . as $e | {entry: $e, listed: ($allow | any(.[]; . as $a | subsumes($a; $e)))} ] as $E
     | [ $E[] | select(.listed and ($allow_inert | not) and (.entry as $e | $ruled | any(.[]; . == $e) | not)) ] as $covered   # ruled-not-covered
 
     | [
@@ -751,41 +953,65 @@ adb_permissions_audit() {
                  elif .state == "absent" then rec("scope"; "ok"; .where; "absent")
                  elif (.shape_ok | not) then rec("scope"; "unevaluated"; .where; "`permissions` or one of its allow/deny/ask lists is not the documented shape, so its rules were not evaluated")
                  else rec("scope"; "ok"; .where; "read: \(.allow | length) allow, \(.deny | length) deny, \(.ask | length) ask") end ),
-        ( if ($proj.state == "none") then rec("scope"; "info"; "-"; "no project: only the managed file and user settings were read") else empty end ),
+        ( if ($proj[0].state == "none") then rec("scope"; "info"; "-"; "no project: only the managed file and user settings were read") else empty end ),
+        ( if $local_unresolved then rec("scope"; "unevaluated"; ".claude/settings.local.json"; "this is a linked worktree whose main checkout could not be located, so the local settings a session reads were not evaluated") else empty end ),
         ( if $cfg_other then rec("scope"; "unevaluated"; "CLAUDE_CONFIG_DIR"; "names another configuration root; the user settings a session there reads were not evaluated") else empty end ),
         ( if $mgd_dir then rec("scope"; "unevaluated"; "managed-settings.d"; "holds managed settings fragments this audit does not read") else empty end ),
-        ( if $managed_only then rec("note"; "prompt"; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included") else empty end ),
+        ( if $managed_only then rec("note"; $asked; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included") else empty end ),
 
         # mode
-        ( $ignored[] | rec("mode"; "info"; .where; "defaultMode \"\(.mode)\" is not honoured from project or local settings") ),
+        ( $ign_auto[] | rec("mode"; "info"; .where; "defaultMode \"auto\" does not take effect from project or local settings") ),
+        ( $loc_bypass[] | if $bypass_local == "ignored" then rec("mode"; "info"; .where; "defaultMode \"bypassPermissions\" does not take effect from project or local settings on this CLI (v2.1.257 and later)")
+                          elif $bypass_local == "unknown" then rec("mode"; "unevaluated"; .where; "defaultMode \"bypassPermissions\" took effect from project and local settings before v2.1.257, and the CLI version could not be read")   # bypass-version
+                          else empty end ),
         ( if $mode == null then
             rec("mode"; "unevaluated"; "-"; "no defaultMode is set and the built-in starting mode could not be established (claude \(if $cli == "" then "was not found" else "v" + $cli + " predates the v2.1.283 built-in auto default" end))")
           elif $mode == "auto" then
             rec("mode"; "ok"; ($msrc.where // "built-in default"); "auto: no routine prompts; a command no allow rule matches is judged by the classifier")
           elif $mode == "acceptEdits" then
-            rec("mode"; "ok"; $msrc.where; "acceptEdits: edits run unasked; a Bash command that no allow rule or sandbox covers prompts")
+            rec("mode"; "ok"; $msrc.where; "acceptEdits: edits run unasked; a Bash command that no allow rule or sandbox covers \(if $asked == "blocked" then "is refused" else "prompts" end)")
           elif $mode == "bypassPermissions" then
-            rec("mode"; "info"; $msrc.where; "bypassPermissions: nothing prompts and nothing is checked — the posture this allowlist exists to avoid")
+            rec("mode"; "info"; $msrc.where; "bypassPermissions: nothing prompts and nothing is checked, so no shipped entry is needed — the posture this allowlist exists to avoid")
           elif $mode == "default" and $mode0 == "auto" then
-            rec("mode"; "prompt"; ($no_auto | join(", ")); "disableAutoMode turns auto mode off, so sessions start in default mode and every unlisted command prompts")
+            rec("mode"; $asked; ($no_auto | join(", ")); "disableAutoMode turns auto mode off, so sessions start in default mode and every unlisted command \(if $asked == "blocked" then "is refused" else "prompts" end)")
           elif $mode == "default" or $mode == "plan" then
-            rec("mode"; "prompt"; $msrc.where; "defaultMode \"\($msrc.mode)\": every command no allow rule matches prompts")
+            rec("mode"; $asked; $msrc.where; "defaultMode \"\($msrc.mode)\": every command no allow rule matches \(if $asked == "blocked" then "is refused" else "prompts" end)")
           elif $mode == "dontAsk" then
             rec("mode"; "blocked"; $msrc.where; "defaultMode \"dontAsk\": a command no allow rule matches is denied instead of prompting")
           else
-            rec("mode"; "unevaluated"; $msrc.where; "defaultMode \(($msrc.mode | tojson)) is not a documented mode")
+            rec("mode"; "unevaluated"; $msrc.where; "defaultMode \($msrc.mode | tojson) is not a documented mode")
           end ),
+        ( if ($dp_where | length) > 0 then
+            (if $dp_ok == "yes" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting is on: what would prompt is refused instead")
+             elif $dp_ok == "no" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting needs CLI v2.1.319 and claude v\($cli) ignores it")
+             else rec("note"; "unevaluated"; ($dp_where | join(", ")); "denyInsteadOfPrompting is set, and whether it takes effect depends on the CLI version, which could not be read") end)
+          else empty end ),
         ( if $allow_inert then rec("note"; "classifier"; "autoMode.classifyAllShell"; "is on: in auto mode every shell allow rule is suspended, so no shipped entry skips the classifier") else empty end ),
+        ( if ($set_aside | length) > 0 then rec("note"; "info"; "-"; "auto mode sets aside \($set_aside | length) allow \(plural($set_aside | length; "rule"; "rules")) that would run arbitrary code, so \(plural($set_aside | length; "it holds"; "they hold")) no shipped entry: \($set_aside[:3] | join(", "))\(if ($set_aside | length) > 3 then ", …" else "" end)") else empty end ),
 
-        # rules that can match the shipped surface
-        ( $hits[] | rec("rule"; (if .kind == "deny" then "blocked" else "prompt" end); .where;
-            "\(.kind) rule \(.rule) " + (if .whole then "covers a whole tool the workflows use"
-              else "can match \(.hit | length) shipped entr\(if (.hit | length) == 1 then "y" else "ies" end): \(.hit[:3] | join(", "))\(if (.hit | length) > 3 then ", …" else "" end)" end)
-            + (if .kind == "deny" then " — refused in every mode" else " — prompts in every mode, auto included" end)) ),
+        # rules: the ones that can match the shipped surface, and the ones this audit cannot model
+        ( $hits[] | rec("rule"; (if .kind == "deny" then "blocked" else $asked end); .where;
+            "\(.kind) rule \(.rule) " + (if .cls == "whole" then "covers a whole tool the workflows use"
+              else "can match \(.hit | length) shipped \(plural(.hit | length; "entry"; "entries")): \(.hit[:3] | join(", "))\(if (.hit | length) > 3 then ", …" else "" end)" end)
+            + (if .kind == "deny" then " — refused in every mode"
+               elif $asked == "blocked" then " — refused instead of asked here"
+               else " — prompts in every mode, auto included" end)) ),
+        ( $classified[] | select(.cls == "param")
+            | rec("rule"; "unevaluated"; .where; "\(.kind) rule \(.rule) matches Bash calls by an input parameter, whatever the command; which calls it reaches is not something this audit can see") ),   # param-rule
+        ( $classified[] | select(.cls == "unparsed")
+            | rec("rule"; "unevaluated"; .where; "\(.kind) rule \(.rule) is not in a form this audit can read") ),
+        ( $classified[] | select(.cls == "ignored")
+            | rec("rule"; "info"; .where; "\(.kind) rule \(.rule) names the `command` parameter, which the CLI ignores with a startup warning") ),
 
         # shipped entries no allow rule holds
-        ( $E[] | select(.listed | not)
-            | rec("entry"; $miss_level; "-"; "\(.entry) is in no allow list" + (if $miss_level == "classifier" then " — judged by the classifier on every use" else " — prompts" end)) ),
+        ( if $miss_level == null then empty else
+            ( $E[] | select(.listed | not)
+              | rec("entry"; $miss_level; "-"; "\(.entry) is in no allow list"
+                  + (if $miss_level == "classifier" then " — judged by the classifier on every use"
+                     elif $miss_level == "blocked" then " — refused"
+                     elif $miss_level == "prompt" then " — prompts"
+                     else " — what then happens depends on the starting mode, which was not established" end)) )
+          end ),
 
         # the gates of the project, report only
         ( if $gates_state == "unread" then rec("gate"; "unevaluated"; "-"; "the gate commands of the project could not be detected")
@@ -796,11 +1022,12 @@ adb_permissions_audit() {
               | ([ $covered[] | select(.entry == $w) ] | length > 0) as $wok
               | $gates[] | . as $g
               | ($g.cmd | test("[;&|]|\\$\\(|`")) as $compound
-              | ([ $allow[] | select((. | spec) as $a | $a != null and ($compound | not) and rmatch($g.cmd; $a)) ] | .[0] // null) as $by
+              | ([ $allow[] | select(aspec as $a | $a != null and ($compound | not) and rmatch($g.cmd; $a)) ] | .[0] // null) as $by
               | rec("gate"; "info"; $g.label;
                   "\($g.cmd) — " + (if $wok then "runs unasked through the allowlisted gate wrapper" else "the gate wrapper is not allowlisted here" end)
-                  + "; run directly it is " + (if $compound then "a compound command, matched part by part (not evaluated)"
-                                               elif $by != null then "allowed by \($by)" else "in no allow list" end)) )
+                  + "; run directly it " + (if $compound then "is a compound command, matched part by part (not evaluated)"
+                                            elif $by != null then "matches the allow rule \($by) (deny and ask rules are not checked against it)"
+                                            else "matches no allow rule" end)) )
           end ),
         rec("note"; "info"; "-"; "not inspected: MDM and server-managed settings, and the --settings, --permission-mode and --allowedTools flags of a session")
       ] as $lines
@@ -808,23 +1035,20 @@ adb_permissions_audit() {
     | ([ $levels[] | select(. == "unevaluated") ] | length) as $nu
     | ([ $levels[] | select(. == "prompt" or . == "blocked" or . == "classifier") ] | length) as $nf
     | ([ $S[] | select(.state != "unread" and .shape_ok) ] | length) as $nread
-    | (if $nu > 0 or ($ship | length) == 0 then "unevaluated" elif $nf > 0 then "findings" else "clean" end) as $verdict
+    | (if $nu > 0 or ($ship | length) == 0 then "unevaluated" elif $nf > 0 then "findings" else "clean" end) as $verdict   # verdict
     | $lines[],
       rec("summary"; $verdict; "-";
-          "entries=\($covered | length)/\($ship | length) scopes=\($nread)/\($S | length) rules=\($nrules) findings=\($nf) unevaluated=\($nu)")
+          "entries=\($covered | length)/\($ship | length) scopes=\($nread)/\($S | length) rules=\($rules | length) findings=\($nf) unevaluated=\($nu)")
   ' 2>/dev/null)" || {
-    printf 'note\tunevaluated\t-\tthe audit could not be computed\n'
-    printf 'summary\tunevaluated\t-\tentries=0/0 scopes=0/0 rules=0 findings=0 unevaluated=1\n'
-    return 11
+    _adb_perm_unevaluated - "the audit could not be computed"; return 11
   }
   printf '%s\n' "$out"
-  rc="$(printf '%s\n' "$out" | awk -F'\t' '$1 == "summary" { v = $2 } END { print v }')"
-  case "$rc" in
+  case "$(printf '%s\n' "$out" | awk -F'\t' '$1 == "summary" { v = $2 } END { print v }')" in
     clean) return 0 ;;
     findings) return 10 ;;
     *) return 11 ;;
   esac
-}
+)
 
 # --- dispatch, only when executed ----------------------------------------------------------------
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
@@ -854,27 +1078,33 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
       || _adb_perm_repo="$(cd -P "$_adb_perm_libdir" 2>/dev/null && cd ../.. && pwd -P)" \
       || { printf 'permissions-lib: cannot locate the baseline clone (pass --repo)\n' >&2; exit 2; }
   fi
+  _adb_perm_ship() {
+    adb_permissions_entries "$(adb_permissions_payload "$_adb_perm_repo")" || {
+      printf 'permissions-lib: the shipped allowlist could not be read: %s\n' "$(adb_permissions_payload "$_adb_perm_repo")" >&2
+      return 1; }
+  }
   case "$_adb_perm_sub" in
     entries)
-      _adb_perm_e="$(adb_permissions_entries "$(adb_permissions_payload "$_adb_perm_repo")")" || {
-        printf 'permissions-lib: the shipped allowlist could not be read: %s\n' "$(adb_permissions_payload "$_adb_perm_repo")" >&2; exit 11; }
+      _adb_perm_e="$(_adb_perm_ship)" || exit 11
       printf '%s' "$_adb_perm_e" | jq -r '.[]' ;;
     missing)
-      _adb_perm_e="$(adb_permissions_entries "$(adb_permissions_payload "$_adb_perm_repo")")" || {
-        printf 'permissions-lib: the shipped allowlist could not be read: %s\n' "$(adb_permissions_payload "$_adb_perm_repo")" >&2; exit 11; }
-      _adb_perm_u="$(_adb_perm_scope "$_adb_perm_home/.claude/settings.json")"
-      printf '%s' "$_adb_perm_u" | jq -r --argjson ship "$_adb_perm_e" '
-        if .state == "unread" then error("unread")
-        else ((.doc.permissions // {}) | if type == "object" then (.allow // []) else [] end
-              | if type == "array" then . else [] end) as $live
-          | $ship[] | select(. as $e | any($live[]; . == $e) | not) end' 2>/dev/null || {
-        printf 'permissions-lib: %s is not a readable JSON object\n' "$_adb_perm_home/.claude/settings.json" >&2; exit 11; } ;;
+      _adb_perm_e="$(_adb_perm_ship)" || exit 11
+      _adb_perm_t="$(mktemp "${TMPDIR:-/tmp}/adb-allow.XXXXXX" 2>/dev/null)" || exit 11
+      _adb_perm_scope "$_adb_perm_home/.claude/settings.json" "$_adb_perm_t"
+      _adb_perm_m="$(jq -r --argjson ship "$_adb_perm_e" '
+        if .state == "unread" or (.state == "read" and (.p_shape == "bad" or (.allow | type) != "array")) then error("unread")
+        else (if .state == "read" then .allow else [] end) as $live
+          | $ship[] | select(. as $e | any($live[]; . == $e) | not) end' "$_adb_perm_t" 2>/dev/null)" || {
+        rm -f "$_adb_perm_t"
+        printf 'permissions-lib: %s is not a readable JSON object with a usable permissions.allow\n' "$_adb_perm_home/.claude/settings.json" >&2
+        exit 11; }
+      rm -f "$_adb_perm_t"
+      [ -z "$_adb_perm_m" ] || printf '%s\n' "$_adb_perm_m" ;;
     match)
       [ "$#" -ge 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }
-      _adb_perm_e="$(adb_permissions_entries "$(adb_permissions_payload "$_adb_perm_repo")")" || {
-        printf 'permissions-lib: the shipped allowlist could not be read: %s\n' "$(adb_permissions_payload "$_adb_perm_repo")" >&2; exit 11; }
+      _adb_perm_e="$(_adb_perm_ship)" || exit 11
       _adb_perm_m="$(jq -n -r --argjson ship "$_adb_perm_e" --arg cmd "$1" "$(_adb_perm_jq_defs)"'
-        $ship[] | select((. | spec) as $s | $s != null and rmatch($cmd; $s))')" || exit 11
+        $ship[] | select(aspec as $s | $s != null and rmatch($cmd; $s))')" || exit 11
       [ -n "$_adb_perm_m" ] || exit 1
       printf '%s\n' "$_adb_perm_m" ;;
     audit)

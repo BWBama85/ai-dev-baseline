@@ -138,10 +138,12 @@ than none:
     be retried outside the sandbox, which then goes through the ordinary permission flow.
   - **A subagent still shares the parent session's configuration**, so a dispatch inherits
     whatever the parent had — including an opt-out.
-  - **An allowlisted command is not judged at all.** Since #288 the same installer adds a
-    curated `permissions.allow` list. A command one of its rules matches runs with no prompt
-    and no classifier review, whatever text led to it. The list is narrow by command and
-    verb, and `docs/installation.md` says what it gives up.
+  - **An allowlisted command may not be judged at all.** Since #288 the same installer adds
+    a curated `permissions.allow` list. A command one of its rules matches runs with no
+    prompt and, in Auto Mode, no classifier review, whatever text led to it — unless an
+    `ask` or `deny` rule matches it too, the CLI protects the path, or Auto Mode has set the
+    rule aside. The list is narrow by command and verb, and `docs/installation.md` says
+    what it gives up.
   - **It fails OPEN when the sandbox cannot start.** Per the vendor reference, if dependencies are
     missing or the platform is unsupported, Claude Code warns and runs commands *without*
     sandboxing; `failIfUnavailable` is what makes that a hard error, and the installer does not

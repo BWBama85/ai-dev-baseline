@@ -609,17 +609,19 @@ record by its level, with the file it names:
 | Level | What it means |
 |---|---|
 | `prompt` | asks for approval: an `ask` rule, or a starting mode in which an unlisted command prompts |
-| `blocked` | refused rather than asked: a `deny` rule, or `dontAsk` |
+| `blocked` | refused rather than asked: a `deny` rule, or what would prompt under `dontAsk` or `denyInsteadOfPrompting` |
 | `classifier` | no allow rule holds a command the baseline runs, so Auto Mode judges it on every use — and a run stops when that judge is unavailable |
-| `unevaluated` | a file or a mode the audit could not read; the verdict is then 11, never clean |
+| `unevaluated` | a file, a rule or a mode the audit could not read or cannot model; the verdict is then 11, never clean |
 
 `gate` records are report-only: each names a gate command this project runs and whether a direct
 call of it is allowlisted. Gates run through the gate wrapper, so they change no verdict.
 
 Propose nothing the audit did not find, and edit no settings file. A shipped entry that is missing
-is added by `./install.sh` in the baseline clone, which records the ones it adds; a `deny` or `ask`
-rule, a `defaultMode`, and anything in a managed file are the owner's to change. This audit is a
-report — it does not move step 12's verdict.
+is added by `./install.sh` in the baseline clone, which records the ones it adds — unless an
+earlier install saw that entry removed, in which case it is left out until the owner adds it back
+by hand, or deletes `~/.claude/.adb-permissions-owned` and re-runs the installer to restore them
+all. A `deny` or `ask` rule, a `defaultMode`, and anything in a managed file are the owner's to
+change. This audit is a report — it does not move step 12's verdict.
 
 ### 7. Reconcile a prior framework, if the scan found one
 
@@ -922,7 +924,8 @@ key-spelling and pointer finding, and the approved split proposal — each row o
 report once the state dir is swept; the ordered plan; the pin's `version` and `commit`; and the **completion-contract verdict**
 with its outstanding and undetermined rungs. The scratch files under `.claude/state` are swept, so
 this report is the only copy of that evidence a later reader will have. Every value in it that came
-from the scanned project or from GitHub — a gate command, a login, a path, a proposal line — is
+from the scanned project or from GitHub — a gate command, a login, a path, a proposal line, a
+permission rule — is
 quoted inside a fenced block (with a fence longer than any backtick run it contains), never inline,
 so it cannot be read as Markdown or HTML.
 

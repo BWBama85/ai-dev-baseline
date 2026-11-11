@@ -402,8 +402,10 @@ Claude only (#288, D155). The installer adds a curated list of `permissions.allo
 `agents/claude/settings.permissions.json`; `baseline permissions entries` prints it.
 
 A command an allow rule matches runs without a prompt and, in Auto Mode, without a call to the
-classifier. That second half is the reason for the list: a run whose every `gh` call waits on the
-classifier stops when the classifier is unavailable.
+classifier — unless an `ask` or `deny` rule matches it too, the CLI protects the path it touches,
+or Auto Mode has set the rule aside ([what still prompts](#command-allowlist), below). The
+classifier half is the reason for the list: a run whose every `gh` call waits on the classifier
+stops when the classifier is unavailable.
 
 **What is allowlisted.** Every rule is a `Bash(…)` rule naming one command, or one command prefix
 followed by ` *`:
@@ -494,7 +496,9 @@ evaluation order and the rules Auto Mode suspends), and
 
 Nothing else in the file is written. The record is `~/.claude/.adb-permissions-owned`; it lists
 the entries this install added, and `./uninstall.sh` removes exactly those and then the record.
-An entry you put back by hand is yours and stays. A `permissions` or `permissions.allow` that is
+An entry becomes yours once an install has seen it gone: put back after that, it stays through
+an uninstall. Removed and put back between two installs, it was never seen gone, is still recorded
+as added, and an uninstall removes it. A `permissions` or `permissions.allow` that is
 not an object and an array refuses the whole step, and `baseline update` retries it when the list
 changes. In a run whose hook wiring or sandbox step failed, the allowlist is not written either,
 and the run says so.
@@ -518,25 +522,44 @@ prints the shipped entries your user settings lack.
 
 `baseline permissions audit`, run in a project, reports what would prompt, be refused, or reach
 the classifier there. `/adopt` runs it. It reads the managed `managed-settings.json`, your user
-settings, and the project's `.claude/settings.json` and `.claude/settings.local.json`, and writes
-nothing. Each line is `kind`, `level`, where it was found, and what it means:
+settings, the project's `.claude/settings.json`, and its `.claude/settings.local.json` — in a
+linked worktree, the main checkout's, which is the one Claude Code reads. It takes only the rule
+lists and mode keys out of each file, and writes nothing. Each line is `kind`, `level`, where it
+was found, and what it means:
 
 | Level | Meaning |
 |---|---|
 | `ok`, `info` | nothing to do |
-| `classifier` | a shipped entry is in no allow list, so Auto Mode judges that command on every use |
-| `prompt` | an `ask` rule that can match a shipped entry, or a starting mode in which unlisted commands prompt |
-| `blocked` | a `deny` rule that can match a shipped entry, or `dontAsk` |
-| `unevaluated` | a settings file that is not a readable JSON object, a rule list in the wrong shape, an undocumented mode, a `CLAUDE_CONFIG_DIR` naming another root, or a `managed-settings.d` |
+| `classifier` | in Auto Mode, a shipped entry no allow rule holds: that command is judged on every use |
+| `prompt` | an `ask` rule that can match a shipped entry, or an unlisted command in a mode that asks |
+| `blocked` | a `deny` rule that can match a shipped entry; or what would prompt, under `dontAsk` or `permissions.denyInsteadOfPrompting` |
+| `unevaluated` | something the audit could not read or cannot model: a settings file that is not a JSON object, `permissions` or a rule list of the wrong type, a rule that is not rule-shaped, a rule matching Bash by input parameter, an undocumented mode, a `CLAUDE_CONFIG_DIR` naming another root, a `managed-settings.d`, a worktree whose main checkout cannot be found, or a setting whose effect depends on a CLI version that could not be read |
 
 It exits **0** clean, **10** when it found a `classifier`, `prompt` or `blocked` line, and **11**
-when anything was `unevaluated` — a file it could not read is never reported as clean. Allow lists
-merge across scopes, so a shorter project list narrows nothing; a project `deny` or `ask` rule
-does, and is named with its file. `gate` lines list each gate command the project runs and whether
-a direct call of it is allowlisted; they never change the exit code. MDM and server-managed
-settings and a session's `--settings`, `--permission-mode` and `--allowedTools` flags are not
-inspected. `baseline permissions match -- '<command>'` names the shipped entry that covers one
-simple command.
+when anything was `unevaluated` — a file it could not read is never reported as clean.
+
+How it reads the rules, each from the vendor pages cited above:
+
+- **Allow lists merge across scopes**, so a shorter project list narrows nothing. A shipped entry
+  counts as held by its own rule, by the whole tool (`Bash`), or by a broader `<prefix> *` rule of
+  yours. An allow rule that globs the tool name (`B*`) approves nothing.
+- **A `deny` or `ask` rule from any scope wins**, and is named with its file. It may name the
+  tool by glob (`*`, `Bash*`). A rule matching Bash by input parameter
+  (`Bash(run_in_background:true)`) is `unevaluated`; `Bash(command:…)` is ignored by the CLI and
+  reported as such.
+- **In Auto Mode, allow rules that would run arbitrary code hold nothing**: the whole tool, and a
+  wildcard directly after an interpreter, a wrapper or a package-manager run command. The vendor
+  describes that class by example, so the list is this audit's reading of it.
+- **The starting mode** is the highest of managed, local, project and user settings. `auto` does
+  not take effect from project or local settings, and neither does `bypassPermissions` since CLI
+  v2.1.257. What a missing entry becomes follows the mode: judged in `auto`, asked in `default`,
+  `plan` and `acceptEdits`, refused in `dontAsk`, and nothing at all in `bypassPermissions`.
+  `permissions.denyInsteadOfPrompting` (CLI v2.1.319) turns what would be asked into a refusal.
+
+`gate` lines list each gate command the project runs and whether a direct call of it matches an
+allow rule; they never change the exit code. MDM and server-managed settings and a session's
+`--settings`, `--permission-mode` and `--allowedTools` flags are not inspected.
+`baseline permissions match -- '<command>'` names the shipped entry that covers one simple command.
 
 ### Run markers are session-owned
 
@@ -1312,7 +1335,7 @@ installer never wrote.
 
 And it removes the **[command allowlist](#command-allowlist) entries it added**, by the record at
 `~/.claude/.adb-permissions-owned`: an entry that was already in your `permissions.allow` was
-never recorded and stays, as does one you removed and put back yourself.
+never recorded and stays, as does one an install saw gone and you then put back.
 
 Your backups under
 `~/.claude/backups/ai-dev-baseline-*` are **never** touched by uninstall —
