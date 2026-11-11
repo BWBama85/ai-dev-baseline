@@ -270,6 +270,7 @@ _adb_perm_merge() {
   jq -c -s --argjson ship "$2" --argjson rc "$3" '
     def has_el($xs; $x): any($xs[]; . == $x);
     (if length == 1 then .[0] else error("not one JSON document") end) as $cur
+    | if ([$cur | .. | numbers | select(isnan or isinfinite)] | length) > 0 then error("not JSON") else . end   # merge-strict-numbers
     | $cur
     | if ($cur | type) != "object" then {verdict: "blocked", why: "settings.json does not hold a JSON object"}
       elif ($cur | has("permissions")) and ($cur.permissions | type) != "object" then
@@ -345,7 +346,7 @@ _adb_perm_restore() {
   local settings="$1"
   if [ "$_ADB_PERM_WAS_LINK" -eq 1 ]; then   # restore-link
     _adb_perm_snapshot_drop
-    rm -f "$settings" 2>/dev/null && ln -s "$_ADB_PERM_LINK" "$settings" 2>/dev/null
+    rm -f -- "$settings" 2>/dev/null && ln -s -- "$_ADB_PERM_LINK" "$settings" 2>/dev/null   # link-operand
   elif [ "$_ADB_PERM_HAD" -eq 1 ]; then
     adb_publish_json "$_ADB_PERM_PRE" "$settings" --allow-empty && _ADB_PERM_PRE=""
   else
@@ -624,6 +625,7 @@ adb_permissions_remove() {
   result="$(jq -c -s --argjson rc "$rj" '
     def has_el($xs; $x): any($xs[]; . == $x);
     (if length == 1 then .[0] else error("not one JSON document") end) as $cur
+    | if ([$cur | .. | numbers | select(isnan or isinfinite)] | length) > 0 then error("not JSON") else . end
     | $cur
     | if ($cur | type) != "object" or ($cur | has("permissions") | not) or ($cur.permissions | type) != "object"
          or ($cur.permissions | has("allow") | not) or ($cur.permissions.allow | type) != "array"
@@ -841,6 +843,8 @@ _adb_perm_scope() {
   if jq -c -s '
       def key($o; $k): if ($o | type) == "object" and ($o | has($k)) then $o[$k] else null end;
       (if length == 1 then .[0] else error("not one JSON document") end)   # scope-one-document
+      # jq reads NaN and Infinity; JSON has neither, and the CLI would not load the file
+      | if ([.. | numbers | select(isnan or isinfinite)] | length) > 0 then error("not JSON") else . end   # scope-strict-numbers
       | if type != "object" then error("not an object") else
         . as $doc
         | key($doc; "permissions") as $p
@@ -897,17 +901,31 @@ adb_permissions_audit() (
   #           root is the home directory, or when the root, its `.git` or its `.claude` is not
   #           the user's own
   #   also    a local file an older CLI left in the session's directory: its rules apply too
+  #   v2.1.211 is where the local file moved to the repository root; before it, the session
+  #   directory's own. A CLI that cannot be probed leaves that undecided when the two differ.
   local_file=""; local_where=".claude/settings.local.json"; local_unresolved=false; gates_state=none
   local2_file=""; gates_root="$project"
+  cli="$(adb_claude_cli_version 2>/dev/null)" || cli=""
   printf '%s\n' '{"state":"none"}' > "$d/proj.json"; cp "$d/proj.json" "$d/local.json"; cp "$d/proj.json" "$d/local2.json"
   printf '%s\n' '[]' > "$d/gates.json"
+  # One line of git output as the path it names: the sentinel keeps a newline that ends a directory
+  # name, and exactly the one newline git terminates its answer with is taken off.
+  _adb_perm_git_path() {
+    local out
+    out="$(git -C "$1" rev-parse "${@:2}" 2>/dev/null && printf x)" || return 1
+    out="${out%x}"; out="${out%$'\n'}"   # git-path-exact
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"; printf x
+  }
   if [ -n "$project" ]; then
     sess_local="$project/.claude/settings.local.json"
     local_file="$sess_local"
-    if top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" && [ -n "$top" ]; then
+    if top="$(_adb_perm_git_path "$project" --show-toplevel)"; then
+      top="${top%x}"
       gates_root="$top"; root="$top"
-      if gd="$(git -C "$project" rev-parse --path-format=absolute --git-dir 2>/dev/null)" \
-         && cdir="$(git -C "$project" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+      if gd="$(_adb_perm_git_path "$project" --path-format=absolute --git-dir)" \
+         && cdir="$(_adb_perm_git_path "$project" --path-format=absolute --git-common-dir)"; then
+        gd="${gd%x}"; cdir="${cdir%x}"
         if [ "$gd" != "$cdir" ]; then   # worktree-local-file
           case "$cdir" in
             */.git) root="${cdir%/.git}" ;;
@@ -920,12 +938,16 @@ adb_permissions_audit() (
       if [ -n "$root" ]; then
         if [ "$root" -ef "$home" ] || ! _adb_perm_owned "$root"; then   # local-stays-with-session
           local_file="$sess_local"
-        else
+        elif [ "$root/.claude/settings.local.json" -ef "$sess_local" ] || [ "$root/.claude/settings.local.json" = "$sess_local" ]; then
+          local_file="$sess_local"
+        elif [ -z "$cli" ]; then   # local-location-by-version
+          local_file=""; local_unresolved=true
+        elif adb_version_ge "$cli" 2.1.211; then
           local_file="$root/.claude/settings.local.json"
-          if [ ! "$local_file" -ef "$sess_local" ] && [ "$local_file" != "$sess_local" ]; then
-            local_where="the repository root's .claude/settings.local.json"
-            local2_file="$sess_local"   # legacy-local
-          fi
+          local_where="the repository root's .claude/settings.local.json"
+          local2_file="$sess_local"   # legacy-local
+        else
+          local_file="$sess_local"
         fi
       else
         local_file=""
@@ -952,7 +974,6 @@ adb_permissions_audit() (
   { _adb_perm_scope "$managed" "$d/mgd.json" && _adb_perm_scope "$home/.claude/settings.json" "$d/user.json"; } \
     || { _adb_perm_unevaluated - "the audit could not stage its inputs"; return 11; }
 
-  cli="$(adb_claude_cli_version 2>/dev/null)" || cli=""
   cfg_other=false; mgd_dir=false
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ ! "$CLAUDE_CONFIG_DIR" -ef "$home/.claude" ]; then cfg_other=true; fi
   if [ -d "$(dirname "$managed")/managed-settings.d" ]; then
@@ -1072,7 +1093,7 @@ adb_permissions_audit() (
                  elif (.shape_ok | not) then rec("scope"; "unevaluated"; .where; "`permissions` or one of its allow/deny/ask lists is not the documented shape, so its rules were not evaluated")
                  else rec("scope"; "ok"; .where; "read: \(.allow | length) allow, \(.deny | length) deny, \(.ask | length) ask") end ),
         ( if ($proj[0].state == "none") then rec("scope"; "info"; "-"; "no project: only the managed file and user settings were read") else empty end ),
-        ( if $local_unresolved then rec("scope"; "unevaluated"; ".claude/settings.local.json"; "this is a linked worktree whose main checkout could not be located, so the local settings a session reads were not evaluated") else empty end ),
+        ( if $local_unresolved then rec("scope"; "unevaluated"; ".claude/settings.local.json"; "which local settings file a session here reads could not be established — a linked worktree whose main checkout was not found, or a subdirectory session on a CLI whose version could not be read (the file moved to the repository root in v2.1.211)") else empty end ),
         ( if $cfg_other then rec("scope"; "unevaluated"; "CLAUDE_CONFIG_DIR"; "names another configuration root; the user settings a session there reads were not evaluated") else empty end ),
         ( if $mgd_dir then rec("scope"; "unevaluated"; "managed-settings.d"; "holds managed settings fragments this audit does not read") else empty end ),
         ( if $managed_only then rec("note"; "info"; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included — only the managed rules were counted") else empty end ),   # managed-only-notice

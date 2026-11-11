@@ -21,7 +21,8 @@ only by a release it upgrades to. These entries are the notes for both.
   entry you already have is yours and is never recorded, one you remove by hand is not written
   again, and `./uninstall.sh` removes only the entries the install added
   (`~/.claude/.adb-permissions-owned`). `permissions.defaultMode` is never written. `git push`,
-  `gh api`, `gh pr merge`, anything that deletes, every whole interpreter, and the baseline's own
+  `git fetch` with any argument beyond four exact forms, `gh api`, `gh pr merge`, anything that
+  deletes, every whole interpreter, and the baseline's own
   library scripts are deliberately left out — the last because the vendor does not say whether
   Auto Mode keeps a rule naming an interpreter and a script. `--no-permissions` opts out. `baseline permissions audit` (step 6b of `/adopt`) reads the
   managed, user, project and local settings and reports a shipped entry in no allow list, a `deny`

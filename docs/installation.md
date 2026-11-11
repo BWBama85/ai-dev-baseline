@@ -412,7 +412,7 @@ followed by ` *`:
 
 | Family | Rules |
 |---|---|
-| git | `git add *` · `git commit -m *` · `git fetch *` · `git merge --ff-only *` · `git switch -c *` |
+| git | `git add *` · `git commit -m *` · `git fetch` · `git fetch origin` · `git fetch --prune origin` · `git fetch --tags origin` · `git merge --ff-only *` · `git switch -c *` |
 | gh, read | `gh auth status` · `gh issue list *` · `gh issue view *` · `gh label list *` · `gh pr checks *` · `gh pr diff *` · `gh pr list *` · `gh pr view *` · `gh release list *` · `gh release view *` · `gh repo view *` · `gh run list *` · `gh run view *` |
 | gh, write | `gh issue create *` · `gh issue edit *` · `gh label create *` · `gh pr create *` · `gh pr edit *` · `gh workflow run *` |
 | jq | `jq *` |
@@ -426,6 +426,9 @@ be as narrow as the words before its `*`:
   `implement-lib.sh open-pr`, a library call that is not allowlisted either.
 - **Anything that discards or deletes**: `git reset --hard`, `git checkout`, `git restore`,
   `git clean`, `git stash`, branch and ref deletion, `rm`.
+- **`git fetch` with anything after it.** `git fetch --upload-pack=<program>` runs that program,
+  and `git` is outside the sandbox, so a `git fetch *` rule would run arbitrary code unasked. Only
+  the four exact forms in the table are allowed.
 - **`gh api`, `gh pr merge`, `gh pr close`, `gh run rerun`, `gh auth token`.** `gh api` is every
   REST and GraphQL call, deletions included. Merging and closing are decisions. `gh auth status` is
   allowed only as that exact command, so `--show-token` is not.
@@ -456,8 +459,13 @@ what that text can induce:
 - A matched command is not shown to you and not judged by the classifier. `git commit -m *` also
   matches `git commit -m x --no-verify`; `git switch -c *` also matches a `--discard-changes`
   after it. The words before the `*` are the whole limit.
-- `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker.
-  Whatever the session can read, it can put there.
+- `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker —
+  with `--repo`, to any repository your token can reach. Whatever the session can read, it can
+  put there.
+- `jq *` reads any file you can read, including one outside the project that would otherwise
+  prompt on first read.
+- `git merge --ff-only *` also accepts `-s <strategy>`, which runs a `git-merge-<strategy>`
+  program if one is on your `PATH`.
 - `agent-init` writes `agents.toml`, a `.gitignore` entry and the state directory in the project it
   is run in. Only the bare command is allowed, so `--force`, which overwrites, is not.
 
@@ -529,8 +537,10 @@ directory. `/adopt` runs it. It reads the files such a session loads: the manage
 which is where Claude Code reads the shared file from, not the repository root; and the
 `.claude/settings.local.json` at the repository root — the main checkout's, in a linked worktree.
 The local file is read beside the shared one instead when there is no repository, when the root is
-your home directory, or when the root, its `.git` or its `.claude` is not yours. A local file an
-older CLI left in the directory itself is read as well. It takes only the rule lists and mode keys
+your home directory, or when the root, its `.git` or its `.claude` is not yours. Before CLI
+v2.1.211 the local file was always the directory's own, so the audit follows the probed CLI
+version, and says it could not tell when a subdirectory is audited and no version can be read. A
+local file an older CLI left in the directory itself is read as well. It takes only the rule lists and mode keys
 out of each file, and writes nothing. Each line is `kind`, `level`, where it
 was found, and what it means:
 
@@ -540,7 +550,7 @@ was found, and what it means:
 | `classifier` | in Auto Mode, a shipped entry no allow rule holds: that command is judged on every use |
 | `prompt` | an `ask` rule that can match a shipped entry, or an unlisted command in a mode that asks |
 | `blocked` | a `deny` rule that can match a shipped entry; or what would prompt, under `dontAsk` or `permissions.denyInsteadOfPrompting` |
-| `unevaluated` | something the audit could not read or cannot model: a settings file that is empty, is not exactly one JSON object, or sits under a directory that cannot be searched; `permissions` or a rule list of the wrong type; a rule that is not rule-shaped; a rule matching Bash by input parameter; `plan`, an undocumented mode, or `bypassPermissions` under `disableBypassPermissionsMode`; a `CLAUDE_CONFIG_DIR` naming another root; a `managed-settings.d`; a worktree whose main checkout cannot be found; or a setting whose effect depends on a CLI version that could not be read |
+| `unevaluated` | something the audit could not read or cannot model: a settings file that is empty, is not exactly one JSON object, holds a number JSON does not have (`NaN`, `Infinity`), or sits under a directory that cannot be searched; `permissions` or a rule list of the wrong type; a rule that is not rule-shaped; a rule matching Bash by input parameter; `plan`, an undocumented mode, or `bypassPermissions` under `disableBypassPermissionsMode`; a `CLAUDE_CONFIG_DIR` naming another root; a `managed-settings.d`; a worktree whose main checkout cannot be found; or a setting whose effect depends on a CLI version that could not be read |
 
 It exits **0** clean, **10** when it found a `classifier`, `prompt` or `blocked` line, and **11**
 when anything was `unevaluated` — a file it could not read is never reported as clean.
@@ -553,7 +563,8 @@ the sandbox does not cover still prompts, and in `auto` it is judged. Where it r
 assumes auto mode is available to the session — a supported model, not turned off for the
 account, no HIPAA configuration — because where it is not, the session starts in default mode. A
 rule about another tool (`Read(./.env)`, `mcp__*`) is listed as `info` and not judged: whether a
-workflow step runs into it is outside the audit. The sandbox is not modelled either — a sandboxed
+workflow step runs into it is outside the audit. The one exception is an `ask` or `deny` rule on
+the whole of `Read`, `Edit` or `Write`, which stops every workflow step and is a finding. The sandbox is not modelled either — a sandboxed
 command it auto-allows runs unasked whatever is reported here.
 
 How it reads the rules, each from the vendor pages cited above:

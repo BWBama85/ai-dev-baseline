@@ -3,7 +3,10 @@
     "allow": [
       "Bash(git add *)",
       "Bash(git commit -m *)",
-      "Bash(git fetch *)",
+      "Bash(git fetch)",
+      "Bash(git fetch --prune origin)",
+      "Bash(git fetch --tags origin)",
+      "Bash(git fetch origin)",
       "Bash(git merge --ff-only *)",
       "Bash(git switch -c *)",
       "Bash(gh auth status)",
