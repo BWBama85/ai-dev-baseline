@@ -1982,6 +1982,26 @@ check_git "$SP6" add -A; check_git "$SP6" commit -q -m link
 r6l="$(bash "$AD" specialized "$SP6" --agents claude)"; r6lrc=$?
 has "$r6l" "unknown${TAB}pkg/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}-${TAB}linked-doc" "unknowns: a linked AGENTS.md Claude reads is reported under --agents claude"
 eq "$r6lrc" 11 "unknowns: ...and the run is not judged in full (exit 11)"
+# --- 4g, continued: list indentation, nested .claude/CLAUDE.md, on-disk overrides, record relations -
+SP7="$WORK/sp-r7"; mkdir -p "$SP7/.claude/rules" "$SP7/pkg/.claude" "$SP7/svc"
+printf -- '---\npaths:\n  - "src/**"\n - "tests/**"\n---\nx\n' > "$SP7/.claude/rules/uneven.md"
+printf '{}\n' > "$SP7/pkg/package.json"; printf 'pkg facts\n' > "$SP7/pkg/.claude/CLAUDE.md"
+printf 'svc agents\n' > "$SP7/svc/AGENTS.md"
+git init -q "$SP7" >/dev/null 2>&1; check_git "$SP7" add -A; check_git "$SP7" commit -q -m r7
+printf 'untracked override\n' > "$SP7/svc/AGENTS.override.md"
+r7="$(bash "$AD" specialized "$SP7" --agents claude,codex)"
+has "$r7" "unknown${TAB}.claude/rules/uneven.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: list items at uneven indentation are malformed"
+has "$r7" "surface${TAB}pkg/.claude/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${TAB}-${TAB}claude:on-demand${TAB}homed" "nested: a tracked pkg/.claude/CLAUDE.md is a nested root doc, in its package"
+has "$(bash "$AD" scan "$SP7" --agents claude)" "nested-doc${TAB}pkg/.claude/CLAUDE.md${TAB}CLAUDE.md${TAB}claude" "scan: ...and scan lists it"
+has "$r7" "surface${TAB}svc/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}codex:shadowed" "reach: an untracked override on disk shadows its sibling AGENTS.md"
+sp_bad_row() {  # <label> <surface fields 2..9, tab-joined>
+  printf 'surface\t%s\nsummary\t-\t-\t-\t-\t-\t-\t-\t'"specialized: rootdocs=0 rules=1 nested=0 mirrors=0 facts=1 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=0 unknown=0 judgment=given"'\n' "$2" > "$WORK/sp-bad.tsv"
+  eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" x.md "$3")" unjudged "sclass: $1 judges nothing"
+}
+sp_bad_row "a globs: rule that claims to load on a match" "x.md${TAB}rule${TAB}claude${TAB}globs${TAB}src/**${TAB}claude:on-path-match${TAB}respell${TAB}facts" claude
+sp_bad_row "a Claude rule marked as a mirror" "x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}claude:on-path-match${TAB}mirror:y.md${TAB}-" claude
+sp_bad_row "a scope with a .. component" "x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/../**${TAB}claude:on-path-match${TAB}homed${TAB}facts" claude
+sp_bad_row "a mirror whose source row is absent" "x.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:missing.md${TAB}-" codex
 # An EMPTY judgment is a valid one: the writer emits it for a project with nothing to judge.
 : > "$spf"
 spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
@@ -3745,10 +3765,6 @@ shmutant_mut specialized-list-under-scalar-accepted \
     '      if (!open) { bad = 1; next }' \
     '      if (0) { bad = 1; next }' \
     'a list item under a scalar is malformed'
-shmutant_mut specialized-codex-override-ignored \
-    '[ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi' \
-    'false; then :; fi' \
-    'nested: AGENTS.md beside AGENTS.override.md is shadowed'
 shmutant_mut specialized-linked-rule-read \
     '        case "$rel" in L:*) _sp_unk "$a" "${rel#L:}" rule linked-rule; continue ;; esac' \
     '        rel="${rel#L:}"' \
@@ -3829,6 +3845,26 @@ shmutant_mut specialized-claude-unknowns-dropped \
     '    [ "$1" = - ] || _sp_sel "$1" || { _sp_sel claude && _ad_sp_claude_reads "$root" "$2"; } || return 0' \
     '    [ "$1" = - ] || _sp_sel "$1" || return 0' \
     'a linked AGENTS.md Claude reads is reported under --agents claude'
+shmutant_mut yaml-uneven-list-accepted \
+    '        if (lind < 0) lind = ind; else if (ind != lind) { bad = 1; next }' \
+    '        lind = ind' \
+    'list items at uneven indentation are malformed'
+shmutant_mut specialized-nested-dot-claude-dropped \
+    '      case "/${rel%/.claude/CLAUDE.md}" in' \
+    '      case "/$rel" in' \
+    'a tracked pkg/.claude/CLAUDE.md is a nested root doc'
+shmutant_mut specialized-override-from-index \
+    '[ -e "$root/${rel%/*}/AGENTS.override.md" ]; then' \
+    'false; then' \
+    'an untracked override on disk shadows'
+shmutant_mut sclass-key-reach-unrelated \
+    '          if (($5 == "paths" || $5 == "both") != ($7 == "claude:on-path-match")) return 0' \
+    '' \
+    'a globs: rule that claims to load on a match'
+shmutant_mut sclass-mirror-source-unchecked \
+    '      for (m in need) if (!(m in listed)) bad = 1   # a mirror whose source row is absent' \
+    '' \
+    'a mirror whose source row is absent'
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \

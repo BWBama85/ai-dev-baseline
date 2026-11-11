@@ -1447,7 +1447,8 @@ EOF
       case "$_ad_ent" in */*) ;; *) continue ;; esac
       _ad_b="${_ad_ent##*/}"
       case "$_AD_SP_DOCS" in *" $_ad_b "*) ;; *) continue ;; esac
-      case "/$_ad_ent" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
+      # `<dir>/.claude/CLAUDE.md` is Claude's other project-doc location, nested like any root doc
+      case "/${_ad_ent%/.claude/CLAUDE.md}" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
       _ad_ag="$(_ad_sp_doc_agent "$_ad_b")"
       case ",$agents," in
         *",$_ad_ag,"*) ;;
@@ -3249,7 +3250,7 @@ _ad_sp_scope() {
     # A TOP-LEVEL KEY. `key:` then a space and a value, or nothing.
     /^[A-Za-z_][A-Za-z0-9_-]*:([ \t]|$)/ {
       k = $0; sub(/:.*/, "", k); v = $0; sub(/^[^:]*:/, "", v); v = trim(v)
-      ours = (k == "paths" || k == "globs"); blk = 0; nest = 0; lst = 0; under = k
+      ours = (k == "paths" || k == "globs"); blk = 0; nest = 0; lst = 0; lind = -1; under = k
       if (k in seen) bad = 1
       seen[k] = 1
       if (v == "" || v ~ /^#/) { open = 1; if (ours) want[k] = 1; next }
@@ -3263,6 +3264,9 @@ _ad_sp_scope() {
       if (!open) { bad = 1; next }
       if ($0 ~ /^[ \t]+-([ \t]|$)/) {
         if (nest) { bad = 1; next }
+        # every item of one list sits at the same indentation
+        ind = match($0, /[^ ]/) - 1
+        if (lind < 0) lind = ind; else if (ind != lind) { bad = 1; next }
         v = $0; sub(/^[ \t]+-/, "", v); v = trim(v)
         it = sval((substr(v, 1, 1) == D || substr(v, 1, 1) == Q) ? v : nocmt(v), 0)
         if (!bad && ours) item(under, it)
@@ -3360,7 +3364,7 @@ _ad_sp_snapshot() {
   local f="$1" max="$2" t
   [ -f "$f" ] && [ ! -L "$f" ] || return 1
   t="$(mktemp "${TMPDIR:-/tmp}/adopt-sp.XXXXXX")" || return 1
-  if ! head -c "$((max + 1))" "$f" > "$t" 2>/dev/null || { [ -s "$t" ] && ! adb_bytes_whole "$t" "$max"; }; then
+  if ! head -c "$((max + 1))" -- "$f" > "$t" 2>/dev/null || { [ -s "$t" ] && ! adb_bytes_whole "$t" "$max"; }; then
     rm -f "$t"; return 1
   fi
   printf '%s' "$t"
@@ -3431,7 +3435,6 @@ cmd_specialized() {
   local nunk=0 nested_txt="" a rel f
   local -a S_PATH=() S_KIND=() S_AGENT=()
   local _ad_owned
-  local -A OVR=()
   _ad_owned="$(adb_pinned_owned "$root")"
   _sp_sel() { case ",$agents," in *",$1,"*) return 0 ;; esac; return 1; }
   # _sp_unk <agent|-> <path> <kind> <reason> — an unknown, counted only for an agent asked about.
@@ -3447,7 +3450,6 @@ cmd_specialized() {
   for f in CLAUDE.md .claude/CLAUDE.md AGENTS.md AGENTS.override.md GEMINI.md; do
     [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
     S_PATH+=("$f"); S_KIND+=(rootdoc); S_AGENT+=("$(_ad_sp_doc_agent "${f##*/}")")
-    [ "$f" = AGENTS.override.md ] && OVR[.]=1
   done
   local -a found=() starts=()
   for a in claude codex gemini; do
@@ -3493,12 +3495,12 @@ cmd_specialized() {
       case "$rel" in */*) ;; *) continue ;; esac
       b="${rel##*/}"
       case "$_AD_SP_DOCS" in *" $b "*) ;; *) continue ;; esac
-      case "/$rel" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
+      # `<dir>/.claude/CLAUDE.md` is Claude's other project-doc location, nested like any root doc
+      case "/${rel%/.claude/CLAUDE.md}" in */.claude/*|*/.codex/*|*/.gemini/*|*/.agents/*|/.ai-dev-baseline/*) continue ;; esac
       ag="$(_ad_sp_doc_agent "$b")"
       _ad_owns "$_ad_owned" "$rel" && continue
       # the CURRENT file decides, not the index: a tracked doc later replaced by a link is a link
       if [ "$mode" = 120000 ] || _ad_has_link "$root" "$rel"; then _sp_unk "$ag" "$rel" nested-doc linked-doc; continue; fi
-      [ "$b" = AGENTS.override.md ] && OVR["${rel%/*}"]=1
       S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag")
     done
   fi
@@ -3548,9 +3550,10 @@ cmd_specialized() {
       if [ "$kind" = rootdoc ]; then REACH["$rel"]="${REACH[$rel]}+claude:every-session"
       else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi
     fi
-    # Codex reads one document per directory, the override first.
-    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -n "${OVR[${rel%/*}]:-}" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi
-    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -n "${OVR[.]:-}" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:every-session}"; fi
+    # Codex reads one document per directory, the override first — whichever override is ON DISK,
+    # tracked or not, linked or not, since Codex reads the file and not the index.
+    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -e "$root/${rel%/*}/AGENTS.override.md" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi
+    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -e "$root/AGENTS.override.md" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:every-session}"; fi
   done
   # Mirror sources: every Claude rule, root doc and nested doc, by whole-file and body digest —
   # whichever agents are asked about.
@@ -3816,7 +3819,7 @@ cmd_sclass() {
   out="$(LC_ALL=C awk -F'\t' -v r="$rel" -v g="$agent" -v SUMRE="$sumre" '
     # A path the writer emits: the closed charset, relative, no empty or `..` component.
     function pth(x) { return x ~ /^[A-Za-z0-9._\/-]+$/ && x !~ /^\// && x !~ /\/\// && x !~ /\/$/ && x !~ /(^|\/)\.\.(\/|$)/ }
-    function scp(x) { return x == "-" || x ~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+( [A-Za-z0-9._\/*?{},!@+\[\]\\-]+)*$/ }
+    function scp(x) { return x == "-" || (x ~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+( [A-Za-z0-9._\/*?{},!@+\[\]\\-]+)*$/ && x !~ /(^|[ \/])\.\.([ \/]|$)/) }
     function rch1(x) { return x ~ /^(claude:(every-session|on-path-match|on-demand)|codex:(every-session|cwd-at-or-below|shadowed)|gemini:(every-session|on-access))$/ }
     function rch(x,  m, P, i) { if (x == "none") return 1
                                 m = split(x, P, "+"); for (i = 1; i <= m; i++) if (!rch1(P[i])) return 0
@@ -3834,6 +3837,16 @@ cmd_sclass() {
         # a key and a scope belong to a Claude rule, and to nothing else
         if (($3 == "rule" && $4 == "claude") != ($5 != "-")) return 0
         if (($5 == "none" || $5 == "-") != ($6 == "-")) return 0
+        # a Claude rule loads on a match only when paths: scopes it, and a key finding fits its key
+        if ($3 == "rule" && $4 == "claude") {
+          if (($5 == "paths" || $5 == "both") != ($7 == "claude:on-path-match")) return 0
+          if (($8 == "respell") != ($5 == "globs") || ($8 == "extra-key") != ($5 == "both")) return 0
+          if ($8 == "unhomed:rootdoc" && $5 != "none") return 0
+          if ($8 ~ /^mirror:/) return 0
+        } else if ($8 == "respell" || $8 == "extra-key" || $8 == "unhomed:rootdoc") return 0
+        # only a hand-mirror location (another agent'"'"'s rule) is a mirror, and its source is listed
+        if ($8 ~ /^mirror:/ && !($3 == "rule" && $4 != "claude")) return 0
+        if ($8 ~ /^mirror:/) { m = $8; sub(/^mirror:/, "", m); need[m] = 1 }
         if ($8 ~ /^(homed|exempt|respell|extra-key|unhomed:rootdoc|unhomed:rules)$/) return 1
         if ($8 ~ /^unhomed:nested:/) { m = $8; sub(/^unhomed:nested:/, "", m); return pth(m) }
         if ($8 ~ /^mirror:/) { m = $8; sub(/^mirror:/, "", m); return pth(m) }
@@ -3849,10 +3862,11 @@ cmd_sclass() {
     }
     !rowok() { bad = 1; next }
     $1 == "summary" { n++; last = NR }
-    $1 == "surface" { if (($2 SUBSEP $4) in seen) bad = 1; seen[$2, $4] = 1
+    $1 == "surface" { if (($2 SUBSEP $4) in seen) bad = 1; seen[$2, $4] = 1; listed[$2] = 1
                       if ($2 == r && ($4 == g || g == "-")) { hits++; st = $8; jd = $9 } }
     $1 == "unknown" && $2 == r { unk = 1 }
     END {
+      for (m in need) if (!(m in listed)) bad = 1   # a mirror whose source row is absent
       if (bad || n != 1 || last != NR || hits > 1) { print "unjudged"; exit }
       if (unk) { print "unjudged"; exit }
       if (st == "") { print "none"; exit }
