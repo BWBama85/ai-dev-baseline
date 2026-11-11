@@ -1083,8 +1083,9 @@ jobs:
     name: install-guard
     runs-on: ubuntu-26.04
     # 15 since #456: the 240 it had was for settings-fragment-mutation (D101), which no longer runs
-    # per PR — 816s of a 918s job on run 38081150119. The two suites left took about 100s there;
-    # the third (#288) joined after that run: about 30 CPU-seconds on macOS, 2026-11-11.
+    # per PR — 816s of a 918s job on run 38081150119. The two suites left took about 100s there.
+    # The third (#288) joined after that run and has no measurement on this runner yet; the bound
+    # is left as it is because the first two use about a ninth of it.
     timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

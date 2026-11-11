@@ -601,7 +601,7 @@ case "$PERM_RC" in 0|10|11) : ;; *) echo "STOP: permissions-lib.sh audit failed 
 ```
 
 Each record is `kind<TAB>level<TAB>where<TAB>text`, and the last is the `summary`. Report every
-record by its level, with the file it names:
+record that is not `ok`, by its level, with the file it names:
 
 | Level | What it means |
 |---|---|
@@ -609,6 +609,7 @@ record by its level, with the file it names:
 | `blocked` | refused rather than asked: a `deny` rule, or what would prompt under `dontAsk` or `denyInsteadOfPrompting` |
 | `classifier` | no allow rule holds a command the baseline runs, so Auto Mode judges it on every use — and a run stops when that judge is unavailable |
 | `unevaluated` | a file, a rule or a mode the audit could not read or cannot model; the verdict is then 11, never clean |
+| `info` | listed, not judged: a gate command, a rule about another tool, an assumption the verdict rests on, and what the audit did not inspect |
 
 `gate` records are report-only: each names a gate command this project runs and whether a direct
 call of it matches an allow rule. They never change the verdict. A `rule` record at `info` names
@@ -914,7 +915,9 @@ per verdict; every `move` with its parity caveat; the proposed `agents.toml` —
 its evidence (the `[reviewers]` line names the pull requests it was read from, and how many were
 read), and whether the interview ran, with the answers it recorded or why it was skipped; every
 hygiene finding, including any axis that could not look; every permission-audit record that is
-not `ok` or `info`, with its `summary`; every conformance finding with its
+not `ok` — every `gate` record and every other `info` record included, since they are the only
+copy of the gate commands, the rules the audit listed without judging, and what it did not
+inspect — with its `summary`; every conformance finding with its
 remedy, every deviation with its id, and the conformance summary's files and rules; every
 `escalate` as a question for the owner; every fact surface with its reach and home, every
 key-spelling and pointer finding, and the approved split proposal — each row of `adopt-split.tsv`

@@ -13,8 +13,8 @@ only by a release it upgrades to. These entries are the notes for both.
 
 - **The installer adds a curated command allowlist, and `/adopt` audits what would still prompt
   (#288).** `./install.sh` now merges `agents/claude/settings.permissions.json` into
-  `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, and the
-  baseline's read-only commands. A matched command
+  `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, bare
+  `agent-init`, and the baseline's status commands. A matched command
   runs without a prompt and, in Auto Mode, without a classifier call, unless an `ask` or `deny`
   rule also matches it, it carries per-command allowed domains, or Auto Mode has set the rule
   aside. The merge is a union: an

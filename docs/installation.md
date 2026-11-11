@@ -458,6 +458,8 @@ what that text can induce:
   after it. The words before the `*` are the whole limit.
 - `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker.
   Whatever the session can read, it can put there.
+- `agent-init` writes `agents.toml`, a `.gitignore` entry and the state directory in the project it
+  is run in. Only the bare command is allowed, so `--force`, which overwrites, is not.
 
 **What still prompts or is still judged.** The allowlist does not make a run prompt-free by
 itself:
@@ -534,27 +536,34 @@ was found, and what it means:
 | `classifier` | in Auto Mode, a shipped entry no allow rule holds: that command is judged on every use |
 | `prompt` | an `ask` rule that can match a shipped entry, or an unlisted command in a mode that asks |
 | `blocked` | a `deny` rule that can match a shipped entry; or what would prompt, under `dontAsk` or `permissions.denyInsteadOfPrompting` |
-| `unevaluated` | something the audit could not read or cannot model: a settings file that is not exactly one JSON object, or sits under a directory that cannot be searched; `permissions` or a rule list of the wrong type; a rule that is not rule-shaped; a rule matching Bash by input parameter; `plan`, an undocumented mode, or `bypassPermissions` under `disableBypassPermissionsMode`; a `CLAUDE_CONFIG_DIR` naming another root; a `managed-settings.d`; a worktree whose main checkout cannot be found; or a setting whose effect depends on a CLI version that could not be read |
+| `unevaluated` | something the audit could not read or cannot model: a settings file that is empty, is not exactly one JSON object, or sits under a directory that cannot be searched; `permissions` or a rule list of the wrong type; a rule that is not rule-shaped; a rule matching Bash by input parameter; `plan`, an undocumented mode, or `bypassPermissions` under `disableBypassPermissionsMode`; a `CLAUDE_CONFIG_DIR` naming another root; a `managed-settings.d`; a worktree whose main checkout cannot be found; or a setting whose effect depends on a CLI version that could not be read |
 
 It exits **0** clean, **10** when it found a `classifier`, `prompt` or `blocked` line, and **11**
 when anything was `unevaluated` — a file it could not read is never reported as clean.
 
-**Clean claims only this:** every shipped rule is held by an allow rule, no `deny` or `ask` rule
-can match one, and the starting mode does not ask about unlisted commands. A rule about another
-tool (`Read(./.env)`, `mcp__*`) is listed as `info` and not judged: whether a workflow step runs
-into it is outside the audit. The sandbox is not modelled either — a sandboxed command it
-auto-allows runs unasked whatever is reported here.
+**What exit 0 says, and nothing more:** the starting mode is one the audit can state and is
+`auto`, `acceptEdits` or `bypassPermissions`; and, outside `bypassPermissions`, every shipped rule
+is held by an allow rule in effect and matched by no `deny` or `ask` rule. So the shipped commands
+run unasked. It says nothing about any other command: in `acceptEdits` an unlisted Bash command
+the sandbox does not cover still prompts, and in `auto` it is judged. Where it reports `auto` it
+assumes auto mode is available to the session — a supported model, not turned off for the
+account, no HIPAA configuration — because where it is not, the session starts in default mode. A
+rule about another tool (`Read(./.env)`, `mcp__*`) is listed as `info` and not judged: whether a
+workflow step runs into it is outside the audit. The sandbox is not modelled either — a sandboxed
+command it auto-allows runs unasked whatever is reported here.
 
 How it reads the rules, each from the vendor pages cited above:
 
-- **Allow lists merge across scopes**, so a shorter project list narrows nothing. A shipped entry
+- **Allow lists merge across scopes**, so a shorter project list narrows nothing. A project's own
+  allow rules count only once its workspace trust dialog has been accepted, and the audit says so
+  when it meets any. A shipped entry
   counts as held by its own rule, by the whole tool (`Bash`), or by a broader `<prefix> *` rule of
   yours. An allow rule that globs the tool name (`B*`) approves nothing.
 - **A `deny` or `ask` rule from any scope wins**, and is named with its file. It may name the
   tool by glob (`*`, `Bash*`). A rule matching Bash by input parameter
   (`Bash(run_in_background:true)`) is `unevaluated`; `Bash(command:…)` is ignored by the CLI and
-  reported as such. An `ask` rule that a `deny` rule shadows is listed as `info`: deny is evaluated
-  first.
+  reported as such. An `ask` rule is listed as `info` when one `deny` rule matches every command
+  it does: deny is evaluated first. A tool name is matched without regard to case.
 - **In Auto Mode, allow rules that would run arbitrary code hold nothing**: the whole tool, and a
   wildcard directly after an interpreter, a wrapper or a package-manager run command. The vendor
   describes that class by example, so the list is this audit's reading of it.

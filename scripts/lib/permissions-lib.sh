@@ -23,8 +23,11 @@
 # THE AUDIT IS READ-ONLY and is about the SHIPPED COMMANDS in an interactive terminal session. It
 # reports, per scope it could read: a shipped entry no allow rule holds, a `deny` or `ask` rule
 # that can match one, the starting permission mode, and the settings that make allow rules inert.
-# CLEAN claims exactly that and no more: a rule about another tool is listed, not judged, and the
-# sandbox is not modelled. A scope it could not read, a rule or a mode it cannot model, or an audit
+# CLEAN (0) says: the starting mode is one this audit can state and is `auto`, `acceptEdits` or
+# `bypassPermissions`; and, outside `bypassPermissions`, every shipped entry is held by an allow
+# rule in effect and matched by no deny or ask rule. It says nothing about any other command, it
+# assumes auto mode is available where it reports `auto`, a rule about another tool is listed and
+# not judged, and the sandbox is not modelled. A scope it could not read, a rule or a mode it cannot model, or an audit
 # that evaluated nothing, is NOT EVALUATED (11) and never clean.
 #
 # Usage (executed):
@@ -211,13 +214,17 @@ EOF
   [ -z "$rows" ] || printf '%s\n' "$rows"
 }
 
-# Is a receipt this run just rendered one its own reader accepts? Asked BEFORE it is published, so
-# a record nothing can read back is never the one left on disk. Without jq the question cannot be
-# asked and the answer is yes.
-# Usage: _adb_perm_rendered_ok <staged-receipt>
+# Is a receipt this run just rendered one its own reader accepts, naming the clone it was rendered
+# for? Asked BEFORE it is published, so a record nothing can read back is never the one left on
+# disk. Without jq the question cannot be asked and the answer is yes.
+# Usage: _adb_perm_rendered_ok <staged-receipt> <clone>
 _adb_perm_rendered_ok() {
+  local back
   command -v jq >/dev/null 2>&1 || return 0
-  _adb_perm_receipt_json "$1" >/dev/null   # rendered-validated
+  back="$(_adb_perm_receipt_json "$1")" || return 1   # rendered-validated
+  # ...and it must name THIS clone: a path the line-oriented record cannot carry reads back as a
+  # different one, or as a comment.
+  [ "$(printf '%s' "$back" | jq -r '.source // ""' 2>/dev/null; printf x)" = "$2"$'\nx' ]   # rendered-source
 }
 
 # Record a run that wrote no entry, keeping every row an earlier install recorded: a skip means
@@ -240,7 +247,7 @@ _adb_perm_record_skip() {
   fi
   [ "$digest" != "-" ] || digest="$prior"
   if printf '%s' "$rows" | adb_permissions_receipt_render "$disposition" "$version" "$floor" "$digest" "$repo" \
-       > "$receipt.adb.$$.tmp" && _adb_perm_rendered_ok "$receipt.adb.$$.tmp" \
+       > "$receipt.adb.$$.tmp" && _adb_perm_rendered_ok "$receipt.adb.$$.tmp" "$repo" \
      && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     return 0
   fi
@@ -476,13 +483,18 @@ adb_permissions_apply() {
     adb_info "  WARN   the allowlist merge result could not be read — allow entries NOT written."
     return 1; }
 
+  # FROM HERE TO THE END OF THE TRANSACTION a signal is held: the pre-image and the staged record
+  # exist only inside this window, so an interrupt cannot leave a copy of settings.json behind.
+  adb_settings_lock_defer_signals   # stage-inside-deferral
   if [ "$verdict" = write ]; then
     if [ -e "$settings" ] && [ ! -e "$backup$settings" ]; then
       mkdir -p "$backup$(dirname "$settings")" 2>/dev/null && cp -p "$settings" "$backup$settings" 2>/dev/null || {
+        adb_settings_lock_resume_signals
         adb_info "  WARN   could not back up $settings under $backup — allow entries NOT written"
         return 1; }
     fi
     if ! _adb_perm_snapshot "$settings"; then
+      adb_settings_lock_resume_signals
       adb_info "  WARN   could not capture $settings to roll back to — allow entries NOT written"
       return 1
     fi
@@ -492,16 +504,16 @@ adb_permissions_apply() {
   [ -z "$rows" ] || rows+=$'\n'
   if ! { printf '%s' "$rows" \
            | adb_permissions_receipt_render installed "$version" "$floor" "$digest" "$repo" > "$receipt.adb.$$.tmp" \
-         && _adb_perm_rendered_ok "$receipt.adb.$$.tmp"; }; then
+         && _adb_perm_rendered_ok "$receipt.adb.$$.tmp" "$repo"; }; then
     rm -f "$receipt.adb.$$.tmp"
     _adb_perm_snapshot_drop
+    adb_settings_lock_resume_signals
     adb_info "  WARN   could not render an allowlist record its own reader accepts — allow entries NOT written."
     adb_info "         The record is line-oriented and names this clone: a control character in $(adb_display_value "$repo") is one cause."
     return 1
   fi
 
   # TWO PUBLICATIONS, ONE TRANSACTION: the settings, then the record of what in them is ours.
-  adb_settings_lock_defer_signals
   if [ "$verdict" = write ]; then
     if ! _adb_perm_publish_settings "$result" "$settings"; then
       rm -f "$receipt.adb.$$.tmp"
@@ -564,7 +576,9 @@ adb_permissions_remove() {
     return 1
   fi
   if [ "$disp" = none ]; then
-    [ ! -e "$receipt" ] || rm -f "$receipt" 2>/dev/null || true
+    # An empty record owns nothing and reads as none to every later run, so one that cannot be
+    # deleted is left where it is and is not a failure of this removal.
+    rm -f "$receipt" 2>/dev/null
     return 0
   fi
   if ! command -v jq >/dev/null 2>&1; then
@@ -729,10 +743,14 @@ adb_permissions_heal_report() {
 #                        the bare command (`Bash(npm run *)` matches `npm run`)
 #   parse                a rule as {tool, spec}: `spec` null for a rule naming a whole tool; null
 #                        when the text is not rule-shaped at all
-#   tool_is($t)          does a parsed rule name tool $t? A deny or ask rule may glob the tool name
+#   tool_is($t)          does a parsed rule name tool $t? A deny or ask rule may glob the tool
+#                        name; case is ignored, so a rule spelled another way is never missed
 #   aspec                the Bash specifier of an ALLOW rule ("*" for the whole tool), or null: an
 #                        allow rule names its tool literally, a glob there approves nothing
 #   overlaps($d; $e)     can specifier $d match a command that specifier $e matches?
+#   contains_spec($d; $a) does specifier $d match EVERY command specifier $a matches? The whole
+#                        tool, the same pattern, or a `<prefix> *` whose prefix every such command
+#                        starts with. Anything else answers no
 #   subsumes($a; $e)     does allow RULE $a hold every command RULE $e does? The same rule, the
 #                        whole tool, or a `<prefix> *` rule whose prefix is a whole-word prefix of
 #                        $e. Anything else answers no: a miss is over-reported, never under-reported
@@ -756,9 +774,14 @@ def gmatch($t; $p):
     end;
 def rmatch($t; $p): gmatch($t; $p) or (($p | endswith(" *")) and ($p[:-2] | contains("*") | not) and $t == $p[:-2]);
 def parse: norm | (capture("^(?<tool>[^()]+)\\((?<spec>.*)\\)$") // (if test("^[^()]+$") then {tool: ., spec: null} else null end));
-def tool_is($t): if (.tool | contains("*")) then gmatch($t; .tool) else .tool == $t end;
+def tool_is($t): if (.tool | contains("*")) then gmatch(($t | ascii_downcase); (.tool | ascii_downcase)) else (.tool | ascii_downcase) == ($t | ascii_downcase) end;
 def aspec: parse as $p | if $p != null and $p.tool == "Bash" then (if $p.spec == null then "*" else $p.spec end) else null end;
 def lit: split("*")[0];
+def contains_spec($d; $a):
+  $d == "*" or $d == $a
+  or (($d | endswith(" *")) and ($d[:-2] | contains("*") | not)
+      and (($a | lit) as $al
+           | ($al | startswith($d[:-1])) or (($a | contains("*") | not) and $a == $d[:-2])));
 def overlaps($d; $e):
   if ($d | contains("*") | not) then rmatch($d; $e)
   elif ($e | contains("*") | not) then rmatch($e; $d)
@@ -787,12 +810,14 @@ def suspended:
 #    no_auto, deny_prompts, no_bypass, classify_all, managed_only}
 # `p_shape` is absent | object | bad, so a `permissions` of the wrong type is not read as absent.
 # A file is `absent` only when this run can VOUCH for that: under a directory it cannot search, a
-# path reads as missing whether or not it exists, and that is `unread`.
+# path reads as missing whether or not it exists, and that is `unread`. So is a zero-byte file: it
+# is there, and it is not one JSON object.
 # Usage: _adb_perm_scope <file> <out>   Returns: 0 written · 1 <out> could not be written
 _adb_perm_scope() {
   local f="$1" out="$2" dir
   case "$(adb_settings_doc_state "$f")" in
-    absent|empty)
+    empty) printf '%s\n' '{"state":"unread"}' > "$out"; return "$?" ;;   # empty-not-absent
+    absent)
       dir="$(dirname "$f")"
       while [ ! -e "$dir" ] && [ ! -L "$dir" ] && [ "$dir" != / ] && [ "$dir" != . ]; do dir="$(dirname "$dir")"; done
       if [ -d "$dir" ] && [ -x "$dir" ]; then   # absence-vouched
@@ -981,6 +1006,7 @@ adb_permissions_audit() (
         ($R[] | . as $sc | .ask[]  | {rule: ., where: $sc.where, kind: "ask"}) ] as $rules
     | [ $rules[] | . as $r | ($r.rule | parse) as $p
         | (if $p == null then {cls: "unparsed"}
+           elif ($p | tool_is("Bash")) and $p.spec != null and ($p.spec | test("^\\s|\\s$")) then {cls: "unparsed"}   # spec-whitespace
            elif ($p | tool_is("Bash")) then
              (if $p.spec == null or $p.spec == "*" then {cls: "bash", spec: "*"}
               elif ($p.spec | test("^[A-Za-z_][A-Za-z0-9_]*[ ]*:")) then
@@ -992,8 +1018,7 @@ adb_permissions_audit() (
           + {hit: (if $c.cls == "bash" then [ $ship[] | select(. as $e | overlaps($c.spec; ($e | aspec))) ] else [] end)} ] as $classified
     | [ $classified[] | select(.cls == "whole" or (.cls == "bash" and (.hit | length) > 0)) ] as $hits
     | [ $hits[] | .hit[] ] as $ruled
-    | [ $hits[] | select(.kind == "deny") | .hit[] ] as $denied
-    | ([ $hits[] | select(.kind == "deny" and .cls == "bash" and .spec == "*") ] | length > 0) as $bash_denied
+    | [ $classified[] | select(.kind == "deny" and .cls == "bash") | .spec ] as $deny_specs
 
     # --- every shipped entry: held by an allow rule (its own, or a broader one), and by no deny or ask
     | [ $ship[] | . as $e | {entry: $e, listed: ($allow | any(.[]; . as $a | subsumes($a; $e)))} ] as $E
@@ -1029,7 +1054,7 @@ adb_permissions_audit() (
                 (if $m.why == "local-auto" then "defaultMode \"auto\" does not take effect from project or local settings, so the built-in default applies, and on claude v\($cli) an interactive terminal session starts in auto"
                  elif $m.why == "builtin" then "no defaultMode is set; on claude v\($cli) an interactive terminal session starts in auto (`claude -p` and SDK runs start in default mode)"
                  else "auto" end)
-                + ": no routine prompts; a command no allow rule matches is judged by the classifier")
+                + ": no routine prompts; a command no allow rule matches is judged by the classifier. ASSUMED: auto mode is available to the session (a supported model, not turned off for the account, no HIPAA configuration) — where it is not, the session starts in default mode and every unlisted command prompts")   # auto-assumption
           elif $mode == "acceptEdits" then
             rec("mode"; "ok"; $m.src; "acceptEdits: edits run unasked; a Bash command that no allow rule or sandbox covers \(if $asked == "blocked" then "is refused" else "prompts" end)")
           elif $mode == "bypassPermissions" then
@@ -1049,13 +1074,15 @@ adb_permissions_audit() (
              elif $dp_ok == "no" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting needs CLI v2.1.319 and claude v\($cli) ignores it")
              else rec("note"; "unevaluated"; ($dp_where | join(", ")); "denyInsteadOfPrompting is set, and whether it takes effect depends on the CLI version, which could not be read") end)
           else empty end ),
+        ( [ $R[] | select(.name == "project") | .allow[] ] as $pa
+          | if ($pa | length) > 0 then rec("note"; "info"; ".claude/settings.json"; "\($pa | length) project allow \(plural($pa | length; "rule counts"; "rules count")) here only once the workspace trust dialog has been accepted") else empty end ),
         ( if $allow_inert then rec("note"; "classifier"; "autoMode.classifyAllShell"; "is on: in auto mode every shell allow rule is suspended, so no shipped entry skips the classifier") else empty end ),
         ( if ($set_aside | length) > 0 then rec("note"; "info"; "-"; "auto mode sets aside \($set_aside | length) allow \(plural($set_aside | length; "rule"; "rules")) that would run arbitrary code, so \(plural($set_aside | length; "it holds"; "they hold")) no shipped entry: \($set_aside[:3] | join(", "))\(if ($set_aside | length) > 3 then ", …" else "" end)") else empty end ),
 
         # rules: the ones that can match the shipped surface, and the ones this audit cannot model
         ( $hits[] | . as $h
-            # an ask rule every one of whose entries a deny rule also matches never gets to ask
-            | ($h.kind == "ask" and $h.cls == "bash" and ($bash_denied or (($h.hit | length) > 0 and all($h.hit[]; . as $e | $denied | any(.[]; . == $e))))) as $shadowed   # ask-shadowed
+            # an ask rule never gets to ask when ONE deny rule matches every command it does
+            | ($h.kind == "ask" and $h.cls == "bash" and ($deny_specs | any(.[]; . as $d | contains_spec($d; $h.spec)))) as $shadowed   # ask-shadowed
             | rec("rule"; (if $h.kind == "deny" then "blocked" elif $shadowed then "info" else $asked end); $h.where;
                 "\($h.kind) rule \($h.rule) " + (if $h.cls == "whole" then "covers a whole tool the workflows use"
                   else "can match \($h.hit | length) shipped \(plural($h.hit | length; "entry"; "entries")): \($h.hit[:3] | join(", "))\(if ($h.hit | length) > 3 then ", …" else "" end)" end)
