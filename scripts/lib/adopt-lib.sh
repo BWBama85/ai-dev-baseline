@@ -1160,6 +1160,10 @@ cmd_scan() {
     _ad_emit rootdoc .claude/CLAUDE.md CLAUDE.md -
     _ad_emitted="$_ad_emitted.claude/CLAUDE.md$nl"
   fi
+  if [ -f "$root/.claude/AGENTS.md" ]; then   # Claude reads it when no CLAUDE.md is in the way
+    _ad_emit rootdoc .claude/AGENTS.md AGENTS.md -
+    _ad_emitted="$_ad_emitted.claude/AGENTS.md$nl"
+  fi
   if [ -f "$root/.claude/UPSTREAM_VERSION" ]; then
     _ad_emit foreign-pin .claude/UPSTREAM_VERSION UPSTREAM_VERSION -
     _ad_emitted="$_ad_emitted.claude/UPSTREAM_VERSION$nl"
@@ -3238,7 +3242,8 @@ _ad_sp_scope() {
     }
     function item(k, v) {
       v = trim(v)
-      if (v == "" || v !~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+$/ || v ~ /^\/\// || v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }
+      # `-` alone is the "no scope" field of the record, so it is no glob this reader can carry
+      if (v == "" || v == "-" || v !~ /^[A-Za-z0-9._\/*?{},!@+\[\]\\-]+$/ || v ~ /^\/\// || v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }
       G[k] = G[k] (G[k] == "" ? "" : " ") v; n[k]++
     }
     { sub(/\r$/, "") }
@@ -3447,9 +3452,11 @@ cmd_specialized() {
   }
 
   # --- enumerate: root docs, rules and hand-mirror locations, from the filesystem -------------------
-  for f in CLAUDE.md .claude/CLAUDE.md AGENTS.md AGENTS.override.md GEMINI.md; do
+  for f in CLAUDE.md .claude/CLAUDE.md .claude/AGENTS.md AGENTS.md AGENTS.override.md GEMINI.md; do
     [ -e "$root/$f" ] || [ -L "$root/$f" ] || continue
-    S_PATH+=("$f"); S_KIND+=(rootdoc); S_AGENT+=("$(_ad_sp_doc_agent "${f##*/}")")
+    S_PATH+=("$f"); S_KIND+=(rootdoc)
+    # `.claude/AGENTS.md` is Claude's alone (code.claude.com/docs/en/memory); Codex never reads it
+    if [ "$f" = .claude/AGENTS.md ]; then S_AGENT+=(claude); else S_AGENT+=("$(_ad_sp_doc_agent "${f##*/}")"); fi
   done
   local -a found=() starts=()
   for a in claude codex gemini; do
@@ -3517,7 +3524,8 @@ cmd_specialized() {
   spdir="$(mktemp -d "${TMPDIR:-/tmp}/adopt-spx.XXXXXX")" || die "specialized: could not create a private snapshot directory"
   for ((i = 0; i < n; i++)); do
     rel="${S_PATH[$i]}"; kind="${S_KIND[$i]}"; a="${S_AGENT[$i]}"
-    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi
+    # the path goes in whole: _sp_unk decides whose it is first, then refuses to print it
+    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" "$rel" "$kind" path-outside-charset; continue; fi
     if [ -n "${IDX[$rel]:-}" ]; then continue; fi
     # A hand-mirror location for an agent nobody asked about is no one's source: not read at all.
     if [ "$kind" = rule ] && [ "$a" != claude ] && ! _sp_sel "$a"; then SKIP["$rel"]=1; continue; fi
@@ -3546,14 +3554,16 @@ cmd_specialized() {
     IDX["$rel"]="$i"; ok_i+=("$i")
     KEY["$rel"]="$key"; SCOPE["$rel"]="$scope"
     REACH["$rel"]="$(_ad_sp_reach "$kind" "$a" "$key" "${rel##*/}")"
-    if _ad_sp_claude_reads "$root" "$rel"; then
+    if [ "$rel" = .claude/AGENTS.md ]; then
+      if _ad_sp_claude_reads "$root" "$rel"; then REACH["$rel"]=claude:every-session; else REACH["$rel"]=none; fi
+    elif _ad_sp_claude_reads "$root" "$rel"; then
       if [ "$kind" = rootdoc ]; then REACH["$rel"]="${REACH[$rel]}+claude:every-session"
       else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi
     fi
-    # Codex reads one document per directory, the override first — whichever override is ON DISK,
-    # tracked or not, linked or not, since Codex reads the file and not the index.
-    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -e "$root/${rel%/*}/AGENTS.override.md" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi
-    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -e "$root/AGENTS.override.md" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:every-session}"; fi
+    # Codex reads one document per directory, the override first — whichever override FILE is on
+    # disk, tracked or not, since Codex reads the file and not the index (a directory is no override).
+    if [ "$kind" = nested-doc ] && [ "${rel##*/}" = AGENTS.md ] && [ -f "$root/${rel%/*}/AGENTS.override.md" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:cwd-at-or-below}"; fi
+    if [ "$kind" = rootdoc ] && [ "$rel" = AGENTS.md ] && [ -f "$root/AGENTS.override.md" ]; then REACH["$rel"]="codex:shadowed${REACH[$rel]#codex:every-session}"; fi
   done
   # Mirror sources: every Claude rule, root doc and nested doc, by whole-file and body digest —
   # whichever agents are asked about.

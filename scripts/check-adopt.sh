@@ -2002,6 +2002,20 @@ sp_bad_row "a globs: rule that claims to load on a match" "x.md${TAB}rule${TAB}c
 sp_bad_row "a Claude rule marked as a mirror" "x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}claude:on-path-match${TAB}mirror:y.md${TAB}-" claude
 sp_bad_row "a scope with a .. component" "x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/../**${TAB}claude:on-path-match${TAB}homed${TAB}facts" claude
 sp_bad_row "a mirror whose source row is absent" "x.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:missing.md${TAB}-" codex
+# --- 4g, continued: unprintable paths Claude reads, the `-` scope, .claude/AGENTS.md, override dirs --
+SP8="$WORK/sp-r8"; mkdir -p "$SP8/.claude/rules" "$SP8/bad dir" "$SP8/svc/AGENTS.override.md"
+printf 'claude-visible\n' > "$SP8/bad dir/AGENTS.md"
+printf -- '---\npaths: ["-"]\n---\nx\n' > "$SP8/.claude/rules/dash.md"
+printf 'claude agents\n' > "$SP8/.claude/AGENTS.md"
+printf 'svc\n' > "$SP8/svc/AGENTS.md"; printf 'x\n' > "$SP8/svc/AGENTS.override.md/keep"
+git init -q "$SP8" >/dev/null 2>&1; check_git "$SP8" add -A; check_git "$SP8" commit -q -m r8
+r8="$(bash "$AD" specialized "$SP8" --agents claude)"; r8rc=$?
+has "$r8" "unknown${TAB}-${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}-${TAB}path-outside-charset" "unknowns: an unprintable AGENTS.md path Claude reads is reported, without its path"
+eq "$r8rc" 11 "unknowns: ...and the run is not judged in full (exit 11)"
+has "$r8" "unknown${TAB}.claude/rules/dash.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a scope of - alone is refused, never confused with no scope"
+has "$r8" "surface${TAB}.claude/AGENTS.md${TAB}rootdoc${TAB}claude${TAB}-${TAB}-${TAB}claude:every-session${TAB}homed" "rootdoc: .claude/AGENTS.md is a Claude root doc"
+has "$(bash "$AD" scan "$SP8" --agents claude)" "rootdoc${TAB}.claude/AGENTS.md${TAB}AGENTS.md${TAB}-" "scan: .claude/AGENTS.md is a root doc, never other"
+has "$(bash "$AD" specialized "$SP8" --agents codex)" "surface${TAB}svc/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}codex:cwd-at-or-below" "reach: a directory named AGENTS.override.md shadows nothing"
 # An EMPTY judgment is a valid one: the writer emits it for a project with nothing to judge.
 : > "$spf"
 spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
@@ -3854,7 +3868,7 @@ shmutant_mut specialized-nested-dot-claude-dropped \
     '      case "/$rel" in' \
     'a tracked pkg/.claude/CLAUDE.md is a nested root doc'
 shmutant_mut specialized-override-from-index \
-    '[ -e "$root/${rel%/*}/AGENTS.override.md" ]; then' \
+    '[ -f "$root/${rel%/*}/AGENTS.override.md" ]; then' \
     'false; then' \
     'an untracked override on disk shadows'
 shmutant_mut sclass-key-reach-unrelated \
@@ -3865,6 +3879,22 @@ shmutant_mut sclass-mirror-source-unchecked \
     '      for (m in need) if (!(m in listed)) bad = 1   # a mirror whose source row is absent' \
     '' \
     'a mirror whose source row is absent'
+shmutant_mut specialized-unprintable-path-dropped \
+    '    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" "$rel" "$kind" path-outside-charset; continue; fi' \
+    '    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi' \
+    'an unprintable AGENTS.md path Claude reads is reported'
+shmutant_mut yaml-dash-scope-accepted \
+    '      if (v == "" || v == "-" || v !~' \
+    '      if (v == "" || v !~' \
+    'a scope of - alone is refused'
+shmutant_mut specialized-dot-claude-agents-dropped \
+    '  for f in CLAUDE.md .claude/CLAUDE.md .claude/AGENTS.md AGENTS.md' \
+    '  for f in CLAUDE.md .claude/CLAUDE.md AGENTS.md' \
+    '.claude/AGENTS.md is a Claude root doc'
+shmutant_mut specialized-override-dir-counts \
+    '[ -f "$root/${rel%/*}/AGENTS.override.md" ]; then' \
+    '[ -e "$root/${rel%/*}/AGENTS.override.md" ]; then' \
+    'a directory named AGENTS.override.md shadows nothing'
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \
