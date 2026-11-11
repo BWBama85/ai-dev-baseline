@@ -1962,6 +1962,26 @@ has "$r5" "unknown${TAB}.claude/rules/tab.md${TAB}rule${TAB}claude${TAB}-${TAB}-
 has "$r5" "unknown${TAB}.claude/rules/nested.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a nested mapping is outside the subset"
 has "$r5" "unknown${TAB}pkg/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}linked-doc" "links: a tracked doc now a link in the working tree is not judged"
 has "$(bash "$AD" scan "$SPX" --agents claude)" "nested-doc${TAB}apps/web/AGENTS.md${TAB}AGENTS.md${TAB}codex" "scan: --agents claude lists an AGENTS.md Claude reads, as specialized does"
+# --- 4g, continued: a surface another agent owns is not this run's to refuse ----------------------
+SP6="$WORK/sp-r6"; mkdir -p "$SP6/.gemini" "$SP6/.ai-dev-baseline" "$SP6/.claude/rules" "$SP6/pkg"
+printf 'gemini notes\n' > "$SP6/.gemini/rules.md"
+printf -- '---\npaths: "src/**"\n---\nfacts\n' > "$SP6/.claude/rules/x.md"
+sp_entry D1 project-delta .gemini/rules.md > "$SP6/.ai-dev-baseline/decisions.md"
+git init -q "$SP6" >/dev/null 2>&1; check_git "$SP6" add -A; check_git "$SP6" commit -q -m r6
+r6="$(bash "$AD" specialized "$SP6" --agents claude)"; r6rc=$?
+hasnt "$r6" "exemption-refused" "keeps: an exemption for another agent's surface is not refused under --agents claude"
+eq "$r6rc" 0 "keeps: ...and the run is clean (exit 0)"
+has "$(bash "$AD" specialized "$SP6" --agents gemini)" "exempt${TAB}.gemini/rules.md" "keeps: ...while --agents gemini honours it"
+r6d() { bash "$AD" prose "$SP6" "$1" | awk -F'\t' '$1=="file" {print $3}'; }
+printf '.claude/rules/x.md\t%s\t1\t4\tfact\tkeep\n.gemini/rules.md\t%s\t1\t1\tfact\tkeep\n' "$(r6d .claude/rules/x.md)" "$(r6d .gemini/rules.md)" > "$WORK/sp-r6.tsv"
+r6j="$(bash "$AD" specialized "$SP6" --agents claude --judgment "$WORK/sp-r6.tsv")"
+hasnt "$r6j" "judgment-refused" "judgment: a row for another agent's surface does not refuse the judgment"
+has "$r6j" "surface${TAB}.claude/rules/x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}claude:on-path-match${TAB}homed${TAB}facts" "judgment: ...and this agent's rows still count"
+printf 'pkg facts\n' > "$WORK/sp-r6-target.md"; ln -s "$WORK/sp-r6-target.md" "$SP6/pkg/AGENTS.md"
+check_git "$SP6" add -A; check_git "$SP6" commit -q -m link
+r6l="$(bash "$AD" specialized "$SP6" --agents claude)"; r6lrc=$?
+has "$r6l" "unknown${TAB}pkg/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}-${TAB}linked-doc" "unknowns: a linked AGENTS.md Claude reads is reported under --agents claude"
+eq "$r6lrc" 11 "unknowns: ...and the run is not judged in full (exit 11)"
 # An EMPTY judgment is a valid one: the writer emits it for a project with nothing to judge.
 : > "$spf"
 spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
@@ -3797,6 +3817,18 @@ shmutant_mut yaml-tab-indent-accepted \
     '    /^ *\t/ { bad = 1; next }' \
     '    /^ *\tNEVERMATCHES/ { bad = 1; next }' \
     'a tab-indented list is not YAML'
+shmutant_mut specialized-skipped-exemption-refused \
+    '    [ "$kprob" = - ] && [ -n "${SKIP[$kp]:-}" ] && continue' \
+    '    :' \
+    'an exemption for another agent'
+shmutant_mut specialized-skipped-judgment-refused \
+    '        [ -n "${SKIP[$jp]:-}" ] && continue   # another agent' \
+    '        :   # another agent' \
+    'a row for another agent'
+shmutant_mut specialized-claude-unknowns-dropped \
+    '    [ "$1" = - ] || _sp_sel "$1" || { _sp_sel claude && _ad_sp_claude_reads "$root" "$2"; } || return 0' \
+    '    [ "$1" = - ] || _sp_sel "$1" || return 0' \
+    'a linked AGENTS.md Claude reads is reported under --agents claude'
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \

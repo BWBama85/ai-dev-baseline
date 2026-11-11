@@ -3436,7 +3436,8 @@ cmd_specialized() {
   _sp_sel() { case ",$agents," in *",$1,"*) return 0 ;; esac; return 1; }
   # _sp_unk <agent|-> <path> <kind> <reason> — an unknown, counted only for an agent asked about.
   _sp_unk() {
-    [ "$1" = - ] || _sp_sel "$1" || return 0
+    # an AGENTS.md Claude reads is Claude's too, as the surface report decides below
+    [ "$1" = - ] || _sp_sel "$1" || { _sp_sel claude && _ad_sp_claude_reads "$root" "$2"; } || return 0
     nunk=$((nunk + 1))
     if _ad_sp_path_ok "$2"; then _ad_sp_rec unknown "$2" "$3" "$1" - - - "$4" -
     else _ad_sp_rec unknown - "$3" "$1" - - - "$4" -; fi
@@ -3506,7 +3507,9 @@ cmd_specialized() {
   # EACH SURFACE IS READ ONCE, into a private snapshot, and everything about it — scope, digests, line
   # count, prose, pointers, the judgment's checks — is derived from those bytes, so a file replaced
   # mid-run cannot pair one version's digest with another version's text.
-  local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=() SNAP=()
+  # SKIP: a surface left unread because its agent was not asked about. It exists; it is simply not
+  # this run's, so an exemption or judgment row naming it is neither refused nor honoured here.
+  local -A ST=() KEY=() SCOPE=() REACH=() BODY=() WHOLE=() JUD=() IDX=() LINES=() SNAP=() SKIP=()
   local i n="${#S_PATH[@]}" kind ks key scope pkg g pkgs st spdir="" spbytes=0 sz
   local -a garr=() ok_i=()
   spdir="$(mktemp -d "${TMPDIR:-/tmp}/adopt-spx.XXXXXX")" || die "specialized: could not create a private snapshot directory"
@@ -3515,7 +3518,7 @@ cmd_specialized() {
     if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi
     if [ -n "${IDX[$rel]:-}" ]; then continue; fi
     # A hand-mirror location for an agent nobody asked about is no one's source: not read at all.
-    if [ "$kind" = rule ] && [ "$a" != claude ] && ! _sp_sel "$a"; then continue; fi
+    if [ "$kind" = rule ] && [ "$a" != claude ] && ! _sp_sel "$a"; then SKIP["$rel"]=1; continue; fi
     if ! _ad_sp_readable "$root" "$rel"; then _sp_unk "$a" "$rel" "$kind" unreadable; continue; fi
     # THE STAGED WORKLOAD IS BOUNDED as a whole: a file that would take the staged bytes past 64 MiB
     # is not copied and not judged. Each copy is itself cut at 1 MiB + 1, so staging never exceeds
@@ -3603,6 +3606,7 @@ cmd_specialized() {
   fi
   while IFS="$TAB" read -r kl kp kprob; do
     [ -n "$kl" ] || continue
+    [ "$kprob" = - ] && [ -n "${SKIP[$kp]:-}" ] && continue
     if [ "$kprob" = - ]; then
       if [ -z "${IDX[$kp]:-}" ]; then kprob=no-surface
       elif [ -n "${KEPT[$kp]:-}" ]; then kprob=duplicate
@@ -3642,6 +3646,7 @@ cmd_specialized() {
         # A row for a path that is not a judged surface, a destination that leaves the repository, a
         # path whose rows are not contiguous, or a range that does not continue the one before it
         # refuses the WHOLE file.
+        [ -n "${SKIP[$jp]:-}" ] && continue   # another agent's surface: not this run's to judge
         if [ -z "${IDX[$jp]:-}" ]; then jok=0; break; fi
         case "${ST[$jp]}" in mirror:*) jok=0; break ;; esac
         case "$jdest" in rule:*|nested:*) _ad_sp_path_ok "${jdest#*:}" || { jok=0; break; } ;; esac
