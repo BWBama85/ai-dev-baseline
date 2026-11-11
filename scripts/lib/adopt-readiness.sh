@@ -140,7 +140,7 @@ settings${TAB}owner${TAB}repo settings were offered and applied with consent, in
 reviewers${TAB}owner${TAB}[reviewers] bots agrees with the GitHub Apps that review this repo's pull requests
 release${TAB}owner${TAB}the release command resolves to a real target
 decisions${TAB}agent${TAB}a decision log exists for the unknowns adoption hit
-workflows${TAB}owner${TAB}the project runs the baseline's workflows — no competing, same-name or project skill, no prior framework's pin, and nothing routing work to one (root-doc pointer, tracked mirror, user skill root)
+workflows${TAB}owner${TAB}the project runs the baseline's workflows — no competing, same-name or project skill, no prior framework's pin, nothing routing work to one (root-doc pointer, tracked mirror, user skill root), and every project fact surface (rule, nested root doc) in its home
 conformance${TAB}owner${TAB}the project's own instructions do not contradict the baseline — review is not primary, unless a recorded DEVIATION says why
 EOF
 }
@@ -666,9 +666,34 @@ cmd_probe() {
   wout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" workflows "$root" ${agents_given:+--agents "$agents"} 2>/dev/null)"; wrc=$?
   wsum="$(printf '%s\n' "$wout" | awk -F'\t' '$1=="summary" {print $6; exit}')"
   wfind="$(printf '%s\n' "$wout" | awk -F'\t' '$1!="summary" && $1!="exempt" && $1!="unknown" && NF>=5 {printf " %s %s%s (%s);", $1, $2, ($4!="-" ? " -> " $4 : ""), $5}')"
+  # WHERE THE PROJECT'S FACTS LIVE (#552) rides this rung rather than a second one, because it is the
+  # same question one layer down: a rule or nested doc outside its home, or scoped by a key Claude
+  # does not read, leaves the plan open. Judged by path and frontmatter only — the fact-vs-workflow
+  # split is the adopt run's own step and has no durable record for this probe to read.
+  # A workflows status this rung does not know is unknown BEFORE the two are combined, so a
+  # specialized finding can never turn a failed workflows read into a plain todo.
+  local wfail=""
+  case "$wrc" in 0|10|11) ;; *) wfail="$wrc"; wrc=11 ;; esac
+  local sout src ssum sfind sbl
+  local -a sp_ag=()
+  [ -z "${agents_given:-}" ] || sp_ag=(--agents "$agents")
+  # The installed baseline's superseded-name map, so a surface's prose pointer to a legacy skill is
+  # a finding here as it is in /adopt. With no baseline the workflows read is already unknown.
+  sbl="$(bash "$_AR_LIB_DIR/adopt-lib.sh" baseline 2>/dev/null)" || sbl=""
+  [ -z "$sbl" ] || sp_ag+=(--baseline "$sbl")
+  sout="$(bash "$_AR_LIB_DIR/adopt-lib.sh" specialized "$root" "${sp_ag[@]}" 2>/dev/null)"; src=$?
+  ssum="$(printf '%s\n' "$sout" | awk -F'\t' '$1=="summary" {print $9; exit}')"
+  sfind="$(printf '%s\n' "$sout" | awk -F'\t' '($1=="surface" && ($8 ~ /^unhomed:/ || $8=="respell" || $8=="extra-key")) || $1=="exemption-refused" || $1=="pointer" || $1=="unknown" {printf " %s %s (%s);", $1, $2, $8}')"
+  wsum="$wsum; ${ssum:-specialized: no summary}${wfail:+; adopt-lib.sh workflows failed (exit $wfail)}"
+  case "$src" in
+    0)  : ;;
+    10) [ "$wrc" -eq 11 ] || wrc=10; wfind="$wfind$sfind" ;;
+    11) wrc=11; wfind="$wfind$sfind" ;;
+    *)  wrc=11; wsum="$wsum; adopt-lib.sh specialized failed (exit $src)" ;;
+  esac
   case "$wrc" in
-    0)  _ar_emit workflows ok "no competing, same-name or project skill, no prior framework's pin, and nothing routing work to one — $wsum" ;;
-    10) _ar_emit workflows todo "the project carries or routes work to skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each skill and mirror to .ai-dev-baseline/retired/<date>/ in a normal PR, re-point each root-doc line at the baseline workflow, and move each user-level skill out of its user root; $wsum" ;;
+    0)  _ar_emit workflows ok "no competing, same-name or project skill, no prior framework's pin, nothing routing work to one, and every fact surface in its home — $wsum" ;;
+    10) _ar_emit workflows todo "the project carries or routes work to skills the baseline replaces or forbids (policy:one-baseline):${wfind} — retire each skill and mirror to .ai-dev-baseline/retired/<date>/ in a normal PR, re-point each root-doc line at the baseline workflow, move each user-level skill out of its user root, and move each fact surface to its home (handling-the-unknown.md, Facts and workflows); $wsum" ;;
     11) _ar_emit workflows unknown "workflows not judged in full$( [ -n "$wfind" ] && printf ' (found so far:%s)' "$wfind") — ${wsum:-no summary}; $(printf '%s\n' "$wout" | awk -F'\t' '$1=="unknown" {printf "%s%s", (n++ ? "; " : ""), $6}')" ;;
     *)  _ar_emit workflows unknown "adopt-lib.sh workflows failed (exit $wrc) — workflows not judged" ;;
   esac

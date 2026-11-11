@@ -193,6 +193,28 @@ no  "$rc" "open-set: failing custom gate → run fails (blocks)"
 has "$err" 'gate "a_fail" failed' "open-set: failure names the failing gate"
 if [ -f "$d/ran-b" ]; then ok; else bad "open-set: later gate still runs after an earlier failure"; fi
 
+# PER-PACKAGE COMMANDS ARE CUSTOM GATES (#552): each package's command is its own gate with its own
+# scope, so a change in one package runs that package's command and skips the other's, and a
+# disabled repo-wide `test` takes nothing with it.
+d="$work/per-package"; mkdir -p "$d"
+cat > "$d/agents.toml" <<'EOF'
+[gates]
+test     = ""
+test-api = "touch ran-api"
+test-web = "touch ran-web"
+
+[gates.scope]
+test-api = "apps/api/**"
+test-web = "apps/web/**"
+EOF
+err="$(adb_run_gates "$d" "apps/api/src/x.ts" 2>&1)"; yes $? "per-package: a change in one package passes"
+if [ -f "$d/ran-api" ]; then ok; else bad "per-package: the touched package's command ran"; fi
+if [ -f "$d/ran-web" ]; then bad "per-package: the untouched package's command must be skipped"; else ok; fi
+has "$err" 'gate "test-web": skipped (scope' "per-package: the skipped package's gate says so"
+recs="$(_adb_gate_records "$d")"
+has "$recs" "disabled${TAB}test${TAB}" "per-package: the repo-wide test is disabled, not dropped"
+has "$recs" "run${TAB}test-api${TAB}touch ran-api${TAB}apps/api/**${TAB}always" "per-package: test-api carries its own scope"
+
 # A MANIFEST THAT CANNOT BE READ AS TOML IS A FATAL, NOT AUTO-DETECTION (PR #429). `adb_toml_get`
 # returns 3 for a NUL byte (2 for an unreadable file), and every read here treated both as "key
 # absent" — so a `""`-disabled gate ran, a declared command became a default, a custom gate vanished.

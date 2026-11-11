@@ -222,6 +222,9 @@ debug        = "claude"     # owns root-cause investigations.
 # test      = "pnpm test"
 # format    = "pnpm format:check"
 # build     = "pnpm build"          # a custom gate — blocks like the built-in four
+# test-api  = "pnpm --filter api test"   # a per-package command: a custom gate named for the
+#                                        # package, scoped below in [gates.scope]
+# No prose here: project facts have their homes in base/practices/handling-the-unknown.md.
 
 # Optional: declare a gate explicitly Not-Applicable (reported, never a failure
 # or a detection miss) — e.g. a stdlib-only tool with no linter/type-checker.
@@ -276,6 +279,7 @@ debug        = "claude"     # owns root-cause investigations.
 # by the Stop-hook) touches a matching path — no forked gate script needed.
 # [gates.scope]
 # build = "apps/**,packages/**"
+# test-api = "apps/api/**"
 
 # Optional: per-gate CADENCE — which caller a gate participates in.
 #

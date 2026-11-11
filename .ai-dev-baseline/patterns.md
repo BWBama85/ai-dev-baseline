@@ -52,6 +52,7 @@ Sweep each of these before opening a pull request.
 - `rerun-not-idempotent` — For every record this code WRITES, feed each one its own readers consume back through them, including the boundary values the writer can legitimately produce (zero rows, an empty set, a retired last entry). A record the writer emits and a reader then refuses as damaged is a state no later run can clear, and it surfaces only once the boundary is reached in the field.
 - `silent-permission-change` — When a write publishes a staged file by rename, or copies content into a new file, name the mode the result will carry and check it against the original: carry an existing file's mode onto the stage and refuse the write if it cannot be read or applied; create a copy outside the checkout (TMPDIR) owner-only. A stage or copy made under the umask silently widens what the operator restricted.
 - `unbounded-resource` — For every resource the diff makes a process consume — disk staged in TMPDIR, the wall clock a CI job or dispatch spends, a pool of workers — name the bound that governs it and check the bound still covers the WHOLE workload with every gate forced on: stream instead of staging an unbounded input, and when a job gains a step, re-measure and resize its timeout-minutes in the same change with the figure in its comment. A bound sized for yesterday cancels today silently.
+- `path-divergence` — When a fix or a rule applies on one path of a decision, find every sibling path that decides the same thing — the success and the failure path, the reported and the skipped item, each consumer of a shared filter — and apply it there too, or route them all through one helper. Grep the diff for the predicate the fix added and ask of each place the same question is answered whether it asks it.
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -803,4 +804,6 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `scripts/lib/project-gates.sh:520` `c1753db` `PRRT_kwDOTfywrM6vDDrs` PR #570 2026-10-22 — an unsearchable evidence directory left its glob literal, read as absent evidence instead of unknown
 - `status-swallowed` `scripts/lib/adopt-lib.sh:1191` `5cc7e2c` `PRRT_kwDOTfywrM60rQ5p` PR #606 2026-11-06 — an unreadable hidden directory under a nested root was skipped without marking the walk incomplete
 - `third-party-default` `scripts/lib/common.sh:2312` `b55a797` `PRRT_kwDOTfywrM61M9pQ` PR #620 2026-11-09 — collision dedupe marked a name seen before a same-skill exemption, hiding a distinct copy in the other Codex root
+- `path-divergence` `scripts/lib/adopt-lib.sh:3607` `ffdb30f` `PRRT_kwDOTfywrM616eHD` PR #622 2026-11-11 — an exemption lookup read a surface excluded by agent selection as nonexistent
+- `path-divergence` `scripts/lib/adopt-lib.sh:3439` `ffdb30f` `PRRT_kwDOTfywrM616eHO` PR #622 2026-11-11 — unknowns filtered by native agent only, unlike the surface report
 <!-- adb:hits:end -->

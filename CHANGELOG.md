@@ -11,6 +11,24 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Added
 
+- **A project's facts have a home, and `/adopt` judges its rules and nested docs instead of
+  escalating them (#552).** `handling-the-unknown.md` now separates a fact (kept) from a workflow
+  (retired) and names each fact's home: repo-wide in the root doc, one package's conventions in a
+  nested root doc there, and paths that span the tree in `.claude/rules/<name>.md` with `paths:`.
+  A per-package gate command is a custom gate (`test-api`) scoped by `[gates.scope]`, and
+  `agents.toml` carries no prose. `adopt-lib.sh specialized` inventories the root docs,
+  `.claude/rules/**/*.md` (a linked rule is reported, never followed), every tracked nested root
+  doc (manifest or not) and
+  `.codex/rules*`/`.gemini/rules*` hand mirrors, by path and frontmatter only. It reports each
+  one's scope, which agent loads it and when, and where it belongs. It also reports a rule scoped
+  with `globs:`, which Claude Code does not read, so that rule loads every session (witnessed on
+  Claude Code 2.1.319). A mirror is proved by its exact bytes. `/adopt` gains a
+  judgment step: the agent marks each range fact or workflow from `adopt-lib.sh prose` scaffolds,
+  and the library refuses a judgment that does not cover the current file or calls a fenced block
+  a workflow. These surfaces are now `rule` and `nested-doc` scan records, never `other`, and a
+  `project-delta` entry's `keeps:` line can keep one where it is. The completion contract's
+  `workflows` rung stays open while one is outside its home.
+
 - **`baseline pinned status` names each skill a personal one outranks (#540).** Claude runs a
   personal skill over a same-named project one, so on a machine with the global install a pinned
   project's vendored skills do not run. `status` now names each colliding skill per agent, says
