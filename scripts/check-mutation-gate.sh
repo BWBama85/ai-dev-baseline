@@ -87,7 +87,7 @@ if [ "$MODE" = mutation ]; then
   # row mutates — the gate, ci.yml, the scheduled workflow or the last-nightly reporter, one pool
   # each (#519).
   mut_prepare() {
-    check_copy_subtrees "$ROOT" "$1" scripts .github bin agents .claude base templates >/dev/null 2>&1 || return 1
+    check_copy_subtrees "$ROOT" "$1" scripts .github bin agents .claude base templates docs >/dev/null 2>&1 || return 1
     cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null || return 1
   }
   mkdir -p "$work/gate" "$work/ci" "$work/nightly" "$work/status" "$work/registry"

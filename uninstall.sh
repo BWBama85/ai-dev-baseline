@@ -291,7 +291,7 @@ EOF
 
   unwire_settings "$ours_settings" || rc=1
   # The mirror of install.sh's allowlist step (#288, D155): only the entries its receipt records.
-  adb_permissions_remove "$REPO" "$HOME" "$ours_settings" || rc=1
+  adb_permissions_remove "$REPO" "$HOME" || rc=1
   return "$rc"
 }
 

@@ -460,6 +460,11 @@ what that text can induce:
 - A matched command is not shown to you and not judged by the classifier. `git commit -m *` also
   matches `git commit -m x --no-verify`; `git switch -c *` also matches a `--discard-changes`
   after it. The words before the `*` are the whole limit.
+- `git` runs programs your git configuration names, and a matched command runs them unasked:
+  the repository's hooks on `git commit` and `git switch -c`, a clean filter on `git add`, and the
+  configured editor on `git commit -m x --edit`. No shipped rule lets the *command line* name the
+  program — that is what rules out `git fetch *` and `git merge` below — but none checks who wrote
+  the hook or the configuration. `git config` is not allowlisted.
 - `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker —
   with `--repo`, to any repository your token can reach. Whatever the session can read, it can
   put there.
@@ -482,7 +487,8 @@ itself:
   are handled by the CLI whatever the rules say.
 - **Auto Mode suspends allow rules that grant arbitrary code execution.** The vendor names
   `Bash(*)`, wildcarded interpreters such as `Bash(python *)`, and package-manager run commands.
-  No shipped rule has that shape. `autoMode.classifyAllShell` suspends every shell allow rule.
+  No shipped rule has that shape. `autoMode.classifyAllShell` (CLI v2.1.193) suspends every shell
+  allow rule.
 - **`permissions.defaultMode` is never written.** It is yours. In `default` every unlisted command
   prompts; `dontAsk` refuses instead; `acceptEdits` prompts for an unlisted Bash command the
   sandbox does not cover; `auto` sends it to the classifier; in `plan` it depends on the session.
@@ -596,7 +602,9 @@ How it reads the rules, each from the vendor pages cited above:
 `gate` lines list each gate command the project runs and whether a direct call of it matches an
 allow rule; they never change the exit code, a gate set that could not be detected included. MDM and server-managed settings and a session's
 `--settings`, `--permission-mode` and `--allowedTools` flags are not inspected.
-`baseline permissions match -- '<command>'` names the shipped entry that covers one simple command.
+`baseline permissions match -- '<command>'` names the shipped entry that covers one simple command;
+a compound command is refused (exit 2), since the CLI matches each of its parts separately.
+A git that fails for any reason but "not a repository" leaves the local settings file not evaluated.
 
 ### Run markers are session-owned
 

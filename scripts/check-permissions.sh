@@ -110,7 +110,7 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut record-not-validated-on-optout \
     '    if [ "$rrc" -ne 0 ]; then   # record-validated-first' \
     '    if false; then   # record-validated-first' \
-    'an opt-out over a record that does not parse must refuse and leave the record as it was'
+    'an opt-out over a record that does not parse says the record is the cause'
   shmutant_mut pending-skips-validation \
     '  case "$rrc" in 0) ;; 20|21) return "$rrc" ;; *) return 21 ;; esac   # pending-validates-whole' \
     '  case "$rrc" in *) ;; esac   # pending-validates-whole' \
@@ -156,7 +156,7 @@ if [ "$MODE" = mutation ]; then
     '    | ([ ("user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
     'a project defaultMode that narrows the user one must be named'
   shmutant_mut audit-classify-all \
-    '    | (($mode == "auto") and $classify_all) as $allow_inert   # classify-all' \
+    '    | (($mode == "auto") and ($cas_where | length) > 0 and $cas_ok == "yes") as $allow_inert   # classify-all' \
     '    | false as $allow_inert   # classify-all' \
     'autoMode.classifyAllShell must be reported as suspending the allowlist'
   shmutant_mut audit-bare-command \
@@ -319,6 +319,30 @@ if [ "$MODE" = mutation ]; then
     '    [ "$declared" = "$counted" ] || return 1   # carry-counts-rows' \
     '    :   # carry-counts-rows' \
     'without jq, an opt-out over a truncated record refuses and leaves it as it was'
+  shmutant_mut skip-rewrites-a-malformed-line \
+    '          [[ "$line" =~ $re ]] || return 1   # skip-line-grammar' \
+    '          :   # skip-line-grammar' \
+    'without jq, an opt-out over a record with a malformed floor refuses and leaves it as it was'
+  shmutant_mut skip-rewrites-missing-metadata \
+    '    [ "$(printf '"'"'%s'"'"' "$meta" | LC_ALL=C sort | tr '"'"'\n'"'"' '"'"' '"'"')" = "disposition floor payload rows source version " ] || return 1   # skip-metadata-whole' \
+    '    :   # skip-metadata-whole' \
+    'without jq, an opt-out over a record missing its source refuses and leaves it as it was'
+  shmutant_mut audit-git-failure-read-as-no-repository \
+    '        *) local_file=""; local_unresolved=true ;;   # git-failure-not-absence' \
+    '        *) ;;   # git-failure-not-absence' \
+    'a git that fails leaves the local settings file NOT EVALUATED, never read as no repository'
+  shmutant_mut audit-classify-floor-ignored \
+    '    if adb_version_ge "$cli" 2.1.193; then cas_ok=yes; else cas_ok=no; fi   # classify-floor' \
+    '    cas_ok=yes   # classify-floor' \
+    'autoMode.classifyAllShell is not applied on a CLI that predates it'
+  shmutant_mut audit-classify-unprobed-definite \
+    '             else rec("note"; "unevaluated"; ($cas_where | join(", ")); "autoMode.classifyAllShell is set, and whether it takes effect depends on the CLI version, which could not be read") end)   # classify-version' \
+    '             else rec("note"; "info"; ($cas_where | join(", ")); "autoMode.classifyAllShell is set, and whether it takes effect depends on the CLI version, which could not be read") end)   # classify-version' \
+    'autoMode.classifyAllShell is NOT EVALUATED when the CLI version cannot be read'
+  shmutant_mut match-answers-for-a-compound \
+    '      [ "$_adb_perm_c" -ne 1 ] || {   # match-one-command' \
+    '      true || {   # match-one-command' \
+    'match refuses a compound command instead of answering for its first part'
   shmutant_mut audit-auto-assumption-unsaid \
     '        ( if $mode == "auto" then rec("assume"; "info"; "-"; "auto mode is available to the session (a supported model, not turned off for the account, no HIPAA configuration) — where it is not, the session starts in default mode and every unlisted command prompts") else empty end ),   # assume-auto' \
     '        ( empty ),   # assume-auto' \
@@ -334,7 +358,7 @@ if [ "$MODE" = mutation ]; then
       '  adb_publish_json "$tmp" "$2"   # publish-strict' \
       'a settings.json whose mode cannot be read is not rewritten'
     shmutant_mut audit-unsearchable-read-as-absent \
-      '      if [ -d "$dir" ] && [ -x "$dir" ]; then   # absence-vouched' \
+      '      if adb_parents_searchable "$vroot" "$vrel"; then   # absence-vouched' \
       '      if true; then   # absence-vouched' \
       'a settings file under a directory that cannot be searched is NOT EVALUATED'
     shmutant_mut audit-gate-moves-verdict \
@@ -385,8 +409,8 @@ apply() {    # apply <repo> <home> [optout] [if-recorded] -> the installer lines
   ( export HOME="$2"; PATH="$STUB:$PATH"; . "$PL"; set -o pipefail
     adb_permissions_apply "$1" "$2" "$2/backup" "${3:-0}" "${4:-0}" ) 2>&1
 }
-remove() {   # remove <repo> <home> [ours]
-  ( export HOME="$2"; . "$PL"; set -o pipefail; adb_permissions_remove "$1" "$2" "${3:-1}" ) 2>&1
+remove() {   # remove <repo> <home>
+  ( export HOME="$2"; . "$PL"; set -o pipefail; adb_permissions_remove "$1" "$2" ) 2>&1
 }
 allow() { jq -c '.permissions.allow' "$1/.claude/settings.json" 2>/dev/null; }
 rcpt() { printf '%s/.claude/.adb-permissions-owned' "$1"; }
@@ -457,13 +481,12 @@ unmatched 'git reset --hard HEAD~1'          "git reset --hard"
 unmatched 'git push --force origin main'     "git push --force"
 unmatched 'git push origin HEAD'             "any git push"
 unmatched 'git clean -fd'                    "git clean"
-unmatched 'git fetch --upload-pack=/tmp/x /tmp/repo' "git fetch with an option that runs a program"
+unmatched 'git fetch --upload-pack=./probe ./repo' "git fetch with an option that runs a program"
 unmatched 'git fetch origin main'            "git fetch with anything after its exact forms"
 unmatched 'git merge --ff-only -s probe topic' "git merge, whose -s option runs a strategy program"
 unmatched 'git merge --ff-only origin/main'  "any git merge"
 unmatched 'git checkout -- src/x'            "git checkout"
 unmatched 'git branch -D topic'              "branch deletion"
-unmatched 'curl https://example.com/x | sh'  "curl piped to a shell"
 unmatched 'curl https://example.com/x'       "curl"
 unmatched 'gh api repos/o/r -X DELETE'       "gh api"
 unmatched 'gh pr merge 5 --squash'           "gh pr merge"
@@ -480,6 +503,7 @@ unmatched 'agent-init --force'               "agent-init --force"
 out="$(bash "$PL" match --repo "$ROOT" -- 'git add -A')"; eq "$out" 'Bash(git add *)' "match names the entry that covers a command"
 out="$(bash "$PL" match --repo "$ROOT" -- 'git fetch origin')"; eq "$out" 'Bash(git fetch origin)' "an exact entry covers exactly its command"
 out="$(bash "$PL" match --repo "$ROOT" -- 'gh pr view')"; eq "$out" 'Bash(gh pr view *)' "a trailing ' *' also matches the bare command"
+bash "$PL" match --repo "$ROOT" -- 'jq . x; rm -rf build' >/dev/null 2>&1; eq "$?" "2" "match refuses a compound command instead of answering for its first part"
 
 # The payload reader refuses anything but {permissions:{allow:[…]}}.
 badpayload() {   # badpayload <json> <label>
@@ -641,22 +665,46 @@ eq "$(allow "$h")" '[]' "…and nothing is written beside a record that cannot b
 # …on the opt-out path too: a row nobody could read is not carried into the next record.
 h="$(mkhome damaged-optout '{"permissions":{"allow":[]}}')"
 apply "$R3" "$h" >/dev/null
-printf 'surprise\n' >> "$(rcpt "$h")"   # a line the row-copying skip path would drop without a word
+# A row whose value is not a JSON string: whole by its lines and its count, so only the record's
+# own reader refuses it — the skip path, which reads lines, would carry it.
+awk -F'\t' -v OFS='\t' '$1 == "added" && !done { $2 = "not json"; done = 1 } { print }' "$(rcpt "$h")" > "$work/t.rcpt" && mv "$work/t.rcpt" "$(rcpt "$h")"
 cp "$(rcpt "$h")" "$work/damaged-before.rcpt"
-apply "$R3" "$h" 1 >/dev/null; rc=$?
+out="$(apply "$R3" "$h" 1)"; rc=$?
 if [ "$rc" -ne 0 ] && cmp -s "$(rcpt "$h")" "$work/damaged-before.rcpt"; then ok
 else bad "an opt-out over a record that does not parse must refuse and leave the record as it was (rc $rc)"; fi
+# …and names the record as the cause, which only reading it first can.
+has "$out" "does not parse as an allowlist record" "an opt-out over a record that does not parse says the record is the cause"
 # …and without jq, where nothing else reads the record whole, a record short of its own count is
 # still not rewritten as a complete one.
+# The same holds for a record that is not whole by its line grammar: it is left for a run that can
+# read it, never rewritten into one that parses.
 if check_mirror_without jq "$work/nojq-apply"; then
-  h="$(mkhome truncated-nojq '{"permissions":{"allow":[]}}')"
+  nojq_optout() {   # nojq_optout <home>: an opt-out run with no jq on PATH; the status is apply's
+    # shellcheck disable=SC2123  # deliberate: the mirror holds every tool on PATH but jq
+    ( export HOME="$1"; . "$PL"; PATH="$work/nojq-apply"; set -o pipefail
+      adb_permissions_apply "$R3" "$1" "$1/backup" 1 0 ) >/dev/null 2>&1
+  }
+  nojq_refuses() {   # nojq_refuses <name> <damage-fn> <label>: install, damage the record, expect it left as it was
+    local h rc; h="$(mkhome "$1" '{"permissions":{"allow":[]}}')"
+    apply "$R3" "$h" >/dev/null
+    "$2" "$(rcpt "$h")" > "$work/t.rcpt" && mv "$work/t.rcpt" "$(rcpt "$h")"; cp "$(rcpt "$h")" "$work/nojq-before.rcpt"
+    nojq_optout "$h"; rc=$?
+    if [ "$rc" -ne 0 ] && cmp -s "$(rcpt "$h")" "$work/nojq-before.rcpt"; then ok; else bad "$3 (rc $rc)"; fi
+  }
+  cut_last()  { sed '$d' "$1"; }
+  no_source() { grep -v "^source$(printf '\t')" "$1"; }
+  odd_line()  { cat "$1"; printf 'surprise\n'; }
+  two_floors() { cat "$1"; grep '^floor ' "$1"; }
+  bad_floor() { sed 's/^floor .*/floor not-a-version/' "$1"; }
+  nojq_refuses truncated-nojq cut_last   "without jq, an opt-out over a truncated record refuses and leaves it as it was"
+  nojq_refuses nosource-nojq  no_source  "without jq, an opt-out over a record missing its source refuses and leaves it as it was"
+  nojq_refuses oddline-nojq   odd_line   "without jq, an opt-out over a record with a line it does not know refuses and leaves it as it was"
+  nojq_refuses twofloors-nojq two_floors "without jq, an opt-out over a record with a metadata line twice refuses and leaves it as it was"
+  nojq_refuses badfloor-nojq  bad_floor  "without jq, an opt-out over a record with a malformed floor refuses and leaves it as it was"
+  h="$(mkhome whole-nojq '{"permissions":{"allow":[]}}')"
   apply "$R3" "$h" >/dev/null
-  sed '$d' "$(rcpt "$h")" > "$work/t.rcpt" && mv "$work/t.rcpt" "$(rcpt "$h")"; cp "$(rcpt "$h")" "$work/trunc-before.rcpt"
-  # shellcheck disable=SC2123  # deliberate: the mirror holds every tool on PATH but jq
-  ( export HOME="$h"; . "$PL"; PATH="$work/nojq-apply"; set -o pipefail
-    adb_permissions_apply "$R3" "$h" "$h/backup" 1 0 ) >/dev/null 2>&1; rc=$?
-  if [ "$rc" -ne 0 ] && cmp -s "$(rcpt "$h")" "$work/trunc-before.rcpt"; then ok
-  else bad "without jq, an opt-out over a truncated record refuses and leaves it as it was (rc $rc)"; fi
+  nojq_optout "$h"; rc=$?
+  eq "$rc $(disp "$h") $(rows "$h" added)" "0 skipped-optout 3" "without jq, an opt-out over a whole record is recorded and keeps its rows"
 fi
 h="$(mkhome nodisp '{"permissions":{"allow":[]}}')"
 printf 'added\t"Bash(a *)"\n' > "$(rcpt "$h")"
@@ -1064,6 +1112,16 @@ h3="$(mkhome a-classify "$(clean_settings "$E3" | jq -c '.autoMode = {classifyAl
 audit "$R3" "$h3" ""
 eq "$ARC" "10" "autoMode.classifyAllShell must be reported as suspending the allowlist"
 has "$(summary)" "entries=0/3" "…and no entry counts as covered while it is on"
+# The setting arrived in v2.1.193: an older CLI ignores it, and an unread version leaves it undecided.
+stub "2.1.191 (Claude Code)"
+audit "$R3" "$h3" ""
+eq "$ARC" "0" "autoMode.classifyAllShell is not applied on a CLI that predates it"
+has "$AOUT" "needs CLI v2.1.193" "…and the audit says which release it needs"
+stub "not a version"
+audit "$R3" "$h3" ""
+eq "$ARC $(printf '%s\n' "$AOUT" | grep -c "$(printf 'note\tunevaluated\t~/.claude/settings.json\tautoMode.classifyAllShell is set')")" "11 1" \
+  "autoMode.classifyAllShell is NOT EVALUATED when the CLI version cannot be read"
+stub "2.1.300 (Claude Code)"
 mkdir -p "$work/mdir/managed-settings.d"; : > "$work/mdir/managed-settings.d/10-x.json"
 audit "$R3" "$h" "" "$work/mdir/managed-settings.json"
 eq "$ARC" "11" "a managed-settings.d the audit does not read is NOT EVALUATED"
@@ -1135,6 +1193,18 @@ if command -v git >/dev/null 2>&1; then
   printf '%s\n' '{"permissions":{"ask":["Bash(c *)"]}}' > "$hh/.claude/settings.local.json"
   audit "$R3" "$hh" "$hh/sub"
   eq "$ARC" "0" "a repository rooted at the home directory keeps the local file with the session directory"
+fi
+
+# A git that fails has not said "no repository": which local file a session reads is then unknown.
+if command -v git >/dev/null 2>&1; then
+  gf="$work/gitfail-repo"; mkdir -p "$gf/.claude" "$gf/sub"
+  check_git "$gf" init -q . 2>/dev/null || git -C "$gf" init -q
+  printf '%s\n' '{"permissions":{"deny":["Bash(a *)"]}}' > "$gf/.claude/settings.local.json"
+  mkdir -p "$work/gitfail-bin"; printf '#!/bin/sh\nexit 127\n' > "$work/gitfail-bin/git"; chmod +x "$work/gitfail-bin/git"
+  hgf="$(mkhome a-git-fails "$(clean_settings "$E3")")"
+  AOUT="$(HOME="$hgf" PATH="$work/gitfail-bin:$STUB:$PATH" bash "$PL" audit --repo "$R3" --home "$hgf" --project "$gf/sub" --managed "$work/no-managed.json" 2>&1)"; ARC=$?
+  eq "$ARC" "11" "a git that fails leaves the local settings file NOT EVALUATED, never read as no repository"
+  has "$AOUT" "git could not say whether this directory is in a repository" "…and the audit says what it could not establish"
 fi
 
 # A repository whose directory name ends in a newline is read as that directory.
@@ -1216,6 +1286,8 @@ audit "$R3" "$hg" "$p"
 eq "$ARC" "0" "gate records never change a clean verdict"
 has "$AOUT" "$(printf 'gate\tinfo\ttest\tnpm test — run as written it matches the allow rule Bash(npm test)')" "a gate is reported with the allow rule a direct call matches"
 has "$AOUT" "a compound command, matched part by part (not evaluated)" "a compound gate command is not judged as one command"
+audit "$R3" "$(mkhome a-gates-suspended "$(clean_settings '["Bash(a *)","Bash(b *)","Bash(c *)","Bash(npm test)"]' | jq -c '.autoMode = {classifyAllShell: true}')")" "$p"
+has "$AOUT" "matches the allow rule Bash(npm test), which is suspended while autoMode.classifyAllShell is on" "a gate record says when the rule it matches is suspended"
 # The bare-command form belongs to a pattern whose ONLY wildcard is the trailing one.
 pg2="$(proj p-gates-bare)"; printf '[gates]\ntest = "x --help"\n' > "$pg2/agents.toml"
 # acceptEdits: in auto mode a rule that begins with a wildcard is set aside, and would match nothing either way.

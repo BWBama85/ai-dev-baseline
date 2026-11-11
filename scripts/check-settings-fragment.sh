@@ -1840,7 +1840,9 @@ if check_block a-no-op-uninstall-stages-nothing-it-leav the-version-probe-three-
 nz="$work/nostage"; rm -rf "$nz"; mkdir -p "$nz/.claude"
 echo '{"sandbox":{"enabled":false}}' > "$nz/.claude/settings.json"
 stub "2.1.259 (Claude Code)"
-HOME="$nz" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks >/dev/null 2>&1
+# `--no-permissions`: with the command allowlist (#288) installed the uninstall is not a no-op, and
+# its rewrite stages under this same name and publishes it.
+HOME="$nz" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks --no-permissions >/dev/null 2>&1
 HOME="$nz" bash "$ROOT/uninstall.sh" --agent claude >/dev/null 2>&1
 [ "$(find "$nz/.claude" -name 'settings.json.adb.*' | wc -l | tr -d ' ')" -eq 0 ] && ok \
   || bad "an uninstall that removed nothing must not leave its staged temp behind — one per cycle accumulates in ~/.claude"
@@ -3849,8 +3851,9 @@ _d5="$work/r50-dangling"; rm -rf "$_d5"; _r42 "$_d5"
 _d5rows="$(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r")"
 mv "$_d5/.claude/settings.json" "$_d5/real.json"; ln -s "$_d5/gone.json" "$_d5/.claude/settings.json"
 _d5out="$(HOME="$_d5" PATH="$work/bin:$PATH" bash "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"
+# The sandbox step's own line: the allowlist step (#288) refuses a dangling link in the same words.
 case "$_d5out" in
-  *"does not resolve to a readable file"*) ok ;;
+  *"does not resolve to a readable file — sandbox settings NOT written"*) ok ;;
   *) bad "a dangling settings link must refuse the install rather than merge against {} — the record is replaced by a rowless refusal while the link stays" ;;
 esac
 [ "$(grep -c "^leaf$ADB_TAB" "$_d5/$_r42r")" = "$_d5rows" ] && ok \
