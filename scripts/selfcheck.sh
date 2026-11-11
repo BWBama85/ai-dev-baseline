@@ -863,7 +863,7 @@ add permissions         bash scripts/check-permissions.sh
 
 # ...and each of those rules broken in a COPY of the library, required RED on its own witness.
 add permissions-mutation bash scripts/check-permissions.sh --mutation
-inputs permissions-mutation scripts/check-permissions.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/project-gates.sh agents/claude/settings.permissions.json agents/claude/skills base/workflows/adopt.md docs/installation.md scripts/mutation-gate.sh scripts/selfcheck.sh
+inputs permissions-mutation scripts/check-permissions.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/project-gates.sh agents/claude/settings.permissions.json agents/claude/skills base/workflows/adopt.md docs/installation.md bin/baseline scripts/mutation-gate.sh scripts/selfcheck.sh
 
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).

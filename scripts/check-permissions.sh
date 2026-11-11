@@ -160,8 +160,8 @@ if [ "$MODE" = mutation ]; then
     'def norm: .;' \
     'an ask rule in the legacy :* spelling must be named'
   shmutant_mut audit-mode-precedence \
-    '    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null)   # mode-precedence' \
-    '    | ([ ("user") as $n | $S[] | select(.name == $n and .mode != null)   # mode-precedence' \
+    '    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
+    '    | ([ ("user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
     'a project defaultMode that narrows the user one must be named'
   shmutant_mut audit-classify-all \
     '    | (($mode == "auto") and $classify_all) as $allow_inert   # classify-all' \
@@ -207,16 +207,68 @@ if [ "$MODE" = mutation ]; then
     '    def rec($k; $l; $w; $t): [$k, $l, ($w | clean), ($t | clean)] | join("\t");   # record-one-line' \
     '    def rec($k; $l; $w; $t): [$k, $l, $w, $t] | join("\t");   # record-one-line' \
     'a control character in a rule cannot break a record into two'
-  # Needs a directory the runner cannot write to; root has none, and then the case does not run.
+  shmutant_mut audit-local-auto-falls-to-user \
+    '       elif $top_local and $top.mode == "auto" then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin' \
+    '       elif false then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin' \
+    'a project defaultMode auto falls to the built-in default, not to the user mode'
+  shmutant_mut audit-local-bypass-not-manual \
+    '          elif $bypass_local == "ignored" then {mode: "default", src: $top.where, why: "local-bypass"}   # local-bypass-manual' \
+    '          elif $bypass_local == "ignored" then {mode: "auto", src: $top.where, why: "set"}   # local-bypass-manual' \
+    'a project bypassPermissions starts the session in default mode'
+  shmutant_mut audit-plan-judged \
+    '    | ((["auto", "acceptEdits", "bypassPermissions", "default", "dontAsk"] | any(.[]; . == $mode))' \
+    '    | ((["auto", "acceptEdits", "bypassPermissions", "default", "dontAsk", "plan"] | any(.[]; . == $mode))' \
+    'defaultMode plan is NOT EVALUATED'
+  shmutant_mut audit-bypass-disable-ignored \
+    '       and (($mode == "bypassPermissions" and ($no_bypass | length) > 0) | not)) as $mode_known   # mode-known' \
+    '       and true) as $mode_known   # mode-known' \
+    'bypassPermissions under disableBypassPermissionsMode is NOT EVALUATED'
+  shmutant_mut audit-two-documents-read-as-one \
+    '      (if length == 1 then .[0] else error("not one JSON document") end)   # scope-one-document' \
+    '      (.[0])   # scope-one-document' \
+    'a settings file holding two JSON documents is NOT EVALUATED'
+  shmutant_mut audit-early-record-forged \
+    '    printf '"'"'note\tunevaluated\t%s\t%s\n'"'"' "${1//[[:cntrl:]]/?}" "${2//[[:cntrl:]]/?}"   # early-record-one-line' \
+    '    printf '"'"'note\tunevaluated\t%s\t%s\n'"'"' "$1" "$2"   # early-record-one-line' \
+    'an early failure cannot forge a record either'
+  shmutant_mut audit-other-tool-rule-dropped \
+    '        ( $classified[] | select(.cls == "other" or (.cls == "bash" and (.hit | length) == 0))' \
+    '        ( $classified[] | select(false)' \
+    'a rule on another tool is listed, not dropped'
+  shmutant_mut audit-shadowed-ask-prompts \
+    '            | ($h.kind == "ask" and $h.cls == "bash" and ($bash_denied or (($h.hit | length) > 0 and all($h.hit[]; . as $e | $denied | any(.[]; . == $e))))) as $shadowed   # ask-shadowed' \
+    '            | false as $shadowed   # ask-shadowed' \
+    'an ask rule a deny rule shadows is not reported as a prompt'
+  shmutant_mut payload-two-documents \
+    '    if length == 1 then .[0] else error("not one JSON document") end   # payload-one-document' \
+    '    .[0]   # payload-one-document' \
+    'a payload file holding two JSON documents must be refused'
+  shmutant_mut unreadable-record-published \
+    '  _adb_perm_receipt_json "$1" >/dev/null   # rendered-validated' \
+    '  true   # rendered-validated' \
+    'a clone path holding a newline refuses the install before anything is written'
+  # Each needs a file or directory the runner cannot use; root has none, and then the case does not run.
   if [ "$(id -u)" -ne 0 ]; then
+    shmutant_mut audit-unsearchable-read-as-absent \
+      '      if [ -d "$dir" ] && [ -x "$dir" ]; then   # absence-vouched' \
+      '      if true; then   # absence-vouched' \
+      'a settings file under a directory that cannot be searched is NOT EVALUATED'
+    shmutant_mut audit-gate-moves-verdict \
+      '        ( if $gates_state == "unread" then rec("gate"; "info"; "-"; "the gate commands of the project could not be detected, so none is listed")   # gate-report-only' \
+      '        ( if $gates_state == "unread" then rec("gate"; "unevaluated"; "-"; "the gate commands of the project could not be detected, so none is listed")   # gate-report-only' \
+      'an undetectable gate set does not change the verdict'
     shmutant_mut stuck-record-left-claiming \
       '  if ! { rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ]; } && ! { : > "$receipt"; } 2>/dev/null; then   # receipt-emptied' \
       '  if ! { rm -f "$receipt" 2>/dev/null && [ ! -e "$receipt" ]; }; then   # receipt-emptied' \
       'a record that cannot be deleted at uninstall must be emptied'
   fi
 
-  prep() { check_copy_subtrees "$ROOT" "$1" scripts base agents docs >/dev/null 2>&1; }
+  prep() { check_copy_subtrees "$ROOT" "$1" scripts base agents docs bin >/dev/null 2>&1; }
   runner() { ( cd "$1" && CP_MUTATION_CHILD=1 bash scripts/check-permissions.sh 2>&1 ); }
+  # THE CONTROL: a copy nothing was mutated in must be GREEN, or every row below is red for a reason
+  # that is not its mutation. The pool runs no baseline of its own.
+  if prep "$work/control" && control_out="$(runner "$work/control")"; then ok
+  else bad "the unmodified mutation copy is not green — its rows prove nothing: $(printf '%s\n' "${control_out:-the copy could not be made}" | grep -E '^FAIL|FATAL' | head -3 | tr '\n' ' ')"; fi
   check_shmutant_pool check-permissions "$work/pool" prep runner 6
   check_summary check-permissions
   exit 0
@@ -260,8 +312,8 @@ NSHIP="$(printf '%s' "$SHIP" | jq 'length')"
 [ "$NSHIP" -gt 0 ] && ok || bad "the shipped payload must parse as a non-empty allowlist"
 eq "$( . "$PL"; adb_permissions_floor )" "2.1.0" "the floor is the release that added wildcard Bash rules"
 
-# Every non-library entry, pinned by name: removing one the workflows spell is a change this list
-# has to be edited to allow.
+# Every entry, pinned by name: removing one the workflows spell, or adding one, is a change this
+# list has to be edited to allow.
 WANT_PLAIN='Bash(agent-init)
 Bash(baseline adopt status *)
 Bash(baseline permissions *)
@@ -292,15 +344,11 @@ Bash(git fetch *)
 Bash(git merge --ff-only *)
 Bash(git switch -c *)
 Bash(jq *)'
-eq "$(printf '%s' "$SHIP" | jq -r '.[] | select(contains("/scripts/lib/") | not)' | LC_ALL=C sort)" "$WANT_PLAIN" \
-  "the non-library entries are exactly the pinned list"
+eq "$(printf '%s' "$SHIP" | jq -r '.[]' | LC_ALL=C sort)" "$WANT_PLAIN" "the shipped entries are exactly the pinned list"
 
-# The library entries are DERIVED: one per library a rendered Claude skill invokes, and no other.
-USED="$(cat "$ROOT"/agents/claude/skills/*/*.md | grep -oE 'bash "\$HOME/\.claude/scripts/lib/[a-z-]+\.sh"' | LC_ALL=C sort -u \
-        | sed 's/^/Bash(/; s/$/ *)/')"
-HAVE="$(printf '%s' "$SHIP" | jq -r '.[] | select(contains("/scripts/lib/"))' | LC_ALL=C sort)"
-[ -n "$USED" ] && ok || bad "no library invocation was found in the rendered Claude skills — the derivation read nothing"
-eq "$HAVE" "$USED" "every library a rendered Claude skill invokes has an allow entry, and no other library does"
+# No entry approves a script by path: whether Auto Mode keeps a rule naming an interpreter and a
+# fixed script is not established (D155), so none is shipped.
+eq "$(printf '%s' "$SHIP" | jq -r '[.[] | select(test("/|\\.sh|\\$"))] | length')" "0" "no shipped entry names a path, a script or a variable"
 
 # Shape: a wildcard only as a final ` *`, and never on a bare interpreter or wrapper.
 eq "$(printf '%s' "$SHIP" | jq -r '[.[] | .[5:-1] | select(contains("*")) | select((endswith(" *") | not) or (.[:-2] | contains("*")))] | length')" "0" \
@@ -330,6 +378,7 @@ unmatched 'gh run rerun 5'                   "gh run rerun"
 unmatched 'gh auth status --show-token'      "gh auth status with a token flag"
 unmatched 'gh auth token'                    "gh auth token"
 unmatched 'bash scripts/check-anything.sh'   "a project-relative script"
+unmatched 'bash "$HOME/.claude/scripts/lib/pr-watch.sh" ci --pr 3' "a baseline library script"
 unmatched 'bash -c "id"'                     "bash -c"
 unmatched 'baseline update'                  "baseline update"
 unmatched 'codex exec -'                     "a cross-model CLI"
@@ -348,6 +397,7 @@ badpayload '{"permissions":{"allow":[]}}'                                       
 badpayload '{"permissions":{"allow":["Bash(jq *)","Bash(jq *)"]}}'                 "a payload with a duplicate entry must be refused"
 badpayload '{"permissions":{"allow":["Edit"]}}'                                    "a payload entry that is not a Bash rule must be refused"
 badpayload '{"permissions":{"allow":["Bash(jq *)",7]}}'                            "a payload entry that is not a string must be refused"
+badpayload '{"permissions":{"allow":["Bash(jq *)"]}}{"permissions":{"allow":["Bash(rm *)"]}}' "a payload file holding two JSON documents must be refused"
 
 # ====================================== 2. the union =============================================
 E3='["Bash(a *)","Bash(b *)","Bash(c *)"]'
@@ -556,6 +606,18 @@ failing_receipt "$R3" "$h" >/dev/null
 if [ -f "$h/.claude/settings.json" ] && [ ! -s "$h/.claude/settings.json" ]; then ok
 else bad "a receipt that will not publish must leave an empty settings.json in place"; fi
 
+# A record its own reader would refuse is never published, and then nothing else is written.
+RN="$(mkrepo "r-new
+line" "$E3")"
+h="$(mkhome newline-clone '{"permissions":{"allow":["Bash(ps:*)"]}}')"; cp "$h/.claude/settings.json" "$work/nl-before.json"
+apply "$RN" "$h" >/dev/null; rc=$?
+if [ "$rc" -ne 0 ] && cmp -s "$h/.claude/settings.json" "$work/nl-before.json" && [ ! -e "$(rcpt "$h")" ]; then ok
+else bad "a clone path holding a newline refuses the install before anything is written (rc $rc)"; fi
+h="$(mkhome multidoc)"; printf '{"permissions":{"allow":[]}}\n{}\n' > "$h/.claude/settings.json"; cp "$h/.claude/settings.json" "$work/md-before.json"
+apply "$R3" "$h" >/dev/null; rc=$?
+if [ "$rc" -ne 0 ] && cmp -s "$h/.claude/settings.json" "$work/md-before.json"; then ok
+else bad "a settings.json holding two JSON documents is not written to (rc $rc)"; fi
+
 # Whose record is it?
 h="$(mkhome foreign '{"permissions":{"allow":[]}}')"
 apply "$R3" "$h" >/dev/null
@@ -711,6 +773,11 @@ eq "$ARC" "0" "a deny rule that matches no shipped entry is not a finding"
 has "$(summary)" "rules=1" "…and it is still counted as evaluated"
 ruled a-other-tool deny 'Edit(.env)'
 eq "$ARC" "0" "a path-scoped rule on another tool is not a finding"
+has "$AOUT" "deny rule Edit(.env) matches no shipped command" "a rule on another tool is listed, not dropped"
+hs="$(mkhome a-shadowed "$(clean_settings "$E3" | jq -c '.permissions.deny = ["Bash(b *)"] | .permissions.ask = ["Bash(b x*)"]')")"
+audit "$R3" "$hs" ""
+eq "$(printf '%s\n' "$AOUT" | awk -F'\t' '$1 == "rule" && $4 ~ /^ask rule/ { print $2 }')" "info" "an ask rule a deny rule shadows is not reported as a prompt"
+has "$AOUT" "deny is evaluated first" "…and the audit says why"
 ruled a-whole-edit ask 'Edit'
 eq "$ARC" "10" "an ask rule on the whole Edit tool is a prompt source"
 
@@ -738,11 +805,11 @@ eq "$ARC" "10" "in auto mode a blanket Bash allow rule holds no shipped entry"
 has "$AOUT" "auto mode sets aside 1 allow rule" "…and the audit names the rule it set aside"
 audit "$R3" "$(mkhome a-blanket-accept "$(clean_settings '["Bash"]' acceptEdits)")" ""
 eq "$ARC" "0" "outside auto mode a whole-tool allow rule holds every shipped entry"
-RI="$(mkrepo ri '["Bash(bash \"$HOME/x.sh\" *)"]')"
-audit "$RI" "$(mkhome a-interp-auto "$(clean_settings '["Bash(bash *)"]')")" ""
-eq "$ARC" "10" "in auto mode a wildcarded interpreter rule holds no shipped entry"
-audit "$RI" "$(mkhome a-interp-own "$(clean_settings '["Bash(bash \"$HOME/x.sh\" *)"]')")" ""
-eq "$ARC" "0" "a rule naming an interpreter and a fixed script is not treated as set aside"
+RI="$(mkrepo ri '["Bash(npm run build)"]')"
+audit "$RI" "$(mkhome a-pm-auto "$(clean_settings '["Bash(npm run *)"]')")" ""
+eq "$ARC" "10" "in auto mode a wildcarded package-manager run rule holds no shipped entry"
+audit "$RI" "$(mkhome a-pm-accept "$(clean_settings '["Bash(npm run *)"]' acceptEdits)")" ""
+eq "$ARC" "0" "outside auto mode the same rule holds it"
 audit "$R3" "$(mkhome a-glob-allow "$(clean_settings '["B*","*"]')")" ""
 eq "$ARC" "10" "an allow rule that globs the tool name approves nothing"
 
@@ -753,10 +820,13 @@ moded() {   # moded <name> <mode-json-or-null> -> audits a clean home with that 
 }
 moded m-default '"default"'; eq "$ARC $(level_of mode)" "10 prompt " "defaultMode default is a prompt source"
 moded m-manual  '"manual"';  eq "$ARC $(level_of mode)" "10 prompt " "defaultMode manual is default"
-moded m-plan    '"plan"';    eq "$ARC $(level_of mode)" "10 prompt " "defaultMode plan is a prompt source"
+moded m-plan    '"plan"';    eq "$ARC $(level_of mode)" "11 unevaluated " "defaultMode plan is NOT EVALUATED"
 moded m-dontask '"dontAsk"'; eq "$ARC $(level_of mode)" "10 blocked " "defaultMode dontAsk refuses instead of asking"
 moded m-accept  '"acceptEdits"'; eq "$ARC $(level_of mode)" "0 ok " "defaultMode acceptEdits with every entry installed is clean"
 moded m-bypass  '"bypassPermissions"'; eq "$ARC $(level_of mode)" "0 info " "bypassPermissions is reported, and is not a prompt source"
+hnb="$(mkhome m-bypass-disabled "$(clean_settings "$E3" bypassPermissions | jq -c '.permissions.disableBypassPermissionsMode = "disable"')")"
+audit "$R3" "$hnb" ""
+eq "$ARC $(level_of mode)" "11 unevaluated " "bypassPermissions under disableBypassPermissionsMode is NOT EVALUATED"
 # What a missing entry or an ask rule BECOMES follows the mode it is met in.
 miss() {   # miss <name> <mode> [extra-jq] -> audits a home missing Bash(b *) in that mode
   local h; h="$(mkhome "$1" "$(clean_settings '["Bash(a *)","Bash(c *)"]' "$2" | jq -c "${3:-.}")")"
@@ -797,11 +867,17 @@ audit "$R3" "$h" "$(proj p-deny '{"permissions":{"deny":["Bash(a *)"]}}')"
 has "$AOUT" "$(printf 'rule\tblocked\t.claude/settings.json')" "a project deny rule over a user allow entry is named with its file"
 audit "$R3" "$h" "$(proj p-local '' '{"permissions":{"ask":["Bash(c *)"]}}')"
 has "$AOUT" "$(printf 'rule\tprompt\t.claude/settings.local.json')" "a local ask rule is named with its file"
-audit "$R3" "$h" "$(proj p-auto '{"permissions":{"defaultMode":"bypassPermissions"}}')"
-eq "$ARC" "0" "a project bypassPermissions is not honoured, so the user mode stands"
-has "$AOUT" "does not take effect from project or local settings" "…and the audit says it was ignored"
-audit "$R3" "$h" "$(proj p-autolocal '' '{"permissions":{"defaultMode":"auto"}}')"
-has "$AOUT" "$(printf 'mode\tinfo\t.claude/settings.local.json')" "a local defaultMode auto is reported as not taking effect"
+# Two values do not take effect from project or local settings, and each falls somewhere else.
+audit "$R3" "$h" "$(proj p-bypass '{"permissions":{"defaultMode":"bypassPermissions"}}')"
+eq "$ARC $(level_of mode)" "10 prompt " "a project bypassPermissions starts the session in default mode"
+has "$AOUT" "does not take effect from project or local settings" "…and the audit says it did not take effect"
+hud="$(mkhome a-user-default "$(clean_settings "$E3" default)")"
+audit "$R3" "$hud" "$(proj p-autolocal '' '{"permissions":{"defaultMode":"auto"}}')"
+eq "$ARC" "0" "a project defaultMode auto falls to the built-in default, not to the user mode"
+has "$AOUT" "$(printf 'mode\tok\t.claude/settings.local.json')" "…and the audit names the file that set it"
+stub "2.1.200 (Claude Code)"
+audit "$R3" "$hud" "$(proj p-autolocal-old '' '{"permissions":{"defaultMode":"auto"}}')"
+eq "$ARC" "11" "…and where the built-in default cannot be established, neither can the mode"
 stub "2.1.250 (Claude Code)"
 hb="$(mkhome a-proj-bypass-old "$(clean_settings '["Bash(a *)"]' default)")"
 audit "$R3" "$hb" "$(proj p-bypass-old '{"permissions":{"defaultMode":"bypassPermissions"}}')"
@@ -819,7 +895,7 @@ audit "$R3" "$h2" "$(proj p-union '{"permissions":{"allow":["Bash(b *)"]}}' '{"p
 eq "$ARC" "0" "allow lists merge across scopes"
 
 # Managed settings, and the keys that make an allowlist inert.
-printf '%s\n' '{"permissions":{"defaultMode":"plan"}}' > "$work/managed-mode.json"
+printf '%s\n' '{"permissions":{"defaultMode":"default"}}' > "$work/managed-mode.json"
 audit "$R3" "$h" "" "$work/managed-mode.json"
 eq "$ARC" "10" "a managed defaultMode outranks the user one"
 printf '%s\n' '{"allowManagedPermissionRulesOnly":true}' > "$work/managed-only.json"
@@ -881,6 +957,23 @@ eq "$(printf '%s\n' "$AOUT" | awk -F'\t' 'NF != 4' | wc -l | tr -d ' ')" "0" "a 
 eq "$(printf '%s\n' "$AOUT" | grep -c '^summary')" "1" "a rule cannot forge a second summary record"
 has "$AOUT" "deny rule Bash(a x?summary?clean?-?forged *)" "the forged rule is still named, with its control characters replaced"
 
+# One file is one JSON document, and an absence is only reported when it can be vouched for.
+hmd="$(mkhome a-multidoc)"; { clean_settings "$E3"; printf '{}\n'; } > "$hmd/.claude/settings.json"
+audit "$R3" "$hmd" ""
+eq "$ARC" "11" "a settings file holding two JSON documents is NOT EVALUATED"
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p "$work/locked"; printf '%s\n' '{"permissions":{"ask":["Bash(a *)"]}}' > "$work/locked/managed-settings.json"; chmod 000 "$work/locked"
+  audit "$R3" "$h" "" "$work/locked/managed-settings.json"; chmod 755 "$work/locked"
+  eq "$ARC" "11" "a settings file under a directory that cannot be searched is NOT EVALUATED"
+fi
+audit "$R3" "$h" "" "$work/no-such-dir/deeper/managed-settings.json"
+eq "$ARC" "0" "a settings file whose directory does not exist is absent"
+mkdir -p "$work/r-nl
+summary	clean	-	forged"
+audit "$work/r-nl
+summary	clean	-	forged" "$h" ""
+eq "$(printf '%s\n' "$AOUT" | awk -F'\t' 'NF != 4' | wc -l | tr -d ' ') $(printf '%s\n' "$AOUT" | grep -c '^summary')" "0 1" "an early failure cannot forge a record either"
+
 # An audit that evaluated nothing prints something a clean run cannot.
 mkdir -p "$work/r-none"
 audit "$work/r-none" "$h" ""
@@ -896,25 +989,25 @@ fi
 
 # Gates are reported and never move the verdict.
 p="$(proj p-gates)"; printf '[gates]\ntest = "npm test"\nlint = "npm run lint && echo ok"\n' > "$p/agents.toml"
-RG="$(mkrepo rg '["Bash(a *)","Bash(bash \"$HOME/.claude/scripts/lib/project-gates.sh\" *)"]')"
-hg="$(mkhome a-gates "$(clean_settings '["Bash(a *)","Bash(bash \"$HOME/.claude/scripts/lib/project-gates.sh\" *)","Bash(npm test)"]')")"
-audit "$RG" "$hg" "$p"
+hg="$(mkhome a-gates "$(clean_settings '["Bash(a *)","Bash(b *)","Bash(c *)","Bash(npm test)"]')")"
+audit "$R3" "$hg" "$p"
 eq "$ARC" "0" "gate records never change a clean verdict"
-has "$AOUT" "$(printf 'gate\tinfo\ttest\tnpm test — runs unasked through the allowlisted gate wrapper; run directly it matches the allow rule Bash(npm test)')" \
-  "a gate is reported with its wrapper coverage and its direct coverage"
+has "$AOUT" "$(printf 'gate\tinfo\ttest\tnpm test — run as written it matches the allow rule Bash(npm test)')" "a gate is reported with the allow rule a direct call matches"
 has "$AOUT" "a compound command, matched part by part (not evaluated)" "a compound gate command is not judged as one command"
 # The bare-command form belongs to a pattern whose ONLY wildcard is the trailing one.
 pg2="$(proj p-gates-bare)"; printf '[gates]\ntest = "x --help"\n' > "$pg2/agents.toml"
 # acceptEdits: in auto mode a rule that begins with a wildcard is set aside, and would match nothing either way.
-audit "$RG" "$(mkhome a-gates-bare "$(clean_settings '["Bash(a *)","Bash(bash \"$HOME/.claude/scripts/lib/project-gates.sh\" *)","Bash(* --help *)"]' acceptEdits)")" "$pg2"
-has "$AOUT" "x --help — runs unasked through the allowlisted gate wrapper; run directly it matches no allow rule" \
-  "a pattern with two wildcards does not match its bare form"
+audit "$R3" "$(mkhome a-gates-bare "$(clean_settings '["Bash(a *)","Bash(b *)","Bash(c *)","Bash(* --help *)"]' acceptEdits)")" "$pg2"
+has "$AOUT" "x --help — run as written it matches no allow rule" "a pattern with two wildcards does not match its bare form"
 pg3="$(proj p-gates-two)"; printf '[gates]\ntest = "x --help y"\n' > "$pg3/agents.toml"
-audit "$RG" "$(mkhome a-gates-two "$(clean_settings '["Bash(a *)","Bash(bash \"$HOME/.claude/scripts/lib/project-gates.sh\" *)","Bash(* --help *)"]' acceptEdits)")" "$pg3"
-has "$AOUT" "run directly it matches the allow rule Bash(* --help *)" "…and does match a command that fills both"
-hg2="$(mkhome a-gates-nowrap "$(clean_settings '["Bash(a *)"]')")"
-audit "$RG" "$hg2" "$p"
-has "$AOUT" "the gate wrapper is not allowlisted here" "a gate whose wrapper entry is missing says so"
+audit "$R3" "$(mkhome a-gates-two "$(clean_settings '["Bash(a *)","Bash(b *)","Bash(c *)","Bash(* --help *)"]' acceptEdits)")" "$pg3"
+has "$AOUT" "run as written it matches the allow rule Bash(* --help *)" "…and does match a command that fills both"
+if [ "$(id -u)" -ne 0 ]; then
+  pg4="$(proj p-gates-unread)"; printf '[gates]\ntest = "npm test"\n' > "$pg4/agents.toml"; chmod 000 "$pg4/agents.toml"
+  audit "$R3" "$hg" "$pg4"; chmod 644 "$pg4/agents.toml"
+  eq "$ARC" "0" "an undetectable gate set does not change the verdict"
+  has "$AOUT" "could not be detected" "…and is still said"
+fi
 audit "$R3" "$h" ""
 has "$AOUT" "no project: only the managed file and user settings were read" "an audit with no project says which scopes it read"
 

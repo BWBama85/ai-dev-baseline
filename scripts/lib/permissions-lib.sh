@@ -20,10 +20,12 @@
 # A recorded entry the payload no longer ships is retired: removed while still present, forgotten
 # either way. Only `permissions.allow` is ever written — never `defaultMode`, `deny` or `ask`.
 #
-# THE AUDIT IS READ-ONLY and reports, per scope it could read: a shipped entry no allow rule holds,
-# a `deny` or `ask` rule that can match one, the starting permission mode, and the settings that
-# make allow rules inert. A scope it could not read, a rule it cannot model, or an audit that
-# evaluated nothing, is NOT EVALUATED (11) and never clean.
+# THE AUDIT IS READ-ONLY and is about the SHIPPED COMMANDS in an interactive terminal session. It
+# reports, per scope it could read: a shipped entry no allow rule holds, a `deny` or `ask` rule
+# that can match one, the starting permission mode, and the settings that make allow rules inert.
+# CLEAN claims exactly that and no more: a rule about another tool is listed, not judged, and the
+# sandbox is not modelled. A scope it could not read, a rule or a mode it cannot model, or an audit
+# that evaluated nothing, is NOT EVALUATED (11) and never clean.
 #
 # Usage (executed):
 #   permissions-lib.sh entries [--repo <clone>]
@@ -84,8 +86,9 @@ adb_permissions_floor() { printf '2.1.0'; }
 adb_permissions_entries() {
   command -v jq >/dev/null 2>&1 || return 2
   [ -s "$1" ] || return 1
-  jq -c -e '
-    if type == "object" and keys == ["permissions"]
+  jq -c -e -s '
+    if length == 1 then .[0] else error("not one JSON document") end   # payload-one-document
+    | if type == "object" and keys == ["permissions"]
        and (.permissions | type == "object" and keys == ["allow"])
        and (.permissions.allow | type == "array" and length > 0
             and all(.[]; type == "string" and startswith("Bash(") and endswith(")") and length > 6
@@ -208,6 +211,15 @@ EOF
   [ -z "$rows" ] || printf '%s\n' "$rows"
 }
 
+# Is a receipt this run just rendered one its own reader accepts? Asked BEFORE it is published, so
+# a record nothing can read back is never the one left on disk. Without jq the question cannot be
+# asked and the answer is yes.
+# Usage: _adb_perm_rendered_ok <staged-receipt>
+_adb_perm_rendered_ok() {
+  command -v jq >/dev/null 2>&1 || return 0
+  _adb_perm_receipt_json "$1" >/dev/null   # rendered-validated
+}
+
 # Record a run that wrote no entry, keeping every row an earlier install recorded: a skip means
 # "write nothing new", never "forget what is there". Needs no jq; the caller validates the record
 # first whenever jq is there to do it.
@@ -228,7 +240,8 @@ _adb_perm_record_skip() {
   fi
   [ "$digest" != "-" ] || digest="$prior"
   if printf '%s' "$rows" | adb_permissions_receipt_render "$disposition" "$version" "$floor" "$digest" "$repo" \
-       > "$receipt.adb.$$.tmp" && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
+       > "$receipt.adb.$$.tmp" && _adb_perm_rendered_ok "$receipt.adb.$$.tmp" \
+     && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     return 0
   fi
   rm -f "$receipt.adb.$$.tmp"
@@ -246,9 +259,10 @@ _adb_perm_record_skip() {
 # Usage: _adb_perm_merge <settings-file> <shipped-json-array> <receipt-json>
 # Returns: 0 · 1 the settings file is not valid JSON
 _adb_perm_merge() {
-  jq -c --argjson ship "$2" --argjson rc "$3" '
+  jq -c -s --argjson ship "$2" --argjson rc "$3" '
     def has_el($xs; $x): any($xs[]; . == $x);
-    . as $cur
+    (if length == 1 then .[0] else error("not one JSON document") end) as $cur
+    | $cur
     | if ($cur | type) != "object" then {verdict: "blocked", why: "settings.json does not hold a JSON object"}
       elif ($cur | has("permissions")) and ($cur.permissions | type) != "object" then
         {verdict: "blocked", why: "`permissions` is not an object"}
@@ -474,20 +488,30 @@ adb_permissions_apply() {
     fi
   fi
 
+  # THE RECORD IS RENDERED AND READ BACK BEFORE ANYTHING IS PUBLISHED.
+  [ -z "$rows" ] || rows+=$'\n'
+  if ! { printf '%s' "$rows" \
+           | adb_permissions_receipt_render installed "$version" "$floor" "$digest" "$repo" > "$receipt.adb.$$.tmp" \
+         && _adb_perm_rendered_ok "$receipt.adb.$$.tmp"; }; then
+    rm -f "$receipt.adb.$$.tmp"
+    _adb_perm_snapshot_drop
+    adb_info "  WARN   could not render an allowlist record its own reader accepts — allow entries NOT written."
+    adb_info "         The record is line-oriented and names this clone: a control character in $(adb_display_value "$repo") is one cause."
+    return 1
+  fi
+
   # TWO PUBLICATIONS, ONE TRANSACTION: the settings, then the record of what in them is ours.
   adb_settings_lock_defer_signals
   if [ "$verdict" = write ]; then
     if ! _adb_perm_publish_settings "$result" "$settings"; then
+      rm -f "$receipt.adb.$$.tmp"
       _adb_perm_snapshot_drop
       adb_settings_lock_resume_signals
       adb_info "  WARN   could not rewrite ~/.claude/settings.json — allow entries NOT written"
       return 1
     fi
   fi
-  [ -z "$rows" ] || rows+=$'\n'
-  if ! { printf '%s' "$rows" \
-           | adb_permissions_receipt_render installed "$version" "$floor" "$digest" "$repo" > "$receipt.adb.$$.tmp" \
-         && adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; }; then
+  if ! adb_publish_json "$receipt.adb.$$.tmp" "$receipt"; then
     rm -f "$receipt.adb.$$.tmp"
     if [ "$verdict" = write ]; then
       if _adb_perm_restore "$settings"; then
@@ -579,9 +603,10 @@ adb_permissions_remove() {
       adb_info "  WARN   ~/.claude/settings.json does not resolve to a readable file — allow entries NOT removed."
       return 1 ;;
   esac
-  result="$(jq -c --argjson rc "$rj" '
+  result="$(jq -c -s --argjson rc "$rj" '
     def has_el($xs; $x): any($xs[]; . == $x);
-    . as $cur
+    (if length == 1 then .[0] else error("not one JSON document") end) as $cur
+    | $cur
     | if ($cur | type) != "object" or ($cur | has("permissions") | not) or ($cur.permissions | type) != "object"
          or ($cur.permissions | has("allow") | not) or ($cur.permissions.allow | type) != "array"
       then {changed: false, removed: 0, settings: $cur}
@@ -759,19 +784,30 @@ def suspended:
 # One settings scope, reduced to the fields the audit reads and written to <out>. Never the whole
 # document: a settings file also carries `env`, and nothing here is handed more than it needs.
 #   {"state":"absent"} · {"state":"unread"} · {"state":"read", p_shape, allow, deny, ask, mode,
-#    no_auto, deny_prompts, classify_all, managed_only}
+#    no_auto, deny_prompts, no_bypass, classify_all, managed_only}
 # `p_shape` is absent | object | bad, so a `permissions` of the wrong type is not read as absent.
+# A file is `absent` only when this run can VOUCH for that: under a directory it cannot search, a
+# path reads as missing whether or not it exists, and that is `unread`.
 # Usage: _adb_perm_scope <file> <out>   Returns: 0 written · 1 <out> could not be written
 _adb_perm_scope() {
-  local f="$1" out="$2"
+  local f="$1" out="$2" dir
   case "$(adb_settings_doc_state "$f")" in
-    absent|empty) printf '%s\n' '{"state":"absent"}' > "$out"; return "$?" ;;
+    absent|empty)
+      dir="$(dirname "$f")"
+      while [ ! -e "$dir" ] && [ ! -L "$dir" ] && [ "$dir" != / ] && [ "$dir" != . ]; do dir="$(dirname "$dir")"; done
+      if [ -d "$dir" ] && [ -x "$dir" ]; then   # absence-vouched
+        printf '%s\n' '{"state":"absent"}' > "$out"
+      else
+        printf '%s\n' '{"state":"unread"}' > "$out"
+      fi
+      return "$?" ;;
     present) ;;
     *) printf '%s\n' '{"state":"unread"}' > "$out"; return "$?" ;;
   esac
-  if jq -c '
+  if jq -c -s '
       def key($o; $k): if ($o | type) == "object" and ($o | has($k)) then $o[$k] else null end;
-      if type != "object" then error("not an object") else
+      (if length == 1 then .[0] else error("not one JSON document") end)   # scope-one-document
+      | if type != "object" then error("not an object") else
         . as $doc
         | key($doc; "permissions") as $p
         | {state: "read",
@@ -782,6 +818,7 @@ _adb_perm_scope() {
            mode: key($p; "defaultMode"),
            no_auto: (key($doc; "disableAutoMode") == "disable" or key($p; "disableAutoMode") == "disable"),
            deny_prompts: (key($p; "denyInsteadOfPrompting") == true),
+           no_bypass: (key($p; "disableBypassPermissionsMode") == "disable"),
            classify_all: (key(key($doc; "autoMode"); "classifyAllShell") == true),
            managed_only: (key($doc; "allowManagedPermissionRulesOnly") == true)}
       end' "$f" > "$out" 2>/dev/null && [ -s "$out" ]; then
@@ -796,8 +833,8 @@ _adb_perm_scope() {
 # A subshell body: its temp directory is removed on every way out.
 adb_permissions_audit() (
   repo="$1"; home="$2"; project="$3"; managed="$4"
-  _adb_perm_unevaluated() {
-    printf 'note\tunevaluated\t%s\t%s\n' "$1" "$2"
+  _adb_perm_unevaluated() {   # every field through the same rule the records follow: no control character
+    printf 'note\tunevaluated\t%s\t%s\n' "${1//[[:cntrl:]]/?}" "${2//[[:cntrl:]]/?}"   # early-record-one-line
     printf 'summary\tunevaluated\t-\tentries=0/0 scopes=0/0 rules=0 findings=0 unevaluated=1\n'
   }
   if ! command -v jq >/dev/null 2>&1; then
@@ -896,30 +933,43 @@ adb_permissions_audit() (
            ask: (if $ok then $x.ask else [] end),
            mode: (if $x.state == "read" then $x.mode else null end),
            no_auto: ($x.state == "read" and $x.no_auto), deny_prompts: ($x.state == "read" and $x.deny_prompts),
+           no_bypass: ($x.state == "read" and $x.no_bypass),
            classify_all: ($x.state == "read" and $x.classify_all), managed_only: ($x.state == "read" and $x.managed_only)} ] as $S
     | ([ $S[] | select(.name == "managed") | .managed_only ] | any) as $managed_only
     | [ $S[] | select(($managed_only | not) or .name == "managed") ] as $R       # the scopes whose rules count
 
-    # --- the starting mode: managed > local > project > user. `auto` never takes effect from
-    #     project or local settings; `bypassPermissions` did before v2.1.257
+    # --- the starting mode of an INTERACTIVE TERMINAL session (vendor "Which mode a session starts
+    #     in", read 2026-11-11): the `defaultMode` of the highest of managed > local > project > user
+    #     that sets one, else the built-in default. Two values do not take effect from project or
+    #     local settings: `auto` falls to the BUILT-IN default (not to the user value), and
+    #     `bypassPermissions` starts the session in default mode — it took effect before v2.1.257.
     | ([ $S[] | select(.no_auto) | .where ]) as $no_auto
-    | ([ $S[] | select((.name == "local" or .name == "project") and .mode == "auto") ]) as $ign_auto
-    | ([ $S[] | select((.name == "local" or .name == "project") and .mode == "bypassPermissions") ]) as $loc_bypass
-    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null)   # mode-precedence
-         | select(((.name == "local" or .name == "project")
-                   and (.mode == "auto" or (.mode == "bypassPermissions" and $bypass_local != "honoured"))) | not) ]
-       | .[0] // null) as $msrc
-    | (if $msrc != null then $msrc.mode elif $auto_default then "auto" else null end) as $mode0
-    | (if $mode0 == "auto" and ($no_auto | length) > 0 then "default" elif $mode0 == "manual" then "default" else $mode0 end) as $mode
-    | (["auto", "acceptEdits", "bypassPermissions", "default", "plan", "dontAsk"] | any(.[]; . == $mode)) as $mode_known
+    | ([ $S[] | select(.no_bypass) | .where ]) as $no_bypass
+    | ([ ("managed", "local", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence
+    | ($top != null and ($top.name == "local" or $top.name == "project")) as $top_local
+    | (if $auto_default then "auto" else null end) as $builtin
+    | (if $top == null then {mode: $builtin, src: "built-in default", why: "builtin"}
+       elif $top_local and $top.mode == "auto" then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin
+       elif $top_local and $top.mode == "bypassPermissions" then
+         (if $bypass_local == "honoured" then {mode: "bypassPermissions", src: $top.where, why: "set"}
+          elif $bypass_local == "ignored" then {mode: "default", src: $top.where, why: "local-bypass"}   # local-bypass-manual
+          else {mode: null, src: $top.where, why: "local-bypass-unknown"} end)
+       else {mode: (if $top.mode == "manual" then "default" else $top.mode end), src: $top.where, why: "set"} end) as $m0
+    | (if ($no_auto | length) > 0 and ($m0.mode == "auto" or ($m0.mode == null and ($m0.why == "builtin" or $m0.why == "local-auto")))
+       then ($m0 | .mode = "default" | .why = "no-auto") else $m0 end) as $m
+    | $m.mode as $mode
+    # A mode whose effect this audit can state. `plan` is not one: what happens to a command there
+    # depends on whether bypass and auto mode are available to the session.
+    | ((["auto", "acceptEdits", "bypassPermissions", "default", "dontAsk"] | any(.[]; . == $mode))
+       and (($mode == "bypassPermissions" and ($no_bypass | length) > 0) | not)) as $mode_known   # mode-known
     | ([ $S[] | select(.name == "managed" or .name == "user") | .classify_all ] | any) as $classify_all
     | (($mode == "auto") and $classify_all) as $allow_inert   # classify-all
     | ([ $S[] | select((.name == "managed" or .name == "user") and .deny_prompts) | .where ]) as $dp_where
     | (($dp_where | length) > 0 and $dp_ok == "yes") as $dp
     # what a would-be prompt becomes
     | (if $dp or $mode == "dontAsk" then "blocked" else "prompt" end) as $asked   # asked-level
-    | (if $mode == "auto" then "classifier" elif $mode == "bypassPermissions" then null
-       elif ($mode_known | not) then "unevaluated" else $asked end) as $miss_level
+    | (if ($mode_known | not) then "unevaluated" elif $mode == "auto" then "classifier"
+       elif $mode == "bypassPermissions" then null else $asked end) as $miss_level
 
     # --- the allow rules in effect: Auto Mode sets the arbitrary-execution ones aside
     | [ $R[] | .allow[] ] as $allow_all_rules
@@ -937,11 +987,13 @@ adb_permissions_audit() (
                 (if ($p.spec | test("^command[ ]*:")) then {cls: "ignored"} else {cls: "param"} end)
               else {cls: "bash", spec: $p.spec} end)
            elif ($p.spec == null or $p.spec == "*") and any(("Edit", "Write", "Read"); . as $t | $p | tool_is($t)) then {cls: "whole"}
-           else {cls: "other"} end) as $c
+           else {cls: "other"} end) as $c   # other-tool
         | $r + $c
           + {hit: (if $c.cls == "bash" then [ $ship[] | select(. as $e | overlaps($c.spec; ($e | aspec))) ] else [] end)} ] as $classified
     | [ $classified[] | select(.cls == "whole" or (.cls == "bash" and (.hit | length) > 0)) ] as $hits
     | [ $hits[] | .hit[] ] as $ruled
+    | [ $hits[] | select(.kind == "deny") | .hit[] ] as $denied
+    | ([ $hits[] | select(.kind == "deny" and .cls == "bash" and .spec == "*") ] | length > 0) as $bash_denied
 
     # --- every shipped entry: held by an allow rule (its own, or a broader one), and by no deny or ask
     | [ $ship[] | . as $e | {entry: $e, listed: ($allow | any(.[]; . as $a | subsumes($a; $e)))} ] as $E
@@ -960,26 +1012,37 @@ adb_permissions_audit() (
         ( if $managed_only then rec("note"; $asked; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included") else empty end ),
 
         # mode
-        ( $ign_auto[] | rec("mode"; "info"; .where; "defaultMode \"auto\" does not take effect from project or local settings") ),
-        ( $loc_bypass[] | if $bypass_local == "ignored" then rec("mode"; "info"; .where; "defaultMode \"bypassPermissions\" does not take effect from project or local settings on this CLI (v2.1.257 and later)")
-                          elif $bypass_local == "unknown" then rec("mode"; "unevaluated"; .where; "defaultMode \"bypassPermissions\" took effect from project and local settings before v2.1.257, and the CLI version could not be read")   # bypass-version
-                          else empty end ),
-        ( if $mode == null then
-            rec("mode"; "unevaluated"; "-"; "no defaultMode is set and the built-in starting mode could not be established (claude \(if $cli == "" then "was not found" else "v" + $cli + " predates the v2.1.283 built-in auto default" end))")
+        ( if ($mode_known | not) then
+            (if $m.why == "local-bypass-unknown" then
+               rec("mode"; "unevaluated"; $m.src; "defaultMode \"bypassPermissions\" took effect from project and local settings before v2.1.257, and the CLI version could not be read")   # bypass-version
+             elif $mode == null then
+               rec("mode"; "unevaluated"; $m.src; "no defaultMode is in effect and the built-in starting mode could not be established (claude \(if $cli == "" then "was not found" else "v" + $cli + " predates the v2.1.283 built-in auto default" end))")
+             elif $mode == "plan" then
+               rec("mode"; "unevaluated"; $m.src; "defaultMode \"plan\": whether a planning command is judged, asked or neither depends on whether bypass and auto mode are available to the session, which this audit cannot see")
+             elif $mode == "bypassPermissions" then
+               rec("mode"; "unevaluated"; $m.src; "defaultMode \"bypassPermissions\" while disableBypassPermissionsMode is set (\($no_bypass | join(", "))): bypass mode cannot be entered, and what the session starts in was not established")
+             else
+               rec("mode"; "unevaluated"; $m.src; "defaultMode \($top.mode | tojson) is not a documented mode")
+             end)
           elif $mode == "auto" then
-            rec("mode"; "ok"; ($msrc.where // "built-in default"); "auto: no routine prompts; a command no allow rule matches is judged by the classifier")
+            rec("mode"; "ok"; $m.src;
+                (if $m.why == "local-auto" then "defaultMode \"auto\" does not take effect from project or local settings, so the built-in default applies, and on claude v\($cli) an interactive terminal session starts in auto"
+                 elif $m.why == "builtin" then "no defaultMode is set; on claude v\($cli) an interactive terminal session starts in auto (`claude -p` and SDK runs start in default mode)"
+                 else "auto" end)
+                + ": no routine prompts; a command no allow rule matches is judged by the classifier")
           elif $mode == "acceptEdits" then
-            rec("mode"; "ok"; $msrc.where; "acceptEdits: edits run unasked; a Bash command that no allow rule or sandbox covers \(if $asked == "blocked" then "is refused" else "prompts" end)")
+            rec("mode"; "ok"; $m.src; "acceptEdits: edits run unasked; a Bash command that no allow rule or sandbox covers \(if $asked == "blocked" then "is refused" else "prompts" end)")
           elif $mode == "bypassPermissions" then
-            rec("mode"; "info"; $msrc.where; "bypassPermissions: nothing prompts and nothing is checked, so no shipped entry is needed — the posture this allowlist exists to avoid")
-          elif $mode == "default" and $mode0 == "auto" then
-            rec("mode"; $asked; ($no_auto | join(", ")); "disableAutoMode turns auto mode off, so sessions start in default mode and every unlisted command \(if $asked == "blocked" then "is refused" else "prompts" end)")
-          elif $mode == "default" or $mode == "plan" then
-            rec("mode"; $asked; $msrc.where; "defaultMode \"\($msrc.mode)\": every command no allow rule matches \(if $asked == "blocked" then "is refused" else "prompts" end)")
+            rec("mode"; "info"; $m.src; "bypassPermissions: nothing prompts and nothing is checked, so no shipped entry is needed — the posture this allowlist exists to avoid")
           elif $mode == "dontAsk" then
-            rec("mode"; "blocked"; $msrc.where; "defaultMode \"dontAsk\": a command no allow rule matches is denied instead of prompting")
+            rec("mode"; "blocked"; $m.src; "defaultMode \"dontAsk\": a command no allow rule matches is denied instead of prompting")
           else
-            rec("mode"; "unevaluated"; $msrc.where; "defaultMode \($msrc.mode | tojson) is not a documented mode")
+            rec("mode"; $asked;
+                (if $m.why == "no-auto" then ($no_auto | join(", ")) else $m.src end);
+                (if $m.why == "no-auto" then "disableAutoMode turns auto mode off, so sessions start in default mode"
+                 elif $m.why == "local-bypass" then "defaultMode \"bypassPermissions\" does not take effect from project or local settings (v2.1.257 and later), so the session starts in default mode"
+                 else "defaultMode \"\($top.mode)\"" end)
+                + ": every command no allow rule matches \(if $asked == "blocked" then "is refused" else "prompts" end)")
           end ),
         ( if ($dp_where | length) > 0 then
             (if $dp_ok == "yes" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting is on: what would prompt is refused instead")
@@ -990,18 +1053,26 @@ adb_permissions_audit() (
         ( if ($set_aside | length) > 0 then rec("note"; "info"; "-"; "auto mode sets aside \($set_aside | length) allow \(plural($set_aside | length; "rule"; "rules")) that would run arbitrary code, so \(plural($set_aside | length; "it holds"; "they hold")) no shipped entry: \($set_aside[:3] | join(", "))\(if ($set_aside | length) > 3 then ", …" else "" end)") else empty end ),
 
         # rules: the ones that can match the shipped surface, and the ones this audit cannot model
-        ( $hits[] | rec("rule"; (if .kind == "deny" then "blocked" else $asked end); .where;
-            "\(.kind) rule \(.rule) " + (if .cls == "whole" then "covers a whole tool the workflows use"
-              else "can match \(.hit | length) shipped \(plural(.hit | length; "entry"; "entries")): \(.hit[:3] | join(", "))\(if (.hit | length) > 3 then ", …" else "" end)" end)
-            + (if .kind == "deny" then " — refused in every mode"
-               elif $asked == "blocked" then " — refused instead of asked here"
-               else " — prompts in every mode, auto included" end)) ),
+        ( $hits[] | . as $h
+            # an ask rule every one of whose entries a deny rule also matches never gets to ask
+            | ($h.kind == "ask" and $h.cls == "bash" and ($bash_denied or (($h.hit | length) > 0 and all($h.hit[]; . as $e | $denied | any(.[]; . == $e))))) as $shadowed   # ask-shadowed
+            | rec("rule"; (if $h.kind == "deny" then "blocked" elif $shadowed then "info" else $asked end); $h.where;
+                "\($h.kind) rule \($h.rule) " + (if $h.cls == "whole" then "covers a whole tool the workflows use"
+                  else "can match \($h.hit | length) shipped \(plural($h.hit | length; "entry"; "entries")): \($h.hit[:3] | join(", "))\(if ($h.hit | length) > 3 then ", …" else "" end)" end)
+                + (if $h.kind == "deny" then " — refused in every mode"
+                   elif $shadowed then " — but a deny rule matches the same commands, and deny is evaluated first"
+                   elif $asked == "blocked" then " — refused instead of asked here"
+                   else " — prompts in every mode, auto included" end)) ),
         ( $classified[] | select(.cls == "param")
             | rec("rule"; "unevaluated"; .where; "\(.kind) rule \(.rule) matches Bash calls by an input parameter, whatever the command; which calls it reaches is not something this audit can see") ),   # param-rule
         ( $classified[] | select(.cls == "unparsed")
             | rec("rule"; "unevaluated"; .where; "\(.kind) rule \(.rule) is not in a form this audit can read") ),
         ( $classified[] | select(.cls == "ignored")
             | rec("rule"; "info"; .where; "\(.kind) rule \(.rule) names the `command` parameter, which the CLI ignores with a startup warning") ),
+        ( $classified[] | select(.cls == "other" or (.cls == "bash" and (.hit | length) == 0))
+            | rec("rule"; "info"; .where; "\(.kind) rule \(.rule) matches no shipped command; whether a workflow step runs into it is outside this audit") ),   # rule-reported
+        ( [ $allow_all_rules[] | select(parse == null) ] as $odd
+          | if ($odd | length) > 0 then rec("note"; "info"; "-"; "\($odd | length) allow \(plural($odd | length; "rule is"; "rules are")) not rule-shaped and \(plural($odd | length; "holds"; "hold")) nothing: \($odd[:3] | join(", "))\(if ($odd | length) > 3 then ", …" else "" end)") else empty end ),
 
         # shipped entries no allow rule holds
         ( if $miss_level == null then empty else
@@ -1013,23 +1084,20 @@ adb_permissions_audit() (
                      else " — what then happens depends on the starting mode, which was not established" end)) )
           end ),
 
-        # the gates of the project, report only
-        ( if $gates_state == "unread" then rec("gate"; "unevaluated"; "-"; "the gate commands of the project could not be detected")
+        # the gates of the project: reported, and never part of the verdict
+        ( if $gates_state == "unread" then rec("gate"; "info"; "-"; "the gate commands of the project could not be detected, so none is listed")   # gate-report-only
           elif $gates_state == "none" then empty
           elif ($gates | length) == 0 then rec("gate"; "info"; "-"; "no gate command is configured or detected")
           else
-            ( "Bash(bash \"$HOME/.claude/scripts/lib/project-gates.sh\" *)" as $w
-              | ([ $covered[] | select(.entry == $w) ] | length > 0) as $wok
-              | $gates[] | . as $g
+            ( $gates[] | . as $g
               | ($g.cmd | test("[;&|]|\\$\\(|`")) as $compound
               | ([ $allow[] | select(aspec as $a | $a != null and ($compound | not) and rmatch($g.cmd; $a)) ] | .[0] // null) as $by
               | rec("gate"; "info"; $g.label;
-                  "\($g.cmd) — " + (if $wok then "runs unasked through the allowlisted gate wrapper" else "the gate wrapper is not allowlisted here" end)
-                  + "; run directly it " + (if $compound then "is a compound command, matched part by part (not evaluated)"
-                                            elif $by != null then "matches the allow rule \($by) (deny and ask rules are not checked against it)"
-                                            else "matches no allow rule" end)) )
+                  "\($g.cmd) — run as written it " + (if $compound then "is a compound command, matched part by part (not evaluated)"
+                                                       elif $by != null then "matches the allow rule \($by) (deny and ask rules are not checked against it)"
+                                                       else "matches no allow rule" end)) )
           end ),
-        rec("note"; "info"; "-"; "not inspected: MDM and server-managed settings, and the --settings, --permission-mode and --allowedTools flags of a session")
+        rec("note"; "info"; "-"; "not inspected: MDM and server-managed settings; the --settings, --permission-mode and --allowedTools flags of a session; and the sandbox, which runs a sandboxed command unasked whatever is reported here")
       ] as $lines
     | ([ $lines[] | split("\t")[1] ]) as $levels
     | ([ $levels[] | select(. == "unevaluated") ] | length) as $nu
@@ -1090,7 +1158,10 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
     missing)
       _adb_perm_e="$(_adb_perm_ship)" || exit 11
       _adb_perm_t="$(mktemp "${TMPDIR:-/tmp}/adb-allow.XXXXXX" 2>/dev/null)" || exit 11
-      _adb_perm_scope "$_adb_perm_home/.claude/settings.json" "$_adb_perm_t"
+      _adb_perm_scope "$_adb_perm_home/.claude/settings.json" "$_adb_perm_t" && [ -s "$_adb_perm_t" ] || {   # missing-staged
+        rm -f "$_adb_perm_t"
+        printf 'permissions-lib: could not stage %s for reading\n' "$_adb_perm_home/.claude/settings.json" >&2
+        exit 11; }
       _adb_perm_m="$(jq -r --argjson ship "$_adb_perm_e" '
         if .state == "unread" or (.state == "read" and (.p_shape == "bad" or (.allow | type) != "array")) then error("unread")
         else (if .state == "read" then .allow else [] end) as $live

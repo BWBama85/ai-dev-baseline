@@ -1657,8 +1657,7 @@ EOF
     # degraded environment is the one place it most needs saying.
     _pi_say "  sandbox  NOT written — this file is tracked by the project, so the least-privilege"
     _pi_say "           sandbox policy is left to the global install. See docs/installation.md."
-    # The command allowlist (#288, D155) is user scope for the same reason, and its library entries
-    # name the GLOBAL install's script paths, which a pinned project does not run.
+    # The command allowlist (#288, D155) is user scope for the same reason.
     _pi_say "  allowlist  NOT written — the command allowlist is user-scope and belongs to the global install."
   done
 

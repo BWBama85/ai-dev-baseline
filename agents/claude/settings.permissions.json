@@ -30,24 +30,7 @@
       "Bash(baseline adopt status *)",
       "Bash(baseline permissions *)",
       "Bash(baseline repo status *)",
-      "Bash(baseline update --check)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/adopt-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/adopt-readiness.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/ci-health.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/cleanup-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/currency-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/docs-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/implement-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/pattern-ledger.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/permissions-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/pr-review.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/pr-threads.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/pr-watch.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/project-gates.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/repo-settings.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/roadmap-lib.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/role-dispatch.sh\" *)",
-      "Bash(bash \"$HOME/.claude/scripts/lib/state-assert.sh\" *)"
+      "Bash(baseline update --check)"
     ]
   }
 }

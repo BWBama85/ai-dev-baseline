@@ -611,7 +611,8 @@ record by its level, with the file it names:
 | `unevaluated` | a file, a rule or a mode the audit could not read or cannot model; the verdict is then 11, never clean |
 
 `gate` records are report-only: each names a gate command this project runs and whether a direct
-call of it is allowlisted. Gates run through the gate wrapper, so they change no verdict.
+call of it matches an allow rule. They never change the verdict. A `rule` record at `info` names
+a `deny` or `ask` rule about another tool, which the audit lists and does not judge.
 
 Propose nothing the audit did not find, and edit no settings file. A shipped entry that is missing
 is added by `./install.sh` in the baseline clone, which records the ones it adds — unless an

@@ -403,8 +403,8 @@ Claude only (#288, D155). The installer adds a curated list of `permissions.allo
 
 A command an allow rule matches runs without a prompt and, in Auto Mode, without a call to the
 classifier — unless an `ask` or `deny` rule matches it too, the CLI protects the path it touches,
-or Auto Mode has set the rule aside ([what still prompts](#command-allowlist), below). The
-classifier half is the reason for the list: a run whose every `gh` call waits on the classifier
+the command carries per-command allowed domains, or Auto Mode has set the rule aside (all under
+"What still prompts or is still judged", below). The classifier half is the reason for the list: a run whose every `gh` call waits on the classifier
 stops when the classifier is unavailable.
 
 **What is allowlisted.** Every rule is a `Bash(…)` rule naming one command, or one command prefix
@@ -417,14 +417,13 @@ followed by ` *`:
 | gh, write | `gh issue create *` · `gh issue edit *` · `gh label create *` · `gh pr create *` · `gh pr edit *` · `gh workflow run *` |
 | jq | `jq *` |
 | the baseline's own commands | `agent-init` · `baseline adopt status *` · `baseline permissions *` · `baseline repo status *` · `baseline update --check` |
-| the baseline's libraries | one rule per library a Claude skill invokes, spelled the way the skills spell it: `bash "$HOME/.claude/scripts/lib/<library>.sh" *`, for `adopt-lib`, `adopt-readiness`, `ci-health`, `cleanup-lib`, `currency-lib`, `docs-lib`, `implement-lib`, `pattern-ledger`, `permissions-lib`, `pr-review`, `pr-threads`, `pr-watch`, `project-gates`, `repo-settings`, `roadmap-lib`, `role-dispatch`, `state-assert` |
 
 **What is deliberately not allowlisted, and why.** An allow rule matches text, so a rule can only
 be as narrow as the words before its `*`:
 
 - **`git push`, in any form.** A prefix rule cannot tell `git push origin HEAD` from
-  `git push --force` or a push to the default branch. `/implement-issue` pushes through
-  `implement-lib.sh open-pr`, which is covered as a library.
+  `git push --force` or a push to the default branch. `/implement-issue` pushes from inside
+  `implement-lib.sh open-pr`, a library call that is not allowlisted either.
 - **Anything that discards or deletes**: `git reset --hard`, `git checkout`, `git restore`,
   `git clean`, `git stash`, branch and ref deletion, `rm`.
 - **`gh api`, `gh pr merge`, `gh pr close`, `gh run rerun`, `gh auth token`.** `gh api` is every
@@ -438,9 +437,15 @@ be as narrow as the words before its `*`:
   can write. Under the [sandbox](#least-privilege-sandbox-settings) these already run without a
   prompt.
 - **Stack tooling** (`npm`, `cargo`, `go`, `pytest`, `composer`). It differs per project, and Auto
-  Mode suspends package-manager and interpreter rules. Gates run through
-  `project-gates.sh run`, which is covered as a library; the [audit](#auditing-a-project) reports
-  each detected gate command.
+  Mode suspends package-manager and interpreter rules. The [audit](#auditing-a-project) lists each
+  detected gate command and whether a direct call of it matches an allow rule.
+- **The baseline's own library scripts** (`bash "$HOME/.claude/scripts/lib/<library>.sh" …`),
+  which is how most workflow steps run. A rule for one names an interpreter and a script path. The
+  vendor does not say whether Auto Mode keeps a rule of that shape, and a probe could not tell
+  (CLI 2.1.322, 2026-11-11: no log line separates a rule match from a classifier decision, and the
+  decision times did not order the cases). A rule whose effect is unknown is not shipped. It would
+  also approve a script by path, which is only as narrow as that script is unwritable. These calls
+  run as they did: sandboxed, or judged.
 - **`codex` and `agy`.** They are reached through `role-dispatch.sh`, never as that text.
 - **`baseline update`, `baseline release`, `baseline repo apply`, `agent-init --force`.**
 
@@ -453,31 +458,27 @@ what that text can induce:
   after it. The words before the `*` are the whole limit.
 - `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker.
   Whatever the session can read, it can put there.
-- A library rule approves a script by path. It is as narrow as that script is unwritable: the
-  path resolves into the baseline clone, so do not give the sandbox write access to that clone.
-- `project-gates.sh run` runs the commands the project declares. Allowing the wrapper allows
-  them.
 
 **What still prompts or is still judged.** The allowlist does not make a run prompt-free by
 itself:
 
 - **Compound commands.** The CLI splits on `&&`, `||`, `;`, `|` and newlines, and every part must
-  be allowed or read-only. A rule does not match past a leading variable assignment, so
-  `X="$(gh pr view 5)"` is not covered by `gh pr view *`.
-- **A different spelling.** `bash ~/.claude/scripts/lib/pr-watch.sh` and an absolute path do not
-  match the `"$HOME/…"` rule.
+  be allowed or read-only. An allow rule does not match past a leading assignment of a variable
+  outside the CLI's known-safe set, so `X="$(gh pr view 5)"` is not covered by `gh pr view *`.
+- **A different spelling.** `git -C . add x` and `/usr/bin/git add x` do not match `git add *`.
+- **A command that carries per-command allowed domains** goes to the classifier in Auto Mode even
+  when an allow rule matches it: a rule approves the command, not its hosts.
 - **`ask` and `deny` rules** win over allow rules from any scope, in every mode.
 - **Protected paths, the first read outside the working directories, and critical-path removals**
   are handled by the CLI whatever the rules say.
 - **Auto Mode suspends allow rules that grant arbitrary code execution.** The vendor names
   `Bash(*)`, wildcarded interpreters such as `Bash(python *)`, and package-manager run commands.
-  It does not say whether a rule naming an interpreter *and* a fixed script survives, so the
-  library rules may be suspended there. Where they are, those commands are judged by the
-  classifier, as they were before. `autoMode.classifyAllShell` suspends every shell allow rule.
-- **`permissions.defaultMode` is never written.** It is yours. In `default` and `plan` every
-  unlisted command prompts; `dontAsk` refuses instead; `acceptEdits` prompts for an unlisted Bash
-  command the sandbox does not cover; `auto` sends it to the classifier. Since CLI v2.1.283 `auto`
-  is the built-in starting mode when the key is unset.
+  No shipped rule has that shape. `autoMode.classifyAllShell` suspends every shell allow rule.
+- **`permissions.defaultMode` is never written.** It is yours. In `default` every unlisted command
+  prompts; `dontAsk` refuses instead; `acceptEdits` prompts for an unlisted Bash command the
+  sandbox does not cover; `auto` sends it to the classifier; in `plan` it depends on the session.
+  Since CLI v2.1.283 `auto` is the built-in starting mode of an interactive terminal session when
+  the key is unset; `claude -p` and SDK runs start in default mode.
 
 Vendor sources, read 2026-11-11: <https://code.claude.com/docs/en/permissions> (rule syntax,
 compound commands, wrappers, precedence), <https://code.claude.com/docs/en/permission-modes> (the
@@ -515,13 +516,13 @@ and the next `baseline update` tries again. `--no-permissions` records an opt-ou
 `./uninstall.sh` does.
 
 User scope only. The release-pinned install does not write it: its `.claude/settings.json` is
-tracked, and the library rules name the global install's paths. `baseline permissions missing`
-prints the shipped entries your user settings lack.
+tracked. `baseline permissions missing` prints the shipped entries your user settings lack.
 
 #### Auditing a project
 
 `baseline permissions audit`, run in a project, reports what would prompt, be refused, or reach
-the classifier there. `/adopt` runs it. It reads the managed `managed-settings.json`, your user
+the classifier there, for the shipped commands, in an interactive terminal session. `/adopt` runs
+it. It reads the managed `managed-settings.json`, your user
 settings, the project's `.claude/settings.json`, and its `.claude/settings.local.json` — in a
 linked worktree, the main checkout's, which is the one Claude Code reads. It takes only the rule
 lists and mode keys out of each file, and writes nothing. Each line is `kind`, `level`, where it
@@ -533,10 +534,16 @@ was found, and what it means:
 | `classifier` | in Auto Mode, a shipped entry no allow rule holds: that command is judged on every use |
 | `prompt` | an `ask` rule that can match a shipped entry, or an unlisted command in a mode that asks |
 | `blocked` | a `deny` rule that can match a shipped entry; or what would prompt, under `dontAsk` or `permissions.denyInsteadOfPrompting` |
-| `unevaluated` | something the audit could not read or cannot model: a settings file that is not a JSON object, `permissions` or a rule list of the wrong type, a rule that is not rule-shaped, a rule matching Bash by input parameter, an undocumented mode, a `CLAUDE_CONFIG_DIR` naming another root, a `managed-settings.d`, a worktree whose main checkout cannot be found, or a setting whose effect depends on a CLI version that could not be read |
+| `unevaluated` | something the audit could not read or cannot model: a settings file that is not exactly one JSON object, or sits under a directory that cannot be searched; `permissions` or a rule list of the wrong type; a rule that is not rule-shaped; a rule matching Bash by input parameter; `plan`, an undocumented mode, or `bypassPermissions` under `disableBypassPermissionsMode`; a `CLAUDE_CONFIG_DIR` naming another root; a `managed-settings.d`; a worktree whose main checkout cannot be found; or a setting whose effect depends on a CLI version that could not be read |
 
 It exits **0** clean, **10** when it found a `classifier`, `prompt` or `blocked` line, and **11**
 when anything was `unevaluated` — a file it could not read is never reported as clean.
+
+**Clean claims only this:** every shipped rule is held by an allow rule, no `deny` or `ask` rule
+can match one, and the starting mode does not ask about unlisted commands. A rule about another
+tool (`Read(./.env)`, `mcp__*`) is listed as `info` and not judged: whether a workflow step runs
+into it is outside the audit. The sandbox is not modelled either — a sandboxed command it
+auto-allows runs unasked whatever is reported here.
 
 How it reads the rules, each from the vendor pages cited above:
 
@@ -546,18 +553,21 @@ How it reads the rules, each from the vendor pages cited above:
 - **A `deny` or `ask` rule from any scope wins**, and is named with its file. It may name the
   tool by glob (`*`, `Bash*`). A rule matching Bash by input parameter
   (`Bash(run_in_background:true)`) is `unevaluated`; `Bash(command:…)` is ignored by the CLI and
-  reported as such.
+  reported as such. An `ask` rule that a `deny` rule shadows is listed as `info`: deny is evaluated
+  first.
 - **In Auto Mode, allow rules that would run arbitrary code hold nothing**: the whole tool, and a
   wildcard directly after an interpreter, a wrapper or a package-manager run command. The vendor
   describes that class by example, so the list is this audit's reading of it.
-- **The starting mode** is the highest of managed, local, project and user settings. `auto` does
-  not take effect from project or local settings, and neither does `bypassPermissions` since CLI
-  v2.1.257. What a missing entry becomes follows the mode: judged in `auto`, asked in `default`,
-  `plan` and `acceptEdits`, refused in `dontAsk`, and nothing at all in `bypassPermissions`.
+- **The starting mode** is the `defaultMode` of the highest of managed, local, project and user
+  settings that sets one, else the built-in default. Two values do not take effect from project or
+  local settings: `auto` there falls to the built-in default, not to your user value, and
+  `bypassPermissions` there starts the session in default mode (it took effect before CLI
+  v2.1.257). What a missing entry becomes follows the mode: judged in `auto`, asked in `default`
+  and `acceptEdits`, refused in `dontAsk`, and nothing at all in `bypassPermissions`.
   `permissions.denyInsteadOfPrompting` (CLI v2.1.319) turns what would be asked into a refusal.
 
 `gate` lines list each gate command the project runs and whether a direct call of it matches an
-allow rule; they never change the exit code. MDM and server-managed settings and a session's
+allow rule; they never change the exit code, a gate set that could not be detected included. MDM and server-managed settings and a session's
 `--settings`, `--permission-mode` and `--allowedTools` flags are not inspected.
 `baseline permissions match -- '<command>'` names the shipped entry that covers one simple command.
 
@@ -1270,8 +1280,7 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   sandbox policy there commits one on behalf of every contributor to that repository, and the
   ownership and uninstall semantics are the global install's, not a reviewed file's. The install
   says so rather than omitting them silently; run the global `./install.sh` to get them.
-- **It does not write the [command allowlist](#command-allowlist).** That is user scope too, and
-  its library rules name the global install's paths.
+- **It does not write the [command allowlist](#command-allowlist).** That is user scope too.
 - **Codex reads project instructions only up to a byte budget.** Its `project_doc_max_bytes`
   defaults to 32 KiB, shared by the project's `AGENTS.md` and any nested ones, and what lies past it
   is never read. Since #434 the rendered rules fit it with room to spare — the procedures are

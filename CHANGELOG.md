@@ -13,15 +13,17 @@ only by a release it upgrades to. These entries are the notes for both.
 
 - **The installer adds a curated command allowlist, and `/adopt` audits what would still prompt
   (#288).** `./install.sh` now merges `agents/claude/settings.permissions.json` into
-  `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, the
-  baseline's read-only commands, and one rule per library a Claude skill invokes. A matched command
+  `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, and the
+  baseline's read-only commands. A matched command
   runs without a prompt and, in Auto Mode, without a classifier call, unless an `ask` or `deny`
-  rule also matches it or Auto Mode has set the rule aside. The merge is a union: an
+  rule also matches it, it carries per-command allowed domains, or Auto Mode has set the rule
+  aside. The merge is a union: an
   entry you already have is yours and is never recorded, one you remove by hand is not written
   again, and `./uninstall.sh` removes only the entries the install added
   (`~/.claude/.adb-permissions-owned`). `permissions.defaultMode` is never written. `git push`,
-  `gh api`, `gh pr merge`, anything that deletes, and every whole interpreter are deliberately left
-  out. `--no-permissions` opts out. `baseline permissions audit` (step 6b of `/adopt`) reads the
+  `gh api`, `gh pr merge`, anything that deletes, every whole interpreter, and the baseline's own
+  library scripts are deliberately left out — the last because the vendor does not say whether
+  Auto Mode keeps a rule naming an interpreter and a script. `--no-permissions` opts out. `baseline permissions audit` (step 6b of `/adopt`) reads the
   managed, user, project and local settings and reports a shipped entry in no allow list, a `deny`
   or `ask` rule that can match one, and a starting mode that prompts; it exits 0 clean, 10 with
   findings, 11 when a scope could not be read. `baseline permissions missing` and `match` print

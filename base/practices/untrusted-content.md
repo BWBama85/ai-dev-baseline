@@ -141,8 +141,8 @@ than none:
   - **An allowlisted command may not be judged at all.** Since #288 the same installer adds
     a curated `permissions.allow` list. A command one of its rules matches runs with no
     prompt and, in Auto Mode, no classifier review, whatever text led to it — unless an
-    `ask` or `deny` rule matches it too, the CLI protects the path, or Auto Mode has set the
-    rule aside. The list is narrow by command and verb, and `docs/installation.md` says
+    `ask` or `deny` rule matches it too, the CLI protects the path, the command carries
+    per-command allowed domains, or Auto Mode has set the rule aside. The list is narrow by command and verb, and `docs/installation.md` says
     what it gives up.
   - **It fails OPEN when the sandbox cannot start.** Per the vendor reference, if dependencies are
     missing or the platform is unsupported, Claude Code warns and runs commands *without*
