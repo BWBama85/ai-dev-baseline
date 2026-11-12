@@ -280,6 +280,21 @@ _tmp_nul_sort() {
   if [ "$_TMP_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
 }
 
+# _tp_absent <tree> <rel> — 0 when <tree>/<rel> is CONFIRMED absent, 1 when the lookup itself could
+# not be made. Walks up to the nearest ancestor that exists: the name is absent for certain when
+# that ancestor can be searched, or is not a directory at all. An ancestor that exists and cannot be
+# searched hides whatever is below it. Never climbs above <tree>.
+_tp_absent() {
+  local d="$1/$2"
+  while [ "$d" != "$1" ]; do
+    d="${d%/*}"
+    [ -e "$d" ] || [ -L "$d" ] || continue
+    if [ -d "$d" ]; then [ -x "$d" ]; return $?; fi
+    return 0
+  done
+  return 1
+}
+
 # scan_paths <tree> — the CHANGED-FILE mode (#630): the same scan over the NUL-delimited,
 # tree-relative paths on stdin, for a caller that knows which files changed and has seconds, not
 # the tree walk's. Prints each violation as the tree walk does, then ONE count line on stdout:
@@ -298,10 +313,16 @@ _tmp_nul_sort() {
 # A READ THAT FAILS IS NEVER A CLEAN SCAN. The tree walk skips a file it cannot read; here that is
 # status 2, as is an empty list, because this mode's caller reads a zero as "these files are
 # clean". 0 = no violation · 1 = a violation · 2 = usage, nothing to scan, or a file it could not read.
+#
+# EVERY RECORD ENDS WITH A NUL, the last one included. A list cut short mid-name would otherwise be
+# read as a shorter name, which is most likely `gone`. What no reader can see is a list cut at a
+# record boundary; the caller covers that by checking the count line against what it sent.
 scan_paths() {
-  local tree="$1" p r f h rc inroot scanned=0 outside=0 gone=0 binary=0 err=0 hits=""
+  local tree="$1" p="" r f h rc inroot scanned=0 outside=0 gone=0 binary=0 err=0 hits=""
   local -a paths=()
-  mapfile -d '' -t paths
+  while IFS= read -r -d '' p; do paths+=("$p"); done
+  # `read` fails at end of input and leaves what it had read: non-empty is an unterminated record.
+  [ -z "$p" ] || { check_note "--files: the path list does not end with a NUL — it may have been cut short, so nothing in it is trusted"; return 2; }
   [ "${#paths[@]}" -gt 0 ] || { check_note "--files: no path on stdin — a scan of nothing is a refusal, never a pass"; return 2; }
   for p in "${paths[@]}"; do
     case "$p" in
@@ -311,7 +332,12 @@ scan_paths() {
     for r in "${SCAN_ROOTS[@]}"; do case "$p" in "$r"/*) inroot=1 ;; esac; done
     [ "$inroot" -eq 1 ] || { outside=$((outside + 1)); continue; }
     f="$tree/$p"
-    if [ ! -e "$f" ] && [ ! -L "$f" ]; then gone=$((gone + 1)); continue; fi   # deleted by the change
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      # Deleted by the change — but only when the absence is CONFIRMED. The same test fails for a
+      # file under a directory this user cannot search, and that file is there and unscanned.
+      if _tp_absent "$tree" "$p"; then gone=$((gone + 1)); else check_note "--files: cannot tell whether $p exists (a directory above it cannot be searched)"; err=1; fi
+      continue
+    fi
     if [ -L "$f" ] || [ ! -f "$f" ]; then outside=$((outside + 1)); continue; fi
     [ -r "$f" ] || { check_note "--files: cannot read $p"; err=1; continue; }
     LC_ALL=C grep -Iq . "$f" 2>/dev/null; rc=$?
@@ -656,6 +682,33 @@ ln -s linktarget.sh "$st/scripts/link.sh"
 fm 0 "a symlink is out of scope, as the tree walk never follows one" scripts/link.sh
 has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and is counted as out of scope"
 rm -f "$st/scripts/link.sh" "$st/scripts/linktarget.sh"
+# A path under a directory this user cannot search is NOT gone: the file is there and unscanned.
+# (Root searches anything, so the case cannot be staged there; it says so.)
+mkdir -p "$st/scripts/sealed"
+mk "scripts/sealed/inside.sh" "cat foo > $TMP_LIT/adb-sealed.log"
+chmod 000 "$st/scripts/sealed"
+if [ -x "$st/scripts/sealed" ]; then
+  printf 'SKIP: --files: this user can search a mode-000 directory, so an unsearchable parent cannot be staged\n'
+else
+  fm 2 "a path under a directory that cannot be searched is status 2, never counted as gone" scripts/sealed/inside.sh
+  has "$FM_OUT" "cannot tell whether scripts/sealed/inside.sh exists" "--files: …and names the path"
+  has "$FM_OUT" "0 scanned, 0 out of scope, 0 gone" "--files: …and does not count it as gone"
+fi
+chmod 700 "$st/scripts/sealed"; rm -rf "$st/scripts/sealed"
+# …while a name under a path component that is a FILE cannot exist, and is gone.
+mk "scripts/afile.sh" "echo ok"
+fm 0 "a name below a regular file is confirmed absent" scripts/afile.sh/below.sh
+has "$FM_OUT" "0 scanned, 0 out of scope, 1 gone" "--files: …and counted as gone"
+rm -f "$st/scripts/afile.sh"
+# EVERY RECORD ENDS WITH A NUL. A list cut short mid-name would read as a shorter name.
+mk "scripts/whole.sh" "cat foo > $TMP_LIT/adb-whole.log"
+FM_OUT="$(printf 'scripts/whole.sh' | scan_paths "$st" 2>&1)"; FM_RC=$?
+eq "$FM_RC" "2" "--files: a path list with no terminating NUL is refused (2)"
+has "$FM_OUT" "does not end with a NUL" "--files: …and says why"
+FM_OUT="$(printf 'scripts/whole.sh\0scripts/who' | scan_paths "$st" 2>&1)"; FM_RC=$?
+eq "$FM_RC" "2" "--files: a list whose LAST record is cut short is refused whole, never scanned in part"
+hasnt "$FM_OUT" "scanned," "--files: …before anything is counted"
+rm -f "$st/scripts/whole.sh"
 # NOTHING TO SCAN IS A REFUSAL. An empty list read as clean is the gate checking nothing.
 FM_OUT="$(scan_paths "$st" 2>&1 </dev/null)"; FM_RC=$?
 eq "$FM_RC" "2" "--files: an empty path list is a refusal (2), never a pass"

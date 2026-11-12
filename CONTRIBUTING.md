@@ -110,8 +110,8 @@ with no guaranteed bound, since a schedule can be delayed or dropped.
 tracked tree — `shellcheck`, `build-drift`, `tmp-paths`, `fact-drift` and the rest that
 `--list` marks `static` in its sixth field — are dispatched before any suite, and each runs to its
 own verdict. When one of them is red the run stops there: it names the step, names every step it
-did not dispatch, and its `result` block counts only what ran. A lint finding costs a minute or
-two to learn that way, not the whole run. `--collect-all` runs every step regardless; CI passes it, so a
+did not dispatch, and its `result` block counts only what ran. A lint finding is reported once
+the tier has run, not after the whole run (D156 has the measured times; nothing bounds the tier). `--collect-all` runs every step regardless; CI passes it, so a
 CI log always reports the whole registry. `--serial` never stops early.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs every selected step

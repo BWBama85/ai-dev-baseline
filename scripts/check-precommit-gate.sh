@@ -689,7 +689,8 @@ export SCSTUB_STATE="$work/scstate"
 # Each is the right instrument for what it measures (the HAND-OFF), and none of them is this
 # repository's gate. So the fast subset D25 actually ships — changed-file shellcheck, build-drift,
 # workflow-render, practice-index, fact-drift, and since #630 tmp-paths over the changed files,
-# workflow-shell, claims and bash-floor — had no fixture at all: the gate that runs at the end
+# workflow-shell, claims, bash-floor, workflow-map, skill-frontmatter and shmutant-pin — had no
+# fixture at all: the gate that runs at the end
 # of EVERY turn in this repo could regress and nothing here would notice.
 #
 # THE REAL SCRIPT, NOT A STUB, AND REAL CHECKS, NOT STUBBED ONES. The fixture is a throwaway COPY
@@ -792,6 +793,28 @@ if fx_setup; then
   has "$POUT" "workflow-shell   PASS"    "project gate: workflow-shell actually RAN and passed"
   has "$POUT" "claims (commits) PASS"    "project gate: claims actually RAN and passed, and its line says what it covered"
   has "$POUT" "bash-floor       PASS"    "project gate: bash-floor actually RAN and passed"
+  has "$POUT" "workflow-map     PASS"    "project gate: workflow-map actually RAN and passed"
+  has "$POUT" "skill-frontmatter PASS"   "project gate: skill-frontmatter actually RAN and passed"
+  has "$POUT" "shmutant-pin     PASS"    "project gate: shmutant-pin actually RAN and passed"
+  # EVERY STATIC-TIER STEP IS ACCOUNTED FOR (#630, D156). The gate admits a lint by measurement, so
+  # a step that joins the tier later must be measured and then run here or named below — never left
+  # out because nobody looked. Asked of the fixture's registry, so this list cannot go stale quietly.
+  #   the shell lint (`shellcheck`) runs only when a shell file changed, and this clean fixture has
+  #   none; 17o-17p observe it. `injection` measured well over the rule and has no changed-file
+  #   mode, so it is left out by decision.
+  gate_static_elsewhere=" shellcheck injection "
+  gate_static_seen=0
+  while IFS= read -r st; do
+    [ -n "$st" ] || continue
+    gate_static_seen=$((gate_static_seen + 1))
+    case "$gate_static_elsewhere" in *" $st "*) ok; continue ;; esac
+    case "$POUT" in
+      *"precommit-gate: $st "*) ok ;;
+      *) bad "project gate: static-tier step $st is neither run by the turn-end gate nor named as left out — measure it against D156's rule, then do one or the other" ;;
+    esac
+  done < <(bash "$fx/scripts/selfcheck.sh" --list | awk -F'\t' '$6 == "static" {print $1}')
+  [ "$gate_static_seen" -ge 12 ] && ok \
+    || bad "project gate: the registry named only $gate_static_seen static-tier step(s) — the accounting above compared too little to mean anything"
 
   # 17c. A REAL red check → exit 2, attributed by name. Editing a practice file makes `build.sh`
   # regenerate the three root docs, which is what the gate's own build-drift check compares — so
@@ -801,10 +824,10 @@ if fx_setup; then
   eq "$PRC" "2" "project gate: a red check → exit 2 (blocks the stop)"
   has "$POUT" "build-drift      FAIL" "project gate: the failing check is named, not just counted"
   has "$POUT" "blocking stop"         "project gate: the block is explained on the way out"
-  # THE LAST CHECK, not a middle one. `build-drift` is first and `bash-floor` is last, so a gate
+  # THE LAST CHECK, not a middle one. `build-drift` is first and `shmutant-pin` is last, so a gate
   # that aborted straight after `practice-index` would satisfy an assertion naming that check while
   # flatly contradicting the claim being made. Only the final line proves the subset ran to the end.
-  has "$POUT" "bash-floor       PASS" "project gate: one red check does not abort the rest of the subset"
+  has "$POUT" "shmutant-pin     PASS" "project gate: one red check does not abort the rest of the subset"
   fx_reset
 
   # 17d. common.sh MISSING → FAIL LOUD (exit 2), not the silent exit 0 this shipped with. [#299 core]
@@ -879,7 +902,7 @@ if fx_setup; then
   eq "$PRC" "0" "project gate: an unbound expansion at load time does not decide the gate's verdict"
   # The LAST check again, for the same reason 17c names it: exit 0 plus the FIRST check's PASS is
   # equally consistent with a gate that stopped right after it.
-  has "$POUT" "bash-floor       PASS" "project gate: …and the subset still runs to completion"
+  has "$POUT" "shmutant-pin     PASS" "project gate: …and the subset still runs to completion"
   fx_reset
 
   # 17h. THE PRODUCTION PATH. In real life nothing invokes the project gate directly — the global
@@ -1043,7 +1066,7 @@ if fx_setup; then
   has "$POUT" "docs/gate-fixture-tmp.md:1: Write the draft to \`$tl/adb-gate-fixture.md\` first." \
       "tmp-paths: the finding names the changed file and the line"
   eq "$(printf '%s\n' "$POUT" | grep -c ' FAIL (')" "1" "tmp-paths: …and it is the only check that is red"
-  has "$POUT" "bash-floor       PASS" "tmp-paths: a red temp-path scan does not abort the checks after it"
+  has "$POUT" "shmutant-pin     PASS" "tmp-paths: a red temp-path scan does not abort the checks after it"
 
   # 17u. The line marked as deliberate → PASS, and the PASS line prints its time and what it scanned.
   printf 'Write the draft to `%s/adb-gate-fixture.md` first. <!-- adb-tmp-ok: a fixture line -->\n' "$tl" > "$fx/docs/gate-fixture-tmp.md"

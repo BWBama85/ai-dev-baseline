@@ -29,9 +29,12 @@
 # joins when it adds about two seconds or less to a turn on a twenty-file branch, measured unloaded;
 # D156 carries the measurements. By that rule: the changed-file shell lint, build-drift,
 # workflow-render, practice-index, fact-drift, and since #630 tmp-paths (over the changed files
-# only), workflow-shell, claims (the committed range only) and bash-floor. `injection` does NOT run
-# here: it has no changed-file mode and measured well over the rule whole-tree, so a finding of its
-# kind is still learned from `selfcheck.sh`, where it is in the tier that runs first.
+# only), workflow-shell, claims (the committed range only), bash-floor, workflow-map,
+# skill-frontmatter and shmutant-pin. `injection` does NOT run here: it has no changed-file mode and
+# measured well over the rule whole-tree, so a finding of its kind is still learned from
+# `selfcheck.sh`, where it is in the tier that runs first. `check-precommit-gate.sh` requires every
+# static-tier step in the registry to be run here or named as left out, so a lint that joins the
+# tier later cannot be missed for want of anyone measuring it.
 #
 # WHAT THIS DOES NOT COVER, stated rather than implied: everything else `selfcheck.sh` runs — every
 # check-*.sh suite, install dry-run, the migration and guard checks, and the `injection` lint. This
@@ -280,11 +283,17 @@ lint_tmp_paths() {
 lint_tmp_paths
 
 run workflow-shell  bash scripts/check-workflow-shell.sh
-# The claim lint reads ADDED LINES OF COMMITS, so what it covers here is the committed range and
-# not the working tree — said in its line, because a PASS that implied more would be a wrong one.
-# The range is this gate's own base, which falls back to the local default branch with no remote.
+# The claim lint reads the NET ADDED LINES of a range's diff, merge-base to HEAD. So what it covers
+# here is what is committed, not the working tree — said in its line, because a PASS that implied
+# more would be a wrong one. The range is this gate's own base, which falls back to the local
+# default branch with no remote.
 run "claims (commits)" bash scripts/check-claims.sh --range "${base_ref}...HEAD"
 run bash-floor      bash scripts/check-bash-floor.sh
+# Three static lints that exist only as steps of the runner's registry, so the runner is asked for
+# each by name. One step per call, so a red one is named by its own line.
+for _st in workflow-map skill-frontmatter shmutant-pin; do
+  run "$_st" bash scripts/selfcheck.sh --only "$_st"
+done
 
 if [ "$fail" -ne 0 ]; then
   printf '\nprecommit-gate: blocking stop — fix the failing check(s) above.\n' >&2

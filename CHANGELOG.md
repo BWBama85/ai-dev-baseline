@@ -113,16 +113,19 @@ only by a release it upgrades to. These entries are the notes for both.
   and `/adopt` no longer advises writing one. The docs now state Claude's precedence correctly: a
   personal skill runs over a same-named project one (#540).
 
-- **A lint finding ends a local selfcheck in a minute or two, not after the whole run (#630).**
+- **A red lint ends a local selfcheck before the suites start, not after the whole run (#630).**
   `bash scripts/selfcheck.sh` now runs a static tier first: the steps that lint the tracked tree
   (`shellcheck`, `build-drift`, `tmp-paths`, `fact-drift` and eight more, `static` in the new sixth
   field of `--list`). When one of them is red the run stops before any suite starts, names the
   step and every step it did not dispatch, and counts only what ran. `--collect-all` runs every
   step regardless, and CI passes it on the macOS and WSL legs, so a CI log still reports the whole
-  registry. `--serial` is unchanged. The load-sensitive lane now runs after the static tier. The
-  turn-end gate also runs four more lints: `tmp-paths` over the changed files (a new
-  `check-tmp-paths.sh --files` mode), `workflow-shell`, `claims` over the committed range and
-  `bash-floor`. `injection` is not among them and is still learned from `selfcheck.sh`.
+  registry. `--serial` is unchanged. The load-sensitive lane now runs after the static tier. No
+  deadline is enforced on the tier; it took 1m26s on the maintainer's machine under load, where
+  the run that prompted this took 25m47s to report one lint. The
+  turn-end gate also runs seven more lints: `tmp-paths` over the changed files (a new
+  `check-tmp-paths.sh --files` mode), `workflow-shell`, `claims` over the committed range,
+  `bash-floor`, `workflow-map`, `skill-frontmatter` and `shmutant-pin`. `injection` is not among
+  them and is still learned from `selfcheck.sh`.
 
 - **A local selfcheck no longer takes the whole machine (#599).** Every run lowers its own
   priority (`nice -n 15`, inherited by every worker; `ADB_SELFCHECK_PRIORITY=normal` opts out). A
