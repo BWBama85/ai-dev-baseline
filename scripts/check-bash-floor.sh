@@ -52,8 +52,10 @@
 # lowered floor is visible in the log rather than a silent bypass (base/practices/self-review.md:
 # make the guard say what it checked, not merely whether it passed).
 
-set -u
 cd "$(dirname "$0")/.." || exit 1
+# BOTH LIBRARIES LOAD BEFORE `set -u`. An unbound expansion while a file is sourced is fatal under
+# `set -u`: the shell is gone before the `||` below is read, at status 1 and with nothing printed.
+# `set -u` goes on immediately after and governs everything this script does itself.
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 # common.sh owns adb_version_ge — this repo's law is to source the shared primitive, never copy
@@ -63,6 +65,7 @@ cd "$(dirname "$0")/.." || exit 1
   echo "bash-floor: FATAL — scripts/lib/common.sh is unavailable, so adb_version_ge cannot be reached" >&2
   exit 1
 }
+set -u
 check_init "bash-floor"
 
 FLOOR_DEFAULT="5.3"

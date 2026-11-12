@@ -528,7 +528,9 @@ case "$sub" in
       printf '%s: touched: %s\n' "$ME" "$rows" >&2; exit 3
     fi
     worst=0
-    while IFS=$'\t' read -r step _ _ _ inputs; do
+    # Field 5 and no further: `read` gives its LAST name the rest of the line, so without the
+    # trailing `_` the tier (field 6) would ride on the last input and that input would match nothing.
+    while IFS=$'\t' read -r step _ _ _ inputs _; do   # row-touched-field5
       [ -n "$inputs" ] && [ "$inputs" != "-" ] || {
         # A harness that declares nothing cannot be gated, so it always has something to say.
         printf 'RUN: %s — the step declares no inputs\n' "$step" >&2; printf '%s\n' "$step"; continue; }

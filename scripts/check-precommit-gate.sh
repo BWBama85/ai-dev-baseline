@@ -688,7 +688,8 @@ export SCSTUB_STATE="$work/scstate"
 # purpose-built stub — a marker-and-exit-0, an exit-2, a parameterized exit code, a stdin recorder.
 # Each is the right instrument for what it measures (the HAND-OFF), and none of them is this
 # repository's gate. So the fast subset D25 actually ships — changed-file shellcheck, build-drift,
-# workflow-render, practice-index, fact-drift — had no fixture at all: the gate that runs at the end
+# workflow-render, practice-index, fact-drift, and since #630 tmp-paths over the changed files,
+# workflow-shell, claims and bash-floor — had no fixture at all: the gate that runs at the end
 # of EVERY turn in this repo could regress and nothing here would notice.
 #
 # THE REAL SCRIPT, NOT A STUB, AND REAL CHECKS, NOT STUBBED ONES. The fixture is a throwaway COPY
@@ -784,6 +785,13 @@ if fx_setup; then
   has "$POUT" "workflow-render  PASS"    "project gate: workflow-render actually RAN and passed"
   has "$POUT" "practice-index   PASS"    "project gate: practice-index actually RAN and passed"
   has "$POUT" "fact-drift       PASS"    "project gate: fact-drift actually RAN and passed"
+  # The four lints #630 added. The fixture's only delta is a file at the repository root, so the
+  # changed-file temp-path scan has nothing in scope: a SKIP that says so, never a PASS over nothing.
+  has "$POUT" "tmp-paths        SKIP (none of the 1 changed file(s) is one it scans" \
+      "project gate: tmp-paths with no changed file in scope is a stated SKIP, not a PASS"
+  has "$POUT" "workflow-shell   PASS"    "project gate: workflow-shell actually RAN and passed"
+  has "$POUT" "claims (commits) PASS"    "project gate: claims actually RAN and passed, and its line says what it covered"
+  has "$POUT" "bash-floor       PASS"    "project gate: bash-floor actually RAN and passed"
 
   # 17c. A REAL red check → exit 2, attributed by name. Editing a practice file makes `build.sh`
   # regenerate the three root docs, which is what the gate's own build-drift check compares — so
@@ -793,10 +801,10 @@ if fx_setup; then
   eq "$PRC" "2" "project gate: a red check → exit 2 (blocks the stop)"
   has "$POUT" "build-drift      FAIL" "project gate: the failing check is named, not just counted"
   has "$POUT" "blocking stop"         "project gate: the block is explained on the way out"
-  # THE LAST CHECK, not a middle one. `build-drift` is first and `fact-drift` is last, so a gate
+  # THE LAST CHECK, not a middle one. `build-drift` is first and `bash-floor` is last, so a gate
   # that aborted straight after `practice-index` would satisfy an assertion naming that check while
   # flatly contradicting the claim being made. Only the final line proves the subset ran to the end.
-  has "$POUT" "fact-drift       PASS" "project gate: one red check does not abort the rest of the subset"
+  has "$POUT" "bash-floor       PASS" "project gate: one red check does not abort the rest of the subset"
   fx_reset
 
   # 17d. common.sh MISSING → FAIL LOUD (exit 2), not the silent exit 0 this shipped with. [#299 core]
@@ -871,7 +879,7 @@ if fx_setup; then
   eq "$PRC" "0" "project gate: an unbound expansion at load time does not decide the gate's verdict"
   # The LAST check again, for the same reason 17c names it: exit 0 plus the FIRST check's PASS is
   # equally consistent with a gate that stopped right after it.
-  has "$POUT" "fact-drift       PASS" "project gate: …and the subset still runs to completion"
+  has "$POUT" "bash-floor       PASS" "project gate: …and the subset still runs to completion"
   fx_reset
 
   # 17h. THE PRODUCTION PATH. In real life nothing invokes the project gate directly — the global
@@ -971,8 +979,11 @@ if fx_setup; then
   # `$sh_changed` invocation broke.
   fx_base="$(fx_git rev-parse HEAD)"
   mkdir -p "$fx/lintfx"
-  for i in $(seq 1 29); do printf '#!/usr/bin/env bash\necho %s\n' "$i" > "$fx/lintfx/f$i.sh"; done
-  printf '#!/usr/bin/env bash\nunused=1\n' > "$fx/lintfx/with space.sh"
+  # POSIX `sh` shebangs, deliberately: the gate also runs bash-floor since #630, and a tracked file
+  # with a BASH shebang and no floor stanza is exactly what that lint exists to refuse. These files
+  # are here for the shell lint's pool, which selects by name.
+  for i in $(seq 1 29); do printf '#!/bin/sh\necho %s\n' "$i" > "$fx/lintfx/f$i.sh"; done
+  printf '#!/bin/sh\nunused=1\n' > "$fx/lintfx/with space.sh"
   fx_git add lintfx && fx_git commit -q -m "thirty shell files"
   eq "$?" "0" "lint pool: the fixture branch carries thirty changed shell files"
 
@@ -986,7 +997,7 @@ if fx_setup; then
   # 17p. The finding fixed → PASS, and the PASS line carries the pool's count line. Under
   # ADB_SHELLCHECK_JOBS=1, so this one gate run also shows the cap reaching the pool through the gate
   # (§18 covers the width rules themselves; every run of the full gate here costs a full build).
-  printf '#!/usr/bin/env bash\necho fixed\n' > "$fx/lintfx/with space.sh"
+  printf '#!/bin/sh\necho fixed\n' > "$fx/lintfx/with space.sh"
   fx_git commit -qam "fix the finding"
   POUT="$(cd "$fx" && ADB_POOL_JOBS=4 ADB_SHELLCHECK_JOBS=1 PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
   eq "$PRC" "0" "lint pool: thirty clean files → exit 0"
@@ -1017,6 +1028,40 @@ if fx_setup; then
   eq "$PRC" "2" "lint pool: a failed changed-file read → the gate blocks, even when nothing else changed"
   has "$POUT" "could not enumerate the changed files (git diff" "lint pool: …naming the read that failed"
   hasnt "$POUT" "build-drift" "lint pool: …before any check runs on a partial set"
+  fx_reset
+  # --- 17t-17v. A FIXED TEMP PATH IN A CHANGED FILE (#630) ---------------------------------------
+  # The lint whose finding once cost a whole selfcheck run to learn. The gate runs it over the
+  # changed files only, so the fixture's change is ONE new docs file carrying the literal — composed
+  # at run time, because this suite's own source is under the same lint.
+  tl='/tmp'
+  printf 'Write the draft to `%s/adb-gate-fixture.md` first.\n' "$tl" > "$fx/docs/gate-fixture-tmp.md"
+
+  # 17t. The finding → exit 2, the check named, the file and line named, and nothing else red.
+  POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  eq "$PRC" "2" "tmp-paths: a changed file carrying a fixed temp path → the gate blocks"
+  has "$POUT" "tmp-paths        FAIL" "tmp-paths: the failing check is named"
+  has "$POUT" "docs/gate-fixture-tmp.md:1: Write the draft to \`$tl/adb-gate-fixture.md\` first." \
+      "tmp-paths: the finding names the changed file and the line"
+  eq "$(printf '%s\n' "$POUT" | grep -c ' FAIL (')" "1" "tmp-paths: …and it is the only check that is red"
+  has "$POUT" "bash-floor       PASS" "tmp-paths: a red temp-path scan does not abort the checks after it"
+
+  # 17u. The line marked as deliberate → PASS, and the PASS line prints its time and what it scanned.
+  printf 'Write the draft to `%s/adb-gate-fixture.md` first. <!-- adb-tmp-ok: a fixture line -->\n' "$tl" > "$fx/docs/gate-fixture-tmp.md"
+  POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+  eq "$PRC" "0" "tmp-paths: the same file with the path exempted → exit 0"
+  if [[ "$POUT" =~ tmp-paths\ +PASS\ \([0-9]+s,\ 1\ scanned\ of\ [0-9]+\ changed\) ]]; then ok; else
+    bad "tmp-paths: want 'tmp-paths PASS (Ns, 1 scanned of N changed)', the gate printed: $POUT"
+  fi
+
+  # 17v. A scan that does not ACCOUNT FOR every file it was handed is a FAIL — the guard that
+  # scanned less than it was given. Observed failing: the fixture's mode stops counting what it
+  # scanned, still exits 0, and the gate must refuse the green.
+  if check_mutate_line "$fx/scripts/check-tmp-paths.sh" '    scanned=$((scanned + 1))' \
+       's#^    scanned=\$((scanned [+] 1))$#    :#' "mut-tmp-undercount"; then
+    POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
+    eq "$PRC" "2" "mut-tmp-undercount: a scan that exits 0 short of its file count → the gate blocks"
+    has "$POUT" "the scan exited 0 without accounting for the" "mut-tmp-undercount: …and says why"
+  fi
   fx_reset
   fx_git reset -q --hard "$fx_base" || bad "lint pool: could not return the fixture to its baseline"
 else

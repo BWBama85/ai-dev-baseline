@@ -304,6 +304,13 @@ behind every harness still run here, as every plain suite does; most also have a
 not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names are unchanged, so
 the required contexts are too.
 
+**This job, and the WSL smoke job, pass `--collect-all`** (#630, D156). A local run takes the static
+tier first — the steps that lint the tracked tree — and ends at a red one, before any suite
+starts; that is what makes a lint finding cheap to learn at a desk. A CI run costs a push and a
+job, so it reports every step in one log. `check-mutation-gate.sh` pins the flag here and
+`check-fact-drift.sh` pins it on the WSL line. The nightly's per-harness jobs select one harness
+and no static step, so there is nothing for them to stop on.
+
 **Where they run instead: `mutation-nightly.yml`, three ways.** Its matrix is the registry, read by a
 plan job through `mutation-gate.sh steps --matrix`, so there is no list in that file to drift.
 

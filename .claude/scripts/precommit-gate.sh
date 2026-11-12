@@ -25,10 +25,18 @@
 # below re-checks every shell file the branch has changed against the default branch. The per-check
 # PASS lines print their own seconds; read those, not a figure here (#455, D127).
 #
+# WHICH LINTS RUN HERE (#630, D156). Every step of selfcheck's static tier is a candidate, and one
+# joins when it adds about two seconds or less to a turn on a twenty-file branch, measured unloaded;
+# D156 carries the measurements. By that rule: the changed-file shell lint, build-drift,
+# workflow-render, practice-index, fact-drift, and since #630 tmp-paths (over the changed files
+# only), workflow-shell, claims (the committed range only) and bash-floor. `injection` does NOT run
+# here: it has no changed-file mode and measured well over the rule whole-tree, so a finding of its
+# kind is still learned from `selfcheck.sh`, where it is in the tier that runs first.
+#
 # WHAT THIS DOES NOT COVER, stated rather than implied: everything else `selfcheck.sh` runs — every
-# check-*.sh suite, install dry-run, the migration and guard checks. This is a turn-end smoke test,
-# NOT a CI predictor. A green here says "you did not obviously break the build"; it does not say CI
-# will pass. Run `bash scripts/selfcheck.sh` before you push.
+# check-*.sh suite, install dry-run, the migration and guard checks, and the `injection` lint. This
+# is a turn-end smoke test, NOT a CI predictor. A green here says "you did not obviously break the
+# build"; it does not say CI will pass. Run `bash scripts/selfcheck.sh` before you push.
 #
 # The global gate at ~/.claude/scripts/precommit-gate.sh detects this file and `exec`s it, so
 # nothing double-runs. Exit 2 blocks the stop, exactly as the global gate does.
@@ -245,6 +253,38 @@ run build-drift bash -c '
 run workflow-render bash scripts/check-workflow-render.sh
 run practice-index  bash scripts/check-practice-index.sh
 run fact-drift      bash scripts/check-fact-drift.sh
+
+# No fixed shared-temp path in a CHANGED file (#630): `check-tmp-paths.sh --files`, part 2 of that
+# lint over the change set, since the whole-tree run is far over this gate's budget. Its count line
+# must account for every file it was handed — a mode that exits 0 having accounted for fewer is a
+# FAIL — and a change set with nothing under the lint's four roots is a SKIP that says so, never a
+# PASS over nothing.
+lint_tmp_paths() {
+  local t0=$SECONDS out rc last want="${#changed[@]}"
+  out="$(printf '%s\0' "${changed[@]}" | bash "$repo_root/scripts/check-tmp-paths.sh" --files 2>&1)"; rc=$?
+  last="${out##*$'\n'}"
+  if [ "$rc" -eq 0 ] && [[ "$last" =~ ^check-tmp-paths:\ --files:\ ([0-9]+)\ scanned,\ ([0-9]+)\ out\ of\ scope,\ ([0-9]+)\ gone,\ ([0-9]+)\ binary\ or\ empty$ ]]; then
+    if [ "$(( BASH_REMATCH[1] + BASH_REMATCH[2] + BASH_REMATCH[3] + BASH_REMATCH[4] ))" = "$want" ]; then
+      if [ "${BASH_REMATCH[1]}" -eq 0 ]; then
+        skip tmp-paths "none of the $want changed file(s) is one it scans: a text file under base/, scripts/, docs/ or agents/"
+      else
+        printf 'precommit-gate: %-16s PASS (%ss, %s scanned of %s changed)\n' tmp-paths "$(( SECONDS - t0 ))" "${BASH_REMATCH[1]}" "$want" >&2
+      fi
+      return 0
+    fi
+  fi
+  [ "$rc" -eq 0 ] && out="${out:+$out$'\n'}the scan exited 0 without accounting for the $want changed file(s) it was given"
+  printf 'precommit-gate: %-16s FAIL (%ss)\n%s\n' tmp-paths "$(( SECONDS - t0 ))" "$out" >&2
+  fail=1
+}
+lint_tmp_paths
+
+run workflow-shell  bash scripts/check-workflow-shell.sh
+# The claim lint reads ADDED LINES OF COMMITS, so what it covers here is the committed range and
+# not the working tree — said in its line, because a PASS that implied more would be a wrong one.
+# The range is this gate's own base, which falls back to the local default branch with no remote.
+run "claims (commits)" bash scripts/check-claims.sh --range "${base_ref}...HEAD"
+run bash-floor      bash scripts/check-bash-floor.sh
 
 if [ "$fail" -ne 0 ]; then
   printf '\nprecommit-gate: blocking stop — fix the failing check(s) above.\n' >&2

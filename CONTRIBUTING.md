@@ -106,6 +106,14 @@ and the same fail-closed rules apply, and the nightly runs every row regardless 
 that turns out to be too narrow is caught by the next scheduled or on-demand run that happens,
 with no guaranteed bound, since a schedule can be delayed or dropped.
 
+**The static tier runs first, and a red one ends the run** (#630, D156). The steps that lint the
+tracked tree — `shellcheck`, `build-drift`, `tmp-paths`, `fact-drift` and the rest that
+`--list` marks `static` in its sixth field — are dispatched before any suite, and each runs to its
+own verdict. When one of them is red the run stops there: it names the step, names every step it
+did not dispatch, and its `result` block counts only what ran. A lint finding costs a minute or
+two to learn that way, not the whole run. `--collect-all` runs every step regardless; CI passes it, so a
+CI log always reports the whole registry. `--serial` never stops early.
+
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs every selected step
 sequentially, in the order listed below, with output streaming live — that is the mode for
 attributing a confusing parallel failure. **`--only <name>,<name>`** re-runs just the steps you
@@ -114,8 +122,10 @@ care about (`--list` prints every name; an unknown name is an error rather than 
 names are printed, before the run and again in the `result` block, because a step that vanishes
 quietly looks exactly like a step that passed.
 
-In a default (parallel) run a **serial prologue** goes first, one step at a time, and it holds two
-lanes for two different reasons — `--list`'s fourth field says which. The `mutates-tree` lane is
+In a default (parallel) run some steps go one at a time, with nothing beside them — the **serial
+prologue** — in two lanes, for two different reasons; `--list`'s fourth field says which. The
+`mutates-tree` lane runs first of all, ahead of the static tier's pool; the `load-sensitive` lane
+runs after the static tier and ahead of the suite pool. The `mutates-tree` lane is
 <!-- adb:lane mutates-tree -->`build-drift`<!-- /adb:lane -->: it rewrites files in the working tree that other steps read. The `load-sensitive` lane (#423) is
 <!-- adb:lane load-sensitive -->`session-currency`, `install-migration`, `install-guard`, `selfcheck-guard`, `selfcheck-guard-mutation`, `install-dry-run`<!-- /adb:lane -->:
 they assert on signal delivery, worker reaping and

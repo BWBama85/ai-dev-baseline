@@ -1528,13 +1528,17 @@ jobs:
       # so a new harness cannot land unskipped; an unreadable registry fails the step rather than
       # skipping nothing. `check-mutation-gate.sh` pins this line.
       #
+      # `--collect-all` (#630, D156): a local run ends at a red static step, before the suites
+      # start. CI does not — a push costs a whole job, so its log reports every step in one run.
+      # It follows `--skip "$skip"`, whose position `check-mutation-gate.sh` pins.
+      #
       # `pipefail` is load-bearing: without it this step reports tee's cheerful 0.
       - name: The offline suite on Homebrew bash, less the mutation harnesses (they run nightly)
         run: |
           set -uo pipefail
           skip="$(bash scripts/mutation-gate.sh steps --csv)" || { echo "::error::could not read the *-mutation steps from the registry"; exit 1; }
           echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"
-          bash scripts/selfcheck.sh --skip "$skip" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
         env:
           # A plain suite that runs a pool (`check-roadmap.sh`'s, for one) leaves a failed pool's
           # verdict stream and every row's output here (#519). The upload step at the end publishes it.
