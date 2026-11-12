@@ -327,6 +327,14 @@ if [ "$MODE" = mutation ]; then
     '      [ "$#" -eq 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }   # match-one-argument' \
     '      [ "$#" -ge 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }   # match-one-argument' \
     'match takes exactly one command'
+  shmutant_mut heal-refusal-unreported \
+    '  [ "$(adb_permissions_disposition "$receipt" 2>/dev/null)" = skipped-blocked ]   # heal-refused' \
+    '  false   # heal-refused' \
+    'a heal that left the allowlist refused says so to its caller'
+  shmutant_mut heal-refusal-repeated \
+    '  [ "$rcpt_now" != "$2" ] || return 1   # heal-touched-record' \
+    '  :   # heal-touched-record' \
+    '…and not again while the record is unchanged'
   shmutant_mut match-answers-for-a-compound \
     '      [ "$_adb_perm_c" -ne 1 ] || {   # match-one-command' \
     '      true || {   # match-one-command' \
@@ -889,6 +897,13 @@ a0="$(sig "$h")"; r0="$(rsig "$h")"
 apply "$RP" "$h" >/dev/null
 heal "$RP" "$h" "$a0" "$r0"; eq "$HRC" "1" "a heal that was refused did not change the allow list"
 has "$HOUT" "NOT applied (skipped-blocked)" "…and the refusal is reported with its disposition"
+# …and it is an OUTCOME its caller can act on, once: the wrapper that runs the heal discards every line.
+refused() { ( export HOME="$1"; . "$PL"; adb_permissions_heal_refused "$1" "$2" ); }   # refused <home> <receipt-before>
+refused "$h" "$r0"; yes $? "a heal that left the allowlist refused says so to its caller"
+refused "$h" "$(rsig "$h")"; no $? "…and not again while the record is unchanged"
+h="$(mkhome heal-applied '{"permissions":{"allow":[]}}')"; r0="$(rsig "$h")"
+apply "$RP" "$h" >/dev/null
+refused "$h" "$r0"; no $? "a heal that applied the allowlist is not a refusal"
 BL="$(cat "$ROOT/bin/baseline")"
 eq "$(printf '%s\n' "$BL" | grep -c 'adb_permissions_heal_report "\$SRC" "\$HOME"')" "2" "bin/baseline reports the allowlist outcome on both healing paths"
 
@@ -1334,6 +1349,48 @@ if [ -z "${CP_MUTATION_CHILD:-}" ]; then
   out="$(HOME="$FH" PATH="$STUB:$PATH" "$ROOT/install.sh" --agent claude --no-hooks 2>&1)"; no $? "an install whose sandbox step fails is a failure"
   eq "$(allow "$FH")" '["Bash(ps:*)"]' "the allowlist is not written after a sandbox step that failed"
   has "$out" "allowlist  NOT written" "…and the install says so"
+
+  # A HEAL THAT LEAVES THE ALLOWLIST REFUSED IS AN EXIT CODE AND A SESSION-START LINE, driven through
+  # a real clone of this tree: `baseline update` is the install source's own command.
+  bseed="$work/bl-seed"
+  if check_copy_subtrees "$ROOT" "$bseed" scripts bin agents base templates docs >/dev/null 2>&1 \
+     && cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$bseed/" \
+     && check_make_repo_pair "$bseed" "$work/bl-origin.git" \
+     && git -C "$bseed" symbolic-ref HEAD refs/heads/main \
+     && check_git "$bseed" add -A && check_git "$bseed" commit -q -m seed \
+     && git -C "$bseed" push -q -u origin main && git -C "$work/bl-origin.git" symbolic-ref HEAD refs/heads/main \
+     && git clone -q "$work/bl-origin.git" "$work/bl-src"; then
+    bsrc="$work/bl-src"
+    BH="$(mkhome bl-heal '{"permissions":{"allow":[]}}')"
+    mkdir -p "$BH/.config/ai-dev-baseline"; printf '[updates]\nchannel = "main"\n' > "$BH/.config/ai-dev-baseline/agents.toml"
+    bl() { env -u CLAUDE_CONFIG_DIR HOME="$BH" PATH="$STUB:$PATH" XDG_CACHE_HOME="$work/bl-cache" "$@"; }
+    bl "$bsrc/install.sh" --agent claude >/dev/null 2>&1; yes $? "precondition: the fixture clone installs"
+    bl "$bsrc/bin/baseline" update >/dev/null 2>&1; eq "$?" "0" "precondition: a current install has nothing to do"
+    # The record is gone and the operator's `permissions.allow` is not a list: the heal re-applies, and is refused.
+    block() { rm -f "$(rcpt "$BH")"; jq '.permissions.allow = "x"' "$BH/.claude/settings.json" > "$work/bl.json" && mv "$work/bl.json" "$BH/.claude/settings.json"; }
+    block
+    bl "$bsrc/bin/baseline" update >/dev/null 2>&1; eq "$?" "11" "baseline update exits 11 when its heal leaves the allowlist refused"
+    bl "$bsrc/bin/baseline" update >/dev/null 2>&1; eq "$?" "0" "…and a refusal already recorded is not announced again"
+    # A link repaired in the same run does not turn the refusal into "repaired".
+    block; rm -f "$BH/.claude/skills/cleanup"
+    bl "$bsrc/bin/baseline" update >/dev/null 2>&1; eq "$?" "11" "a heal that also repaired a link still exits 11 for the refused allowlist"
+    [ -e "$BH/.claude/skills/cleanup" ] && ok || bad "…and the link was repaired"
+    block; rm -rf "$work/bl-cache"
+    out="$(jq -cn --arg c "$work" '{session_id:"t", hook_event_name:"SessionStart", source:"startup", cwd:$c}' \
+            | bl bash "$BH/.claude/scripts/session-currency.sh" 2>/dev/null)"
+    has "$out" "the command allowlist was refused" "the session-start hook reports a refused allowlist instead of staying silent"
+    # …and the same on an update that also moved the clone.
+    block
+    if git clone -q "$work/bl-origin.git" "$work/bl-c2" && git -C "$work/bl-c2" config user.email t@t && git -C "$work/bl-c2" config user.name t \
+       && git -C "$work/bl-c2" config commit.gpgsign false \
+       && check_git "$work/bl-c2" commit -q --allow-empty -m advance && git -C "$work/bl-c2" push -q origin main; then
+      bl "$bsrc/bin/baseline" update >/dev/null 2>&1; eq "$?" "11" "an update that moved the clone exits 11 too when its heal leaves the allowlist refused"
+    else
+      bad "the fixture origin could not be advanced"
+    fi
+  else
+    bad "the baseline-update fixture clone could not be built"
+  fi
 fi
 
 check_summary check-permissions

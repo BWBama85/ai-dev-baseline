@@ -53,7 +53,8 @@
 #   shared project file from; --managed to the platform's managed-settings.json.
 #
 # Sourced (install.sh, uninstall.sh, bin/baseline): adb_permissions_apply, adb_permissions_remove,
-# adb_permissions_pending, adb_permissions_allow_sig, adb_permissions_heal_report. apply and remove
+# adb_permissions_pending, adb_permissions_allow_sig, adb_permissions_heal_report,
+# adb_permissions_heal_refused. apply and remove
 # expect the caller to HOLD the settings lock (adb_settings_lock_take): each defers and resumes that
 # lock's signal traps around its two writes.
 #
@@ -758,6 +759,18 @@ adb_permissions_heal_report() {
     *) printf 'baseline: the command allowlist was NOT applied (%s) — run ./install.sh in %s to see why.\n' "$disp" "$src" >&2 ;;
   esac
   return 1
+}
+
+# Did this heal leave the allowlist REFUSED: its record was written by the heal and now says the
+# install would not merge into the operator's `permissions`? Asked of what changed, so a refusal
+# an earlier run recorded is not announced again. Prints nothing.
+# Usage: adb_permissions_heal_refused <home> <receipt-sig-before>
+adb_permissions_heal_refused() {
+  local receipt rcpt_now
+  receipt="$(adb_permissions_receipt "$1")"
+  rcpt_now="$(adb_sha256 "$receipt" 2>/dev/null)" || rcpt_now="none"
+  [ "$rcpt_now" != "$2" ] || return 1   # heal-touched-record
+  [ "$(adb_permissions_disposition "$receipt" 2>/dev/null)" = skipped-blocked ]   # heal-refused
 }
 
 # --- the audit -----------------------------------------------------------------------------------

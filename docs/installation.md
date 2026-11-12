@@ -536,7 +536,12 @@ is added again, and every entry already there is read as yours.
 **Only the current CLI is supported.** The floor is the newest Claude Code release this surface was
 read against — **v2.1.322** now, raised with each release — and nothing older is modelled. Below
 it, or when no `claude` binary can be probed, nothing is written and the next `baseline update`
-tries again; update Claude Code. The audit below evaluates nothing there either (exit 11). `--no-permissions` records an opt-out that
+tries again; update Claude Code. The audit below evaluates nothing there either (exit 11).
+
+When your settings hold a `permissions` block the install will not merge into — `permissions.allow`
+is not a list of strings, say — the allowlist is refused whole. `./install.sh` names what is in the
+way; a `baseline update` whose heal ends that way exits 11, and the session-start update reports it
+once instead of staying silent. `--no-permissions` records an opt-out that
 `baseline update` keeps honouring; it does not take out entries an earlier install added, which
 `./uninstall.sh` does.
 

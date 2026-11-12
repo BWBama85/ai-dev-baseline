@@ -79,6 +79,8 @@
 # It exits 6 on a SUCCESSFUL same-HEAD repair — the clone was already current but an installed
 # link was broken and has been restored. Distinct from 0 ("nothing to do") because the installed
 # surface changed while HEAD did not, which a caller watching HEAD alone cannot see.
+# It exits 11 when its heal left the command allowlist REFUSED (#288): the installer would not
+# merge into the `permissions` already in settings.json, so no allow entry was written.
 # It exits 21 when the install is HELD ahead of the newest release (`--check` reports that as 20),
 # so the currency trigger can tell a held install from a clone that needs attention, and 40 on an
 # integrity refusal, as `--check` does.
@@ -939,6 +941,12 @@ _bl_current_arm() {
       [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
       exit 9
     }
+    # THE ALLOWLIST CAME BACK REFUSED (#288). Nothing of it was applied, and the SessionStart caller
+    # discards the line that says so, so the refusal chooses the code — after the sandbox's own two.
+    if adb_permissions_heal_refused "$HOME" "$PERM_RCPT_BEFORE"; then
+      [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
+      exit 11   # allowlist-refused-current
+    fi
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
@@ -1003,6 +1011,10 @@ _bl_after_move() {
       if adb_settings_downgraded_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")" "$BEHIND_ROWS_BEFORE"; then
         echo "baseline: the clone WAS updated and every link resolves." >&2
         exit 9
+      fi
+      if adb_permissions_heal_refused "$HOME" "$BEHIND_PERM_RCPT_BEFORE"; then
+        echo "baseline: the clone WAS updated and every link resolves; only the command allowlist was refused." >&2
+        exit 11   # allowlist-refused-behind
       fi
       echo "baseline: update complete."
       exit 0

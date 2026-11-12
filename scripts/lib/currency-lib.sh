@@ -36,8 +36,8 @@
 #   silent    nothing happened worth reporting (already current)      message empty
 #   updated   the clone advanced; installed payload changed
 #   repaired  same HEAD, but a broken installed link was restored
-#             (a same-HEAD run whose only pending item was the sandbox settings, and whose
-#              settings the installer REFUSED, reports `refused` instead — nothing was applied)
+#             (a run whose heal left the sandbox settings or the command allowlist REFUSED
+#              reports `refused` instead — nothing of that surface was applied)
 #   behind    notify mode: the clone IS behind and was left alone
 #   refused   `baseline` refused for safety; message names the clone state. Also: a release that
 #             failed an integrity check (exit 40, both triggers, both modes), and — `/cleanup` only —
@@ -442,6 +442,13 @@ CU_DIGEST
       # (PR review)
       _adb_cu_emit refused \
         "the sandbox protections are NOT being applied — the 'claude' CLI no longer clears the version floor or could not be probed. Upgrade it; if the sandbox keys are still in settings.json afterwards they are no longer owned, so remove them by hand and re-run './install.sh'."
+      ;;
+    11)
+      # The COMMAND ALLOWLIST was refused by the heal (#288): the installer would not merge into the
+      # `permissions` already in settings.json, so no allow entry was written. The same kind of
+      # fact as 7, about the other settings surface — neither `repaired` nor `silent`.
+      _adb_cu_emit refused \
+        "the command allowlist was refused — ~/.claude/settings.json holds a 'permissions' block the installer will not merge into, so no allow entry was written. Run ./install.sh in $src to see what is in the way."
       ;;
     5)  _adb_cu_emit busy "another 'baseline update' is already running for the install-source." ;;
     20) _adb_cu_emit refused \
