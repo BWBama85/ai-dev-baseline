@@ -3634,11 +3634,14 @@ if [ "${1:-}" = "--mutation" ]; then
     '/for d in "\$skills"\/\*\/; do/,/^  done$/d'
 
   # 6. The per-branch boundary is broken: an unknown token now shares the claude branch, so it
-  #    inherits a precondition the documented contract says must not apply to it.
+  #    inherits a precondition the documented contract says must not apply to it. The address
+  #    range confines the edit to adb_agent_manifest. No gone-literal: `    claude)` is also a
+  #    line of adb_agent_manifest_retired and the start of a line elsewhere, both left alone, so
+  #    the byte comparison is what proves this row applied.
   mutate precondition-not-per-branch \
     "manifest: an unknown agent still returns 0 even with an unsafe home" \
-    '    claude)' \
-    's/^    claude)$/    claude|*)/'
+    '' \
+    '/^adb_agent_manifest() {$/,/^}$/s/^    claude)$/    claude|*)/'
 
   # 7. The per-value contract collapses to first-failure-wins, so an operator with BOTH roots wrong
   #    is told about only one, fixes it, re-runs, and is told about the other.

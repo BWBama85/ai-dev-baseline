@@ -1383,12 +1383,22 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
   put_marker '# adb:supersedes fix-bug'
   eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 10 \
      "workflows: the restored copy is judged (10) before its codex skills are made unlistable"
-  # EVERY agent's skills unlistable: the agents' skill sets are then all empty and agree, so only
-  # the per-agent coverage check can refuse — one defence, observable on its own.
-  for a_ in claude codex gemini; do chmod 000 "$BFX/agents/$a_/skills"; done
+  # ONE agent's skills unlistable, the others' intact: the shipped set still names agents whose
+  # skill sets agree, so the per-agent coverage check is the only refusal left. Its message is
+  # asked for by name because exit 11 reads the same whichever check refused.
+  chmod 000 "$BFX/agents/codex/skills"
   if [ ! -r "$BFX/agents/codex/skills" ]; then
+    has "$(bash "$AD" supersedes "$BFX" 2>&1 >/dev/null)" "the shipped skills of codex could not be listed" \
+        "supersedes: an agent whose skills cannot be listed is refused by name"
     eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 11 \
        "workflows: a baseline whose codex skills cannot be listed exits 11, even judging claude only"
+  fi
+  # EVERY agent's skills unlistable: the shipped set then holds no skill record for any agent,
+  # which the map reader refuses too — so this case is not a witness for either check alone.
+  for a_ in claude gemini; do chmod 000 "$BFX/agents/$a_/skills"; done
+  if [ ! -r "$BFX/agents/claude/skills" ]; then
+    eq "$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$BFX" >/dev/null 2>&1; echo $?)" 11 \
+       "workflows: a baseline with no listable skills at all exits 11"
   fi
   for a_ in claude codex gemini; do chmod 755 "$BFX/agents/$a_/skills"; done
 else
@@ -1939,7 +1949,10 @@ sp_bad_surface "an unknown reach" 'src/**' claude:sometimes homed facts
 sp_bad_surface "an empty mirror source" 'src/**' claude:on-path-match 'mirror:' -
 sp_bad_surface "a traversal-shaped mirror source" 'src/**' claude:on-path-match 'mirror:../x.md' -
 sp_bad_surface "an unknown judgment" 'src/**' claude:on-path-match homed maybe
-printf 'surface\tx.md\trule\tclaude\tpaths\tsrc/**\tgemini:on-access\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rootdocs=0 rules=1 nested=0 mirrors=0 facts=1 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=0 unknown=0 judgment=given\n' > "$WORK/sp-bad.tsv"
+# An unscoped rule, as the writer records one (no key, unhomed:rootdoc): under `paths` or `both`
+# the reach must be claude:on-path-match, and that rule would refuse this record on its own,
+# whatever the reach's agent.
+printf 'surface\tx.md\trule\tclaude\tnone\t-\tgemini:on-access\tunhomed:rootdoc\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rootdocs=0 rules=1 nested=0 mirrors=0 facts=1 mixed=0 workflows=0 unhomed=1 respell=0 exempt=0 refused=0 unjudged=0 pointers=0 unknown=0 judgment=given\n' > "$WORK/sp-bad.tsv"
 eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" x.md claude)" unjudged "sclass: a reach for another agent judges nothing"
 printf 'surface\tx.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rootdocs=0 rules=1 unknown=0\n' > "$WORK/sp-bad.tsv"
 eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" x.md claude)" unjudged "sclass: a summary missing a count judges nothing"
@@ -3908,7 +3921,7 @@ shmutant_mut bytes-whole-size-status-ignored \
 shmutant_mut user-roots-drop-antigravity \
     "    gemini) printf '%s\\n' 'home .gemini/config/skills' 'home .gemini/antigravity-cli/skills' 'home .gemini/skills' ;;" \
     "    gemini) printf '%s\\n' 'home .gemini/config/skills' ;;" \
-    "gemini/antigravity-cli/skills is walked"
+    "workflows: ~/.gemini/antigravity-cli/skills is walked"
 shmutant_mut nested-claude-root-dropped \
     "    claude) printf '%s' '.claude/skills' ;;" \
     "    claude) printf '' ;;" \
