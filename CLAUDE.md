@@ -84,9 +84,10 @@ those. The rules below are specific to this repo's code.
      `build-drift` alone, then the rest together, each run to its own verdict — and when one is
      red it stops there, before any suite starts. It names what failed and every step it did not
      dispatch, before the `result` block and in it (`not dispatched (…)`), and that block counts
-     only what ran. **`--collect-all`** runs on regardless, and CI passes it, so a CI log reports
-     every step. `--serial` keeps declaration order and never stops early. The load-sensitive lane
-     now runs after the static tier, still with nothing beside it.
+     only what ran. **`--collect-all`** runs every selected step regardless, and CI passes it, so a
+     CI log reports every step its run selected. `--serial` keeps declaration order and never
+     stops early. The load-sensitive lane now runs after the static tier, still with nothing
+     beside it.
    - **Mutation harnesses run locally only on request** (#599, D147) — a plain run HOLDS every
      `*-mutation` step back, named before the run and in the `result` block (`held (not requested;
      …)`), as CI's per-PR jobs do. `--mutation` lifts the hold-back and applies the gate below;

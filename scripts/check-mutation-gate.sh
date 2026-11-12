@@ -1110,7 +1110,8 @@ eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls sel
 eq "$(printf '%s\n' "$recv" | sed -n 2p | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
    "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
    "the macOS suite step HANDS selfcheck exactly the registry's *-mutation steps to skip"
-# …and runs collect-all (#630, D156): a local run ends at a red static step, CI reports every step.
+# …and runs collect-all (#630, D156): a local run ends at a red static step, CI reports every step
+# it selected.
 eq "$(printf '%s\n' "$recv" | sed -n 3p)" "--collect-all" \
    "the macOS suite step runs selfcheck with --collect-all, so a red lint does not hide the suites"
 grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \

@@ -1532,7 +1532,7 @@ jobs:
       # skipping nothing. `check-mutation-gate.sh` pins this line.
       #
       # `--collect-all` (#630, D156): a local run ends at a red static step, before the suites
-      # start. CI does not — a push costs a whole job, so its log reports every step in one run.
+      # start. CI does not — a push costs a whole job, so its log reports every step it selected in one run.
       # It follows `--skip "$skip"`, whose position `check-mutation-gate.sh` pins.
       #
       # `pipefail` is load-bearing: without it this step reports tee's cheerful 0.

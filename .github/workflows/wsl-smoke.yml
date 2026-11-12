@@ -277,8 +277,8 @@ jobs:
         # needs nothing root provides.
         run: wsl -d Ubuntu-26.04 --user adb --cd /home/adb/ai-dev-baseline -- bash install.sh --agent claude --agent codex --agent gemini
 
-      # `--collect-all` (#630, D156): CI reports every step, where a local run ends at a red
-      # static step. This job is weekly, so a second run to learn the rest is a week away.
+      # `--collect-all` (#630, D156): CI reports every step it selected, where a local run ends at
+      # a red static step. This job is weekly, so a second run to learn the rest is a week away.
       - name: The full offline suite, inside WSL
         run: wsl -d Ubuntu-26.04 --user adb --cd /home/adb/ai-dev-baseline -- bash scripts/selfcheck.sh --collect-all
 

@@ -22,8 +22,8 @@
 #
 # IN TWO TIERS (#630, D156): the static tier — the steps that lint the tracked tree — runs first,
 # and a red one ends a plain run before any suite starts, naming the steps it did not dispatch.
-# `--collect-all` runs on regardless, and CI passes it. See "the static tier" and "the dispatch
-# plan" below.
+# `--collect-all` runs every selected step regardless, and CI passes it. See "the static tier" and
+# "the dispatch plan" below.
 #
 # WHAT A GREEN HERE DOES NOT COVER — three things, stated so the promise is the true one (#257):
 #
@@ -1045,7 +1045,7 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
   --collect-all Run every selected step even when a static step is red. Without it a run takes
                 the static tier first — the steps that lint the tracked tree — and when one of
                 them fails it ends there, naming what failed and the steps it did not dispatch
-                (#630). CI passes this flag, so a CI log reports every step.
+                (#630). CI passes this flag, so a CI log reports every step its run selected.
   --jobs N      Cap concurrency at N (default: min(cpu, 8)). --jobs 1 still buffers;
                 --serial is the mode that does not.
   --only a,b    Run only the named steps (still honouring the serial prologue). An unknown

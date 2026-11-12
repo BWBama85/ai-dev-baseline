@@ -118,10 +118,11 @@ only by a release it upgrades to. These entries are the notes for both.
   (`shellcheck`, `build-drift`, `tmp-paths`, `fact-drift` and eight more, `static` in the new sixth
   field of `--list`). When one of them is red the run stops before any suite starts, names the
   step and every step it did not dispatch, and counts only what ran. `--collect-all` runs every
-  step regardless, and CI passes it on the macOS and WSL legs, so a CI log still reports the whole
-  registry. `--serial` is unchanged. The load-sensitive lane now runs after the static tier. No
-  deadline is enforced on the tier; it took 1m26s on the maintainer's machine under load, where
-  the run that prompted this took 25m47s to report one lint. The
+  step the run selected despite a red static one, and CI passes it on the macOS and WSL legs, so
+  a CI log still reports every step that run selected. `--serial` is unchanged. The
+  load-sensitive lane now runs after the static tier. No deadline is enforced on the tier; it
+  took 1m26s on the maintainer's machine under load, where the run that prompted this took
+  25m47s to report one lint. The
   turn-end gate also runs seven more lints: `tmp-paths` over the changed files (a new
   `check-tmp-paths.sh --files` mode), `workflow-shell`, `claims` over the committed range,
   `bash-floor`, `workflow-map`, `skill-frontmatter` and `shmutant-pin`. `injection` is not among

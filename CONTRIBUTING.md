@@ -111,8 +111,9 @@ tracked tree — `shellcheck`, `build-drift`, `tmp-paths`, `fact-drift` and the 
 `--list` marks `static` in its sixth field — are dispatched before any suite, and each runs to its
 own verdict. When one of them is red the run stops there: it names the step, names every step it
 did not dispatch, and its `result` block counts only what ran. A lint finding is reported once
-the tier has run, not after the whole run (D156 has the measured times; nothing bounds the tier). `--collect-all` runs every step regardless; CI passes it, so a
-CI log always reports the whole registry. `--serial` never stops early.
+the tier has run, not after the whole run (D156 has the measured times; nothing bounds the tier).
+`--collect-all` runs every step the run selected despite a red static one; CI passes it, so a CI
+log reports every step its run selected. `--serial` never stops early.
 
 Two things to know when a run goes red. **`bash scripts/selfcheck.sh --serial`** re-runs every selected step
 sequentially, in the order listed below, with output streaming live — that is the mode for
