@@ -423,7 +423,9 @@ be as narrow as the words before its `*`:
 
 - **`git push`, in any form.** A prefix rule cannot tell `git push origin HEAD` from
   `git push --force` or a push to the default branch. `/implement-issue` pushes from inside
-  `implement-lib.sh open-pr`, a library call that is not allowlisted either.
+  `implement-lib.sh open-pr`, a library call that is not allowlisted either. One allowlisted
+  command can still publish the branch you are on: `gh pr create` (under "What the allowlist gives
+  up").
 - **Anything that discards or deletes**: `git reset --hard`, `git checkout`, `git restore`,
   `git clean`, `git stash`, branch and ref deletion, `rm`.
 - **`git fetch` with anything after it, and `git merge`.** `git fetch --upload-pack=<program>`
@@ -468,6 +470,14 @@ what that text can induce:
 - `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker —
   with `--repo`, to any repository your token can reach. Whatever the session can read, it can
   put there.
+- **`gh pr create` can push.** When the current branch is not fully on a remote it pushes it, and
+  can create a fork to push to; `--dry-run` may still push (gh 2.103.3, `gh pr create --help`). So
+  "no `git push` rule" means no rule approves a push the command line aims — a force, another
+  ref — not that no allowlisted command ever publishes the branch you are on.
+- **`gh workflow run *` starts workflows.** Any workflow with a `workflow_dispatch` trigger, at
+  any `--ref`, with any inputs, and with `--repo` in any repository your token can reach — a
+  deploy or release workflow included. It is allowlisted because the close-out dispatches the
+  mutation harnesses with it; the rule cannot tell that workflow from another.
 - `jq *` reads any file you can read, including one outside the project that would otherwise
   prompt on first read.
 - `agent-init` writes `agents.toml`, a `.gitignore` entry and the state directory in the project it
@@ -487,13 +497,12 @@ itself:
   are handled by the CLI whatever the rules say.
 - **Auto Mode suspends allow rules that grant arbitrary code execution.** The vendor names
   `Bash(*)`, wildcarded interpreters such as `Bash(python *)`, and package-manager run commands.
-  No shipped rule has that shape. `autoMode.classifyAllShell` (CLI v2.1.193) suspends every shell
-  allow rule.
+  No shipped rule has that shape. `autoMode.classifyAllShell` suspends every shell allow rule.
 - **`permissions.defaultMode` is never written.** It is yours. In `default` every unlisted command
   prompts; `dontAsk` refuses instead; `acceptEdits` prompts for an unlisted Bash command the
   sandbox does not cover; `auto` sends it to the classifier; in `plan` it depends on the session.
-  Since CLI v2.1.283 `auto` is the built-in starting mode of an interactive terminal session when
-  the key is unset; `claude -p` and SDK runs start in default mode.
+  `auto` is the built-in starting mode of an interactive terminal session when the key is unset;
+  `claude -p` and SDK runs start in default mode.
 
 Vendor sources, read 2026-11-11: <https://code.claude.com/docs/en/permissions> (rule syntax,
 compound commands, wrappers, precedence), <https://code.claude.com/docs/en/permission-modes> (the
@@ -524,9 +533,10 @@ An entry that is gone is read as removed by you, whatever removed it. If you res
 `~/.claude/.adb-permissions-owned` and re-run `./install.sh`: with no record, every missing entry
 is added again, and every entry already there is read as yours.
 
-The rules need CLI **v2.1.0**, the release that added `*` at any position in a Bash rule (vendor
-CHANGELOG, read 2026-11-11). Below it, or when no `claude` binary can be probed, nothing is written
-and the next `baseline update` tries again. `--no-permissions` records an opt-out that
+**Only the current CLI is supported.** The floor is the newest Claude Code release this surface was
+read against — **v2.1.322** now, raised with each release — and nothing older is modelled. Below
+it, or when no `claude` binary can be probed, nothing is written and the next `baseline update`
+tries again; update Claude Code. The audit below evaluates nothing there either (exit 11). `--no-permissions` records an opt-out that
 `baseline update` keeps honouring; it does not take out entries an earlier install added, which
 `./uninstall.sh` does.
 
@@ -542,9 +552,7 @@ directory. `/adopt` runs it. It reads the files such a session loads: the manage
 which is where Claude Code reads the shared file from, not the repository root; and the
 `.claude/settings.local.json` at the repository root — the main checkout's, in a linked worktree.
 The local file is read beside the shared one instead when there is no repository, when the root is
-your home directory, or when the root, its `.git` or its `.claude` is not yours. Before CLI
-v2.1.211 the local file was always the directory's own, so the audit follows the probed CLI
-version, and says it could not tell when a subdirectory is audited and no version can be read. A
+your home directory, or when the root, its `.git` or its `.claude` is not yours. A
 local file an older CLI left in the directory itself is read as well. It takes only the rule lists and mode keys
 out of each file, and writes nothing. Each line is `kind`, `level`, where it
 was found, and what it means:
@@ -594,16 +602,16 @@ How it reads the rules, each from the vendor pages cited above:
 - **The starting mode** is the `defaultMode` of the highest of managed, local, project and user
   settings that sets one, else the built-in default. Two values do not take effect from project or
   local settings: `auto` there falls to the built-in default, not to your user value, and
-  `bypassPermissions` there starts the session in default mode (it took effect before CLI
-  v2.1.257). What a missing entry becomes follows the mode: judged in `auto`, asked in `default`
+  `bypassPermissions` there starts the session in default mode. What a missing entry becomes follows the mode: judged in `auto`, asked in `default`
   and `acceptEdits`, refused in `dontAsk`, and nothing at all in `bypassPermissions`.
-  `permissions.denyInsteadOfPrompting` (CLI v2.1.319) turns what would be asked into a refusal.
+  `permissions.denyInsteadOfPrompting` turns what would be asked into a refusal.
 
 `gate` lines list each gate command the project runs and whether a direct call of it matches an
 allow rule; they never change the exit code, a gate set that could not be detected included. MDM and server-managed settings and a session's
 `--settings`, `--permission-mode` and `--allowedTools` flags are not inspected.
-`baseline permissions match -- '<command>'` names the shipped entry that covers one simple command;
-a compound command is refused (exit 2), since the CLI matches each of its parts separately.
+`baseline permissions match -- '<command>'` names the shipped entry that covers one simple command.
+It reads text, not shell syntax: a command holding `;`, `&`, `|`, a newline or a substitution —
+inside quotes too — is refused (exit 2), since the CLI may match it part by part.
 A git that fails for any reason but "not a repository" leaves the local settings file not evaluated.
 
 ### Run markers are session-owned

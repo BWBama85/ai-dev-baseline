@@ -156,7 +156,7 @@ if [ "$MODE" = mutation ]; then
     '    | ([ ("user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence' \
     'a project defaultMode that narrows the user one must be named'
   shmutant_mut audit-classify-all \
-    '    | (($mode == "auto") and ($cas_where | length) > 0 and $cas_ok == "yes") as $allow_inert   # classify-all' \
+    '    | (($mode == "auto") and ($cas_where | length) > 0) as $allow_inert   # classify-all' \
     '    | false as $allow_inert   # classify-all' \
     'autoMode.classifyAllShell must be reported as suspending the allowlist'
   shmutant_mut audit-bare-command \
@@ -183,10 +183,6 @@ if [ "$MODE" = mutation ]; then
     '    | (if $dp or $mode == "dontAsk" then "blocked" else "prompt" end) as $asked   # asked-level' \
     '    | "prompt" as $asked   # asked-level' \
     'in dontAsk an ask rule is refused, not asked'
-  shmutant_mut audit-bypass-version-fixed \
-    '    if adb_version_ge "$cli" 2.1.257; then bypass_local=ignored; else bypass_local=honoured; fi' \
-    '    bypass_local=ignored' \
-    'a project bypassPermissions takes effect on a CLI before v2.1.257'
   shmutant_mut audit-wrong-type-read-as-absent \
     '           p_shape: (if ($doc | has("permissions") | not) then "absent" elif ($p | type) == "object" then "object" else "bad" end),   # shape-of-permissions' \
     '           p_shape: (if ($doc | has("permissions") | not) then "absent" elif ($p | type) == "object" then "object" else "absent" end),   # shape-of-permissions' \
@@ -200,12 +196,12 @@ if [ "$MODE" = mutation ]; then
     '    def rec($k; $l; $w; $t): [$k, $l, $w, $t] | join("\t");   # record-one-line' \
     'a control character in a rule cannot break a record into two'
   shmutant_mut audit-local-auto-falls-to-user \
-    '       elif $top_local and $top.mode == "auto" then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin' \
-    '       elif false then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin' \
-    '…and where the built-in default cannot be established, neither can the mode'
+    '       elif $top_local and $top.mode == "auto" then {mode: "auto", src: $top.where, why: "local-auto"}   # local-auto-builtin' \
+    '       elif false then {mode: "auto", src: $top.where, why: "local-auto"}   # local-auto-builtin' \
+    'a project defaultMode auto is reported as falling to the built-in default'
   shmutant_mut audit-local-bypass-not-manual \
-    '          elif $bypass_local == "ignored" then {mode: "default", src: $top.where, why: "local-bypass"}   # local-bypass-manual' \
-    '          elif $bypass_local == "ignored" then {mode: "auto", src: $top.where, why: "set"}   # local-bypass-manual' \
+    '       elif $top_local and $top.mode == "bypassPermissions" then {mode: "default", src: $top.where, why: "local-bypass"}   # local-bypass-manual' \
+    '       elif $top_local and $top.mode == "bypassPermissions" then {mode: "auto", src: $top.where, why: "set"}   # local-bypass-manual' \
     'a project bypassPermissions starts the session in default mode'
   shmutant_mut audit-plan-judged \
     '    | ((["auto", "acceptEdits", "bypassPermissions", "default", "dontAsk"] | any(.[]; . == $mode))' \
@@ -303,14 +299,6 @@ if [ "$MODE" = mutation ]; then
     '    rm -f -- "$settings" 2>/dev/null && ln -s -- "$_ADB_PERM_LINK" "$settings" 2>/dev/null   # link-operand' \
     '    rm -f -- "$settings" 2>/dev/null && ln -s "$_ADB_PERM_LINK" "$settings" 2>/dev/null   # link-operand' \
     'a rollback restores a symlink whose target begins with a dash'
-  shmutant_mut audit-local-location-ignores-version \
-    '        elif adb_version_ge "$cli" 2.1.211; then' \
-    '        elif true; then' \
-    'on a CLI before v2.1.211 the repository root'"'"'s local settings are not the ones read'
-  shmutant_mut audit-local-location-guessed \
-    '        elif [ -z "$cli" ]; then   # local-location-by-version' \
-    '        elif false; then   # local-location-by-version' \
-    'with no readable CLI version, which local file a subdirectory session reads is NOT EVALUATED'
   shmutant_mut audit-git-path-truncated \
     '    out="${out%x}"; out="${out%$'"'"'\n'"'"'}"   # git-path-exact' \
     '    out="${out%x}"; while [ "${out%$'"'"'\n'"'"'}" != "$out" ]; do out="${out%$'"'"'\n'"'"'}"; done   # git-path-exact' \
@@ -331,14 +319,14 @@ if [ "$MODE" = mutation ]; then
     '        *) local_file=""; local_unresolved=true ;;   # git-failure-not-absence' \
     '        *) ;;   # git-failure-not-absence' \
     'a git that fails leaves the local settings file NOT EVALUATED, never read as no repository'
-  shmutant_mut audit-classify-floor-ignored \
-    '    if adb_version_ge "$cli" 2.1.193; then cas_ok=yes; else cas_ok=no; fi   # classify-floor' \
-    '    cas_ok=yes   # classify-floor' \
-    'autoMode.classifyAllShell is not applied on a CLI that predates it'
-  shmutant_mut audit-classify-unprobed-definite \
-    '             else rec("note"; "unevaluated"; ($cas_where | join(", ")); "autoMode.classifyAllShell is set, and whether it takes effect depends on the CLI version, which could not be read") end)   # classify-version' \
-    '             else rec("note"; "info"; ($cas_where | join(", ")); "autoMode.classifyAllShell is set, and whether it takes effect depends on the CLI version, which could not be read") end)   # classify-version' \
-    'autoMode.classifyAllShell is NOT EVALUATED when the CLI version cannot be read'
+  shmutant_mut audit-old-cli-evaluated \
+    '  if [ -z "$cli" ] || ! adb_version_ge "$cli" "$floor"; then   # audit-cli-current' \
+    '  if false; then   # audit-cli-current' \
+    'an audit on a CLI older than the floor evaluates nothing'
+  shmutant_mut match-takes-more-than-one-command \
+    '      [ "$#" -eq 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }   # match-one-argument' \
+    '      [ "$#" -ge 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }   # match-one-argument' \
+    'match takes exactly one command'
   shmutant_mut match-answers-for-a-compound \
     '      [ "$_adb_perm_c" -ne 1 ] || {   # match-one-command' \
     '      true || {   # match-one-command' \
@@ -389,7 +377,10 @@ fi
 # ------------------------------------------------------------------------------------------------
 STUB="$work/bin"; mkdir -p "$STUB"
 stub() { printf '#!/bin/sh\nprintf "%%s\\n" "%s"\n' "$1" > "$STUB/claude"; chmod +x "$STUB/claude"; }
-stub "2.1.300 (Claude Code)"
+# The CLI the fixtures run: the floor itself, and one release either side of it.
+FLOOR="$( . "$PL"; adb_permissions_floor )"
+BELOW="${FLOOR%.*}.$(( ${FLOOR##*.} - 1 ))"; ABOVE="${FLOOR%.*}.$(( ${FLOOR##*.} + 1 ))"
+stub "$FLOOR (Claude Code)"
 
 mkhome() {   # mkhome <name> [settings-json] -> the home path
   local h="$work/$1"
@@ -422,7 +413,7 @@ NSHIP="$(printf '%s' "$SHIP" | jq 'length')"
 
 # ====================================== 1. the payload ===========================================
 [ "$NSHIP" -gt 0 ] && ok || bad "the shipped payload must parse as a non-empty allowlist"
-eq "$( . "$PL"; adb_permissions_floor )" "2.1.0" "the floor is the release that added wildcard Bash rules"
+case "$FLOOR" in *[!0-9.]*|.*|*.|*..*|"") bad "the floor is one CLI release, as dotted numbers (got '$FLOOR')" ;; *.*.*) ok ;; *) bad "the floor names a whole release (got '$FLOOR')" ;; esac
 
 # Every entry, pinned by name: removing one the workflows spell, or adding one, is a change this
 # list has to be edited to allow.
@@ -504,6 +495,8 @@ out="$(bash "$PL" match --repo "$ROOT" -- 'git add -A')"; eq "$out" 'Bash(git ad
 out="$(bash "$PL" match --repo "$ROOT" -- 'git fetch origin')"; eq "$out" 'Bash(git fetch origin)' "an exact entry covers exactly its command"
 out="$(bash "$PL" match --repo "$ROOT" -- 'gh pr view')"; eq "$out" 'Bash(gh pr view *)' "a trailing ' *' also matches the bare command"
 bash "$PL" match --repo "$ROOT" -- 'jq . x; rm -rf build' >/dev/null 2>&1; eq "$?" "2" "match refuses a compound command instead of answering for its first part"
+bash "$PL" match --repo "$ROOT" -- 'jq . <(rm -rf build)' >/dev/null 2>&1; eq "$?" "2" "match refuses a process substitution too"
+bash "$PL" match --repo "$ROOT" -- 'git add -A' 'rm -rf build' >/dev/null 2>&1; eq "$?" "2" "match takes exactly one command"
 
 # The payload reader refuses anything but {permissions:{allow:[…]}}.
 badpayload() {   # badpayload <json> <label>
@@ -633,7 +626,7 @@ eq "$(allow "$h")" '["Bash(ps:*)"]' "uninstall after an opt-out still removes wh
 
 # The version probe: below the floor and unprobeable both write nothing and say why.
 h="$(mkhome below '{"permissions":{"allow":[]}}')"
-stub "2.0.9 (Claude Code)"
+stub "$BELOW (Claude Code)"
 out="$(apply "$R3" "$h")"; yes $? "a below-floor skip is not a failure"
 eq "$(allow "$h")" '[]' "below the floor no allow entry is written"
 eq "$(disp "$h")" skipped-below-floor "a below-floor skip is recorded as one"
@@ -642,7 +635,7 @@ h="$(mkhome unprobeable '{"permissions":{"allow":[]}}')"
 apply "$R3" "$h" >/dev/null
 eq "$(allow "$h")" '[]' "an unprobeable CLI writes no allow entry"
 eq "$(disp "$h")" skipped-unprobeable "an unprobeable skip is recorded as one"
-stub "2.1.300 (Claude Code)"
+stub "$FLOOR (Claude Code)"
 apply "$R3" "$h" >/dev/null
 eq "$(allow "$h" | jq 'length')" "3" "a skip is retried once the CLI clears the floor"
 
@@ -856,9 +849,9 @@ repay '["Bash(a *)","Bash(d *)"]'
 pending "$RP" "$h"; eq "$?" "0" "a refusal is retried when the payload changes"
 repay "$E3"
 h="$(mkhome pend-below '{"permissions":{"allow":[]}}')"
-stub "2.0.9 (Claude Code)"; apply "$R3" "$h" >/dev/null
+stub "$BELOW (Claude Code)"; apply "$R3" "$h" >/dev/null
 pending "$R3" "$h"; eq "$?" "1" "a below-floor skip is not pending while the CLI is still below"
-stub "2.1.300 (Claude Code)"
+stub "$FLOOR (Claude Code)"
 pending "$R3" "$h"; eq "$?" "0" "a below-floor skip is pending once the CLI clears the floor"
 h="$(mkhome pend-foreign '{"permissions":{"allow":[]}}')"
 apply "$R3" "$h" >/dev/null
@@ -888,7 +881,7 @@ heal "$RP" "$h" "$a0" "$r0"; eq "$HRC" "0" "a heal that added entries reports a 
 has "$HOUT" "was updated" "…and says the list was updated"
 a1="$(sig "$h")"; r1="$(rsig "$h")"
 heal "$RP" "$h" "$a1" "$r1"; eq "$HRC $HOUT" "1 " "a heal that touched nothing says nothing"
-stub "2.1.301 (Claude Code)"; apply "$RP" "$h" >/dev/null; stub "2.1.300 (Claude Code)"
+stub "$ABOVE (Claude Code)"; apply "$RP" "$h" >/dev/null; stub "$FLOOR (Claude Code)"
 heal "$RP" "$h" "$a1" "$r1"; eq "$HRC" "1" "a heal that only rewrote the record did not change the allow list"
 has "$HOUT" "refreshed the command-allowlist record" "…and is reported as a refreshed record, not a repair"
 h="$(mkhome heal-blocked '{"permissions":"x"}')"
@@ -912,6 +905,20 @@ h="$(mkhome a-clean "$(clean_settings "$E3")")"
 audit "$R3" "$h" ""
 eq "$ARC" "0" "a home holding every shipped entry in auto mode audits clean"
 has "$AOUT" "$(printf 'assume\tinfo\t-\tauto mode is available to the session')" "an auto verdict states the availability it assumes"
+# One release line: a CLI older than the floor, or one that cannot be probed, is not audited at all.
+NOTHING="11 unevaluated entries=0/0 scopes=0/0 rules=0 findings=0 unevaluated=1"
+stub "$BELOW (Claude Code)"
+audit "$R3" "$h" ""
+eq "$ARC $(summary)" "$NOTHING" "an audit on a CLI older than the floor evaluates nothing"
+has "$AOUT" "v$BELOW is older than v$FLOOR" "…and names both releases"
+stub "not a version"
+audit "$R3" "$h" ""
+eq "$ARC $(summary)" "$NOTHING" "an audit that cannot read the CLI version evaluates nothing"
+has "$AOUT" "its version could not be read" "…and says that is why"
+stub "$ABOVE (Claude Code)"
+audit "$R3" "$h" ""
+eq "$ARC" "0" "a CLI newer than the floor is audited as the floor is"
+stub "$FLOOR (Claude Code)"
 has "$AOUT" "$(printf 'assume\tinfo\t-\teach settings file read here is one the CLI loads')" "a verdict states that it does not check the settings schema"
 eq "$(summary)" "clean entries=3/3 scopes=2/2 rules=0 findings=0 unevaluated=0" "a clean audit reports its coverage"
 audit "$ROOT" "$(mkhome a-clean-real "$(clean_settings "$SHIP")")" ""
@@ -1039,18 +1046,10 @@ miss x-typo Auto;                eq "$(level_of entry)" "unevaluated " "under an
 hd="$(mkhome x-ask-dontask "$(clean_settings "$E3" dontAsk | jq -c '.permissions.ask = ["Bash(b *)"]')")"
 audit "$R3" "$hd" ""
 eq "$(level_of rule)" "blocked " "in dontAsk an ask rule is refused, not asked"
-stub "2.1.320 (Claude Code)"
 miss x-dp default '.permissions.denyInsteadOfPrompting = true'
 eq "$(level_of entry)" "blocked " "with denyInsteadOfPrompting a missing entry is refused, not asked"
-stub "2.1.300 (Claude Code)"
-miss x-dp-old default '.permissions.denyInsteadOfPrompting = true'
-eq "$(level_of entry)" "prompt " "denyInsteadOfPrompting is not applied on a CLI that predates it"
-has "$AOUT" "needs CLI v2.1.319" "…and the audit says why"
 moded m-typo    '"Auto"';    eq "$ARC $(level_of mode)" "11 unevaluated " "an undocumented defaultMode is NOT EVALUATED"
-moded m-unset   null;        eq "$ARC $(level_of mode)" "0 ok " "no defaultMode on a CLI with the built-in auto default is auto"
-stub "2.1.200 (Claude Code)"
-moded m-unset-old null;      eq "$ARC $(level_of mode)" "11 unevaluated " "no defaultMode on an older CLI is NOT EVALUATED"
-stub "2.1.300 (Claude Code)"
+moded m-unset   null;        eq "$ARC $(level_of mode)" "0 ok " "no defaultMode is the built-in default, auto"
 
 # Project scopes: narrowing is named with its file; an unhonoured `auto` is not a source.
 proj() {   # proj <name> [shared-json] [local-json] -> a project root
@@ -1075,17 +1074,7 @@ hud="$(mkhome a-user-default "$(clean_settings "$E3" default)")"
 audit "$R3" "$hud" "$(proj p-autolocal '' '{"permissions":{"defaultMode":"auto"}}')"
 eq "$ARC" "0" "a project defaultMode auto falls to the built-in default, not to the user mode"
 has "$AOUT" "$(printf 'mode\tok\t.claude/settings.local.json')" "…and the audit names the file that set it"
-stub "2.1.200 (Claude Code)"
-audit "$R3" "$hud" "$(proj p-autolocal-old '' '{"permissions":{"defaultMode":"auto"}}')"
-eq "$ARC" "11" "…and where the built-in default cannot be established, neither can the mode"
-stub "2.1.250 (Claude Code)"
-hb="$(mkhome a-proj-bypass-old "$(clean_settings '["Bash(a *)"]' default)")"
-audit "$R3" "$hb" "$(proj p-bypass-old '{"permissions":{"defaultMode":"bypassPermissions"}}')"
-has "$AOUT" "$(printf 'mode\tinfo\t.claude/settings.json\tbypassPermissions')" "a project bypassPermissions takes effect on a CLI before v2.1.257"
-stub "not a version"
-audit "$R3" "$hb" "$(proj p-bypass-unknown '{"permissions":{"defaultMode":"bypassPermissions"}}')"
-eq "$ARC" "11" "a project bypassPermissions is NOT EVALUATED when the CLI version cannot be read"
-stub "2.1.300 (Claude Code)"
+has "$AOUT" "does not take effect from project or local settings, so the built-in default applies" "a project defaultMode auto is reported as falling to the built-in default"
 audit "$R3" "$h" "$(proj p-noauto '{"disableAutoMode":"disable"}')"
 eq "$ARC $(level_of mode)" "10 prompt " "disableAutoMode in any scope turns an auto start into a prompting one"
 audit "$R3" "$h" "$(proj p-allow '{"permissions":{"allow":["Bash(z *)"]}}')"
@@ -1112,16 +1101,6 @@ h3="$(mkhome a-classify "$(clean_settings "$E3" | jq -c '.autoMode = {classifyAl
 audit "$R3" "$h3" ""
 eq "$ARC" "10" "autoMode.classifyAllShell must be reported as suspending the allowlist"
 has "$(summary)" "entries=0/3" "…and no entry counts as covered while it is on"
-# The setting arrived in v2.1.193: an older CLI ignores it, and an unread version leaves it undecided.
-stub "2.1.191 (Claude Code)"
-audit "$R3" "$h3" ""
-eq "$ARC" "0" "autoMode.classifyAllShell is not applied on a CLI that predates it"
-has "$AOUT" "needs CLI v2.1.193" "…and the audit says which release it needs"
-stub "not a version"
-audit "$R3" "$h3" ""
-eq "$ARC $(printf '%s\n' "$AOUT" | grep -c "$(printf 'note\tunevaluated\t~/.claude/settings.json\tautoMode.classifyAllShell is set')")" "11 1" \
-  "autoMode.classifyAllShell is NOT EVALUATED when the CLI version cannot be read"
-stub "2.1.300 (Claude Code)"
 mkdir -p "$work/mdir/managed-settings.d"; : > "$work/mdir/managed-settings.d/10-x.json"
 audit "$R3" "$h" "" "$work/mdir/managed-settings.json"
 eq "$ARC" "11" "a managed-settings.d the audit does not read is NOT EVALUATED"
@@ -1167,15 +1146,6 @@ if command -v git >/dev/null 2>&1; then
   printf '%s\n' '{"permissions":{"ask":["Bash(c *)"]}}' > "$sr/.claude/settings.local.json"
   audit "$R3" "$hsd" "$sr/sub"
   has "$AOUT" "$(printf "rule\tprompt\tthe repository root's .claude/settings.local.json")" "the repository root's local settings are read for a session started in a subdirectory"
-  # Before v2.1.211 the local file was the session directory's own, and the root's was not read.
-  stub "2.1.200 (Claude Code)"
-  haccept="$(mkhome a-session-old "$(clean_settings "$E3" acceptEdits)")"
-  audit "$R3" "$haccept" "$sr/sub"
-  eq "$ARC" "0" "on a CLI before v2.1.211 the repository root's local settings are not the ones read"
-  stub "not a version"
-  audit "$R3" "$haccept" "$sr/sub"
-  eq "$ARC" "11" "with no readable CLI version, which local file a subdirectory session reads is NOT EVALUATED"
-  stub "2.1.300 (Claude Code)"
   rm -f "$sr/.claude/settings.local.json"
   printf '%s\n' '{"permissions":{"ask":["Bash(b *)"]}}' > "$sr/sub/.claude/settings.local.json"
   audit "$R3" "$hsd" "$sr/sub"
@@ -1285,7 +1255,7 @@ hg="$(mkhome a-gates "$(clean_settings '["Bash(a *)","Bash(b *)","Bash(c *)","Ba
 audit "$R3" "$hg" "$p"
 eq "$ARC" "0" "gate records never change a clean verdict"
 has "$AOUT" "$(printf 'gate\tinfo\ttest\tnpm test — run as written it matches the allow rule Bash(npm test)')" "a gate is reported with the allow rule a direct call matches"
-has "$AOUT" "a compound command, matched part by part (not evaluated)" "a compound gate command is not judged as one command"
+has "$AOUT" "holds a shell operator or substitution, so the CLI may match it part by part (not evaluated)" "a compound gate command is not judged as one command"
 audit "$R3" "$(mkhome a-gates-suspended "$(clean_settings '["Bash(a *)","Bash(b *)","Bash(c *)","Bash(npm test)"]' | jq -c '.autoMode = {classifyAllShell: true}')")" "$p"
 has "$AOUT" "matches the allow rule Bash(npm test), which is suspended while autoMode.classifyAllShell is on" "a gate record says when the rule it matches is suspended"
 # The bare-command form belongs to a pattern whose ONLY wildcard is the trailing one.

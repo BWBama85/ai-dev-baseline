@@ -28,7 +28,7 @@ only by a release it upgrades to. These entries are the notes for both.
   managed, user, project and local settings and reports a shipped entry in no allow list, a `deny`
   or `ask` rule that can match one, and a starting mode that prompts; it exits 0 clean, 10 with
   findings, 11 when a scope could not be read. `baseline permissions missing` and `match` print
-  the entries your settings lack and the entry that covers a command. Needs CLI v2.1.0. What the
+  the entries your settings lack and the entry that covers a command. Only the current CLI is supported: the floor is v2.1.322 and rises with each release. What the
   allowlist gives up and what still prompts are in `docs/installation.md`. The release-pinned
   install does not write it.
 - **A project's facts have a home, and `/adopt` judges its rules and nested docs instead of

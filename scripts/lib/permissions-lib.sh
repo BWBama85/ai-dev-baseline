@@ -30,7 +30,9 @@
 # reports `auto`, that each file it parsed is one the CLI loads (it does not check the settings
 # schema), and that the workspace is trusted where project rules count. A rule about another tool
 # is listed and not judged, and the sandbox is not modelled. A scope it could not read, a rule or a mode it cannot model, or an audit
-# that evaluated nothing, is NOT EVALUATED (11) and never clean.
+# that evaluated nothing, is NOT EVALUATED (11) and never clean. It models the CLI at
+# adb_permissions_floor and later, and nothing older: on an older CLI, or one whose version it
+# cannot read, it evaluates nothing.
 #
 # Usage (executed):
 #   permissions-lib.sh entries [--repo <clone>]
@@ -38,8 +40,9 @@
 #   permissions-lib.sh missing [--repo <clone>] [--home <home>]
 #       shipped entries absent from <home>/.claude/settings.json, one per line (0, maybe none · 11 unreadable)
 #   permissions-lib.sh match [--repo <clone>] -- <command>
-#       the shipped entries that match ONE simple command as written (0 some · 1 none · 2 a
-#       compound command, which the CLI matches part by part and this does not)
+#       the shipped entries that match ONE simple command as written (0 some · 1 none · 2 the
+#       text holds a shell operator or substitution, quoted or not: the CLI may match it part by
+#       part, and this does not parse shell)
 #   permissions-lib.sh audit [--repo <clone>] [--home <home>] [--project <root>] [--managed <file>]
 #       stdout: `<kind>\t<level>\t<where>\t<text>` records, then one `summary` record
 #       kind   scope | mode | entry | rule | gate | note | assume
@@ -80,10 +83,10 @@ adb_permissions_payload() { printf '%s/agents/claude/settings.permissions.json' 
 # Usage: adb_permissions_receipt [home]
 adb_permissions_receipt() { printf '%s/.claude/.adb-permissions-owned' "${1:-${HOME:-/root}}"; }
 
-# The CLI floor for the entries as shipped: every one is a `Bash(<prefix> *)` or exact-command
-# rule, and `*` at any position in a Bash rule arrived in v2.1.0 (vendor CHANGELOG, "## 2.1.0",
-# read 2026-11-11). `permissions.allow` itself states no floor.
-adb_permissions_floor() { printf '2.1.0'; }
+# The CLI floor: the NEWEST Claude Code release this surface was read against, and the only release
+# line it supports (D155). Below it nothing is installed and nothing is audited. Bump it with every
+# Claude release `/new-release` reviews here.
+adb_permissions_floor() { printf '2.1.322'; }
 
 # The shipped entries as ONE compact JSON array. The payload must be exactly
 # `{"permissions":{"allow":[…]}}`: a second key would be a setting this surface never writes.
@@ -457,8 +460,8 @@ adb_permissions_apply() {
     _adb_perm_record_skip skipped-below-floor "$version" "$floor" - "$receipt" "$repo" || {
       adb_info "  WARN   the allowlist was skipped (claude v$version is below v$floor) and the skip could NOT be recorded."
       return 1; }
-    adb_info "  allowlist  SKIPPED — claude v$version is below the v$floor floor for wildcard Bash rules."
-    adb_info "             Upgrade the CLI; the next \`baseline update\` applies them."
+    adb_info "  allowlist  SKIPPED — claude v$version is older than v$floor, and only the current CLI is supported."
+    adb_info "             Update Claude Code; the next \`baseline update\` applies them."
     return 0
   fi
 
@@ -818,8 +821,9 @@ def subsumes($a; $e):
              or (($as | endswith(" *")) and ($as[:-2] | contains("*") | not)
                  and (($es | if endswith(" *") then .[:-2] else . end) as $q
                       | ($q | contains("*") | not) and ($q == $as[:-2] or ($q | startswith($as[:-1])))))));
-# More than one simple command: the CLI matches each part by itself, so no single rule answers for it.
-def compound: test("[;&|\n]|\\$\\(|`");
+# MAY be more than one simple command: an operator or a substitution anywhere in the text. This reads
+# text, not shell syntax, so one inside quotes counts too — it declines to answer; it does not guess.
+def compound: test("[;&|\n]|\\$\\(|`|[<>]\\(");
 def suspended:
   aspec as $s
   | $s != null and ($s | contains("*"))
@@ -906,6 +910,12 @@ adb_permissions_audit() (
   if ! adb_permissions_entries "$(adb_permissions_payload "$repo")" > "$d/ship.json"; then
     _adb_perm_unevaluated "$(adb_permissions_payload "$repo")" "the shipped allowlist could not be read, so no entry was evaluated"; return 11
   fi
+  # ONE RELEASE LINE (D155): what follows states what the CLI at the floor and later does.
+  floor="$(adb_permissions_floor)"
+  cli="$(adb_claude_cli_version 2>/dev/null)" || cli=""
+  if [ -z "$cli" ] || ! adb_version_ge "$cli" "$floor"; then   # audit-cli-current
+    _adb_perm_unevaluated claude "${cli:+v$cli is older than v$floor: }${cli:-its version could not be read: }nothing was evaluated — this audit models claude v$floor and later, so update Claude Code"; return 11
+  fi
 
   # WHICH FILES A SESSION STARTED IN <project> LOADS (vendor settings page, "Where Claude Code keeps
   # the local file in a git repository", read 2026-11-11):
@@ -915,11 +925,8 @@ adb_permissions_audit() (
   #           root is the home directory, or when the root, its `.git` or its `.claude` is not
   #           the user's own
   #   also    a local file an older CLI left in the session's directory: its rules apply too
-  #   v2.1.211 is where the local file moved to the repository root; before it, the session
-  #   directory's own. A CLI that cannot be probed leaves that undecided when the two differ.
   local_file=""; local_where=".claude/settings.local.json"; local_unresolved=false; gates_state=none
   local2_file=""; gates_root="$project"
-  cli="$(adb_claude_cli_version 2>/dev/null)" || cli=""
   printf '%s\n' '{"state":"none"}' > "$d/proj.json"; cp "$d/proj.json" "$d/local.json"; cp "$d/proj.json" "$d/local2.json"
   printf '%s\n' '[]' > "$d/gates.json"
   # One line of git output as the path it names: the sentinel keeps a newline that ends a directory
@@ -962,14 +969,10 @@ adb_permissions_audit() (
           local_file="$sess_local"
         elif [ "$root/.claude/settings.local.json" -ef "$sess_local" ] || [ "$root/.claude/settings.local.json" = "$sess_local" ]; then
           local_file="$sess_local"
-        elif [ -z "$cli" ]; then   # local-location-by-version
-          local_file=""; local_unresolved=true
-        elif adb_version_ge "$cli" 2.1.211; then
-          local_file="$root/.claude/settings.local.json"
+        else
+          local_file="$root/.claude/settings.local.json"   # local-at-root
           local_where="the repository root's .claude/settings.local.json"
           local2_file="$sess_local"   # legacy-local
-        else
-          local_file="$sess_local"
         fi
       else
         local_file=""
@@ -1002,25 +1005,11 @@ adb_permissions_audit() (
     # A directory that cannot be listed is not an empty one.
     if ! mgd_ls="$(ls -A "$(dirname "$managed")/managed-settings.d" 2>/dev/null)" || [ -n "$mgd_ls" ]; then mgd_dir=true; fi
   fi
-  # VERSION-SENSITIVE VENDOR RULES (permission-modes and settings-reference pages, read 2026-11-11):
-  #   v2.1.283  `auto` is the built-in starting mode of an interactive session on every plan;
-  #             before it the built-in start depends on the plan, which this cannot see
-  #   v2.1.257  `bypassPermissions` stops taking effect from project and local settings
-  #   v2.1.319  `permissions.denyInsteadOfPrompting` exists
-  #   v2.1.193  `autoMode.classifyAllShell` exists (vendor CHANGELOG, "## 2.1.193")
-  auto_default=false; bypass_local=unknown; dp_ok=unknown; cas_ok=unknown
-  if [ -n "$cli" ]; then
-    if adb_version_ge "$cli" 2.1.283; then auto_default=true; fi
-    if adb_version_ge "$cli" 2.1.257; then bypass_local=ignored; else bypass_local=honoured; fi
-    if adb_version_ge "$cli" 2.1.319; then dp_ok=yes; else dp_ok=no; fi
-    if adb_version_ge "$cli" 2.1.193; then cas_ok=yes; else cas_ok=no; fi   # classify-floor
-  fi
 
   out="$(jq -n -r --slurpfile ship "$d/ship.json" --slurpfile mgd "$d/mgd.json" --slurpfile user "$d/user.json" \
       --slurpfile proj "$d/proj.json" --slurpfile local "$d/local.json" --slurpfile local2 "$d/local2.json" \
       --slurpfile gates "$d/gates.json" \
-      --arg gates_state "$gates_state" --arg cli "$cli" --argjson auto_default "$auto_default" \
-      --arg bypass_local "$bypass_local" --arg dp_ok "$dp_ok" --arg cas_ok "$cas_ok" --argjson cfg_other "$cfg_other" \
+      --arg gates_state "$gates_state" --arg cli "$cli" --argjson cfg_other "$cfg_other" \
       --argjson mgd_dir "$mgd_dir" --argjson local_unresolved "$local_unresolved" \
       --arg managed "$managed" --arg local_where "$local_where" "$(_adb_perm_jq_defs)"'
     # One record is one line of four fields: a control character in a rule, a path or a gate
@@ -1053,20 +1042,17 @@ adb_permissions_audit() (
     #     that sets one, else the built-in default. Where the root local file and one left in the
     #     session directory both set it, the root value applies. Two values do not take effect from project or
     #     local settings: `auto` falls to the BUILT-IN default (not to the user value), and
-    #     `bypassPermissions` starts the session in default mode — it took effect before v2.1.257.
+    #     `bypassPermissions` starts the session in default mode. `auto` is the built-in default
+    #     of an interactive terminal session.
     | ([ $S[] | select(.no_auto) | .where ]) as $no_auto
     | ([ $S[] | select(.no_bypass) | .where ]) as $no_bypass
     | ([ ("managed", "local", "local2", "project", "user") as $n | $S[] | select(.name == $n and .mode != null) ] | .[0] // null) as $top   # mode-precedence
     | ($top != null and ($top.name == "local" or $top.name == "local2" or $top.name == "project")) as $top_local
-    | (if $auto_default then "auto" else null end) as $builtin
-    | (if $top == null then {mode: $builtin, src: "built-in default", why: "builtin"}
-       elif $top_local and $top.mode == "auto" then {mode: $builtin, src: $top.where, why: "local-auto"}   # local-auto-builtin
-       elif $top_local and $top.mode == "bypassPermissions" then
-         (if $bypass_local == "honoured" then {mode: "bypassPermissions", src: $top.where, why: "set"}
-          elif $bypass_local == "ignored" then {mode: "default", src: $top.where, why: "local-bypass"}   # local-bypass-manual
-          else {mode: null, src: $top.where, why: "local-bypass-unknown"} end)
+    | (if $top == null then {mode: "auto", src: "built-in default", why: "builtin"}
+       elif $top_local and $top.mode == "auto" then {mode: "auto", src: $top.where, why: "local-auto"}   # local-auto-builtin
+       elif $top_local and $top.mode == "bypassPermissions" then {mode: "default", src: $top.where, why: "local-bypass"}   # local-bypass-manual
        else {mode: (if $top.mode == "manual" then "default" else $top.mode end), src: $top.where, why: "set"} end) as $m0
-    | (if ($no_auto | length) > 0 and ($m0.mode == "auto" or ($m0.mode == null and ($m0.why == "builtin" or $m0.why == "local-auto")))
+    | (if ($no_auto | length) > 0 and $m0.mode == "auto"
        then ($m0 | .mode = "default" | .why = "no-auto") else $m0 end) as $m
     | $m.mode as $mode
     # A mode whose effect this audit can state. `plan` is not one: what happens to a command there
@@ -1074,9 +1060,9 @@ adb_permissions_audit() (
     | ((["auto", "acceptEdits", "bypassPermissions", "default", "dontAsk"] | any(.[]; . == $mode))
        and (($mode == "bypassPermissions" and ($no_bypass | length) > 0) | not)) as $mode_known   # mode-known
     | ([ $S[] | select((.name == "managed" or .name == "user") and .classify_all) | .where ]) as $cas_where
-    | (($mode == "auto") and ($cas_where | length) > 0 and $cas_ok == "yes") as $allow_inert   # classify-all
+    | (($mode == "auto") and ($cas_where | length) > 0) as $allow_inert   # classify-all
     | ([ $S[] | select((.name == "managed" or .name == "user") and .deny_prompts) | .where ]) as $dp_where
-    | (($dp_where | length) > 0 and $dp_ok == "yes") as $dp
+    | (($dp_where | length) > 0) as $dp
     # what a would-be prompt becomes
     | (if $dp or $mode == "dontAsk" then "blocked" else "prompt" end) as $asked   # asked-level
     | (if ($mode_known | not) then "unevaluated" elif $mode == "auto" then "classifier"
@@ -1117,18 +1103,14 @@ adb_permissions_audit() (
                  elif (.shape_ok | not) then rec("scope"; "unevaluated"; .where; "`permissions` or one of its allow/deny/ask lists is not the documented shape, so its rules were not evaluated")
                  else rec("scope"; "ok"; .where; "read: \(.allow | length) allow, \(.deny | length) deny, \(.ask | length) ask") end ),
         ( if ($proj[0].state == "none") then rec("scope"; "info"; "-"; "no project: only the managed file and user settings were read") else empty end ),
-        ( if $local_unresolved then rec("scope"; "unevaluated"; ".claude/settings.local.json"; "which local settings file a session here reads could not be established — git could not say whether this directory is in a repository, a linked worktree whose main checkout was not found, or a subdirectory session on a CLI whose version could not be read (the file moved to the repository root in v2.1.211)") else empty end ),
+        ( if $local_unresolved then rec("scope"; "unevaluated"; ".claude/settings.local.json"; "which local settings file a session here reads could not be established — git could not say whether this directory is in a repository, or it is a linked worktree whose main checkout was not found") else empty end ),
         ( if $cfg_other then rec("scope"; "unevaluated"; "CLAUDE_CONFIG_DIR"; "names another configuration root; the user settings a session there reads were not evaluated") else empty end ),
         ( if $mgd_dir then rec("scope"; "unevaluated"; "managed-settings.d"; "holds managed settings fragments this audit does not read") else empty end ),
         ( if $managed_only then rec("note"; "info"; $managed; "allowManagedPermissionRulesOnly is set: allow, deny and ask rules outside managed settings are ignored, the installed allowlist included — only the managed rules were counted") else empty end ),   # managed-only-notice
 
         # mode
         ( if ($mode_known | not) then
-            (if $m.why == "local-bypass-unknown" then
-               rec("mode"; "unevaluated"; $m.src; "defaultMode \"bypassPermissions\" took effect from project and local settings before v2.1.257, and the CLI version could not be read")   # bypass-version
-             elif $mode == null then
-               rec("mode"; "unevaluated"; $m.src; "no defaultMode is in effect and the built-in starting mode could not be established (claude \(if $cli == "" then "was not found" else "v" + $cli + " predates the v2.1.283 built-in auto default" end))")
-             elif $mode == "plan" then
+            (if $mode == "plan" then
                rec("mode"; "unevaluated"; $m.src; "defaultMode \"plan\": whether a planning command is judged, asked or neither depends on whether bypass and auto mode are available to the session, which this audit cannot see")
              elif $mode == "bypassPermissions" then
                rec("mode"; "unevaluated"; $m.src; "defaultMode \"bypassPermissions\" while disableBypassPermissionsMode is set (\($no_bypass | join(", "))): bypass mode cannot be entered, and what the session starts in was not established")
@@ -1151,25 +1133,17 @@ adb_permissions_audit() (
             rec("mode"; $asked;
                 (if $m.why == "no-auto" then ($no_auto | join(", ")) else $m.src end);
                 (if $m.why == "no-auto" then "disableAutoMode turns auto mode off, so sessions start in default mode"
-                 elif $m.why == "local-bypass" then "defaultMode \"bypassPermissions\" does not take effect from project or local settings (v2.1.257 and later), so the session starts in default mode"
+                 elif $m.why == "local-bypass" then "defaultMode \"bypassPermissions\" does not take effect from project or local settings, so the session starts in default mode"
                  else "defaultMode \"\($top.mode)\"" end)
                 + ": every command no allow rule matches \(if $asked == "blocked" then "is refused" else "prompts" end)")
           end ),
-        ( if ($dp_where | length) > 0 then
-            (if $dp_ok == "yes" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting is on: what would prompt is refused instead")
-             elif $dp_ok == "no" then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting needs CLI v2.1.319 and claude v\($cli) ignores it")
-             else rec("note"; "unevaluated"; ($dp_where | join(", ")); "denyInsteadOfPrompting is set, and whether it takes effect depends on the CLI version, which could not be read") end)
-          else empty end ),
+        ( if $dp then rec("note"; "info"; ($dp_where | join(", ")); "denyInsteadOfPrompting is on: what would prompt is refused instead") else empty end ),
         # WHAT THE VERDICT RESTS ON AND CANNOT SEE, said rather than left implied
         ( if $mode == "auto" then rec("assume"; "info"; "-"; "auto mode is available to the session (a supported model, not turned off for the account, no HIPAA configuration) — where it is not, the session starts in default mode and every unlisted command prompts") else empty end ),   # assume-auto
         ( if ([ $S[] | select(.state == "read") ] | length) > 0 then rec("assume"; "info"; "-"; "each settings file read here is one the CLI loads: this audit parses JSON as jq does and does not check the settings schema, so a file the CLI rejects at startup (it reports a Settings Error) is counted as if it had loaded") else empty end ),   # assume-loads
         ( [ $R[] | select(.name == "project" or .name == "local" or .name == "local2") | .allow[] ] as $pa
           | if ($pa | length) > 0 then rec("assume"; "info"; "-"; "the workspace is trusted: \($pa | length) allow \(plural($pa | length; "rule comes"; "rules come")) from the settings of this project, which count only once its trust dialog has been accepted (the local file too, when it is tracked or `.claude` is a link)") else empty end ),   # assume-trust
-        ( if $allow_inert then rec("note"; "classifier"; "autoMode.classifyAllShell"; "is on: in auto mode every shell allow rule is suspended, so no shipped entry skips the classifier")
-          elif $mode == "auto" and ($cas_where | length) > 0 then
-            (if $cas_ok == "no" then rec("note"; "info"; ($cas_where | join(", ")); "autoMode.classifyAllShell needs CLI v2.1.193 and claude v\($cli) ignores it")
-             else rec("note"; "unevaluated"; ($cas_where | join(", ")); "autoMode.classifyAllShell is set, and whether it takes effect depends on the CLI version, which could not be read") end)   # classify-version
-          else empty end ),
+        ( if $allow_inert then rec("note"; "classifier"; "autoMode.classifyAllShell"; "is on: in auto mode every shell allow rule is suspended, so no shipped entry skips the classifier") else empty end ),
         ( if ($set_aside | length) > 0 then rec("note"; "info"; "-"; "auto mode sets aside \($set_aside | length) allow \(plural($set_aside | length; "rule"; "rules")) that would run arbitrary code, so \(plural($set_aside | length; "it holds"; "they hold")) no shipped entry: \($set_aside[:3] | join(", "))\(if ($set_aside | length) > 3 then ", …" else "" end)") else empty end ),
 
         # rules: the ones that can match the shipped surface, and the ones this audit cannot model
@@ -1213,7 +1187,7 @@ adb_permissions_audit() (
               | ($g.cmd | compound) as $compound
               | ([ $allow[] | select(aspec as $a | $a != null and ($compound | not) and rmatch($g.cmd; $a)) ] | .[0] // null) as $by
               | rec("gate"; "info"; $g.label;
-                  "\($g.cmd) — run as written it " + (if $compound then "is a compound command, matched part by part (not evaluated)"
+                  "\($g.cmd) — run as written it " + (if $compound then "holds a shell operator or substitution, so the CLI may match it part by part (not evaluated)"
                                                        elif $by != null then "matches the allow rule \($by)\(if $allow_inert then ", which is suspended while autoMode.classifyAllShell is on" else "" end) (deny and ask rules are not checked against it)"
                                                        else "matches no allow rule" end)) )
           end ),
@@ -1292,11 +1266,11 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
       rm -f "$_adb_perm_t"
       [ -z "$_adb_perm_m" ] || printf '%s\n' "$_adb_perm_m" ;;
     match)
-      [ "$#" -ge 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }
+      [ "$#" -eq 1 ] && [ -n "$1" ] || { _adb_perm_usage; exit 2; }   # match-one-argument
       _adb_perm_e="$(_adb_perm_ship)" || exit 11
       jq -n -e --arg cmd "$1" "$(_adb_perm_jq_defs)"'$cmd | compound | not' >/dev/null 2>&1; _adb_perm_c=$?
       [ "$_adb_perm_c" -ne 1 ] || {   # match-one-command
-        printf 'permissions-lib: match takes ONE simple command; the CLI matches a compound command part by part\n' >&2
+        printf 'permissions-lib: match answers for ONE simple command; this one holds a shell operator or substitution (quoted or not), which the CLI may match part by part\n' >&2
         exit 2; }
       [ "$_adb_perm_c" -eq 0 ] || exit 11
       _adb_perm_m="$(jq -n -r --argjson ship "$_adb_perm_e" --arg cmd "$1" "$(_adb_perm_jq_defs)"'
