@@ -18,8 +18,9 @@
 #   ./install.sh --agent claude --no-hooks
 #   ./install.sh --agent claude --skip-hook precommit-gate.sh
 #   ./install.sh --agent claude --no-sandbox
-#   --optout-if-recorded  honour recorded opt-outs — --no-sandbox, and every hook entry removed by
-#                         hand — read under the settings lock; used by bin/baseline
+#   ./install.sh --agent claude --no-permissions
+#   --optout-if-recorded  honour recorded opt-outs — --no-sandbox, --no-permissions, and every hook
+#                         entry removed by hand — read under the settings lock; used by bin/baseline
 #   ./install.sh --pinned --project DIR --version X.Y.Z [--agent claude|codex]...
 #   ./install.sh --pinned --project DIR --artifact FILE --sums FILE
 #
@@ -30,6 +31,7 @@
 #                                   name, e.g. precommit-gate.sh) and remove its entry if wired.
 #                                   --no-hooks wins over it.
 #   --no-sandbox                   don't write the least-privilege sandbox settings (#248)
+#   --no-permissions               don't add the command allowlist to permissions.allow (#288)
 #   --pinned                        release-pinned per-project install; every remaining argument
 #                                   is passed to scripts/lib/pinned-install.sh install
 #   -h, --help
@@ -81,6 +83,9 @@ fi
 # What actually makes this reachable is the bootstrap carve-out on common.sh itself (D30) — that
 # file stays parseable below the floor, permanently. See D31.
 adb_require_bash "$@"
+# The command allowlist (#288): adb_permissions_apply, called from _install_claude_locked.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/permissions-lib.sh"
 
 # WSL checkout preflight (#2). Runs here, in the installer, and NOT in every entry point: it is a
 # property of this CLONE, checked once when the clone is first put to work, rather than a scan
@@ -121,6 +126,7 @@ done
 BACKUP_DIR="$HOME/.claude/backups/ai-dev-baseline-$(date +%Y%m%d-%H%M%S)"
 WIRE_HOOKS=1
 WIRE_SETTINGS=1
+WIRE_PERMISSIONS=1
 # Set by `--optout-if-recorded`: honour a recorded `skipped-optout` and every per-hook opt-out,
 # decided under the settings lock rather than by the caller before this process takes it.
 OPTOUT_IF_RECORDED=0
@@ -149,6 +155,7 @@ EOF
       fi
       SKIP_HOOKS="$SKIP_HOOKS$2"$'\n'; SKIP_EXPLICIT=1; shift 2 ;;
     --no-sandbox) WIRE_SETTINGS=0; shift ;;
+    --no-permissions) WIRE_PERMISSIONS=0; shift ;;
     --optout-if-recorded) OPTOUT_IF_RECORDED=1; shift ;;
     -h|--help) grep -E '^#( |$)' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -1282,6 +1289,7 @@ install_claude() {
 
 _install_claude_locked() {
   local rc=0 manifest
+  local hooks_failed=0   # 1 when wire_hooks FAILED, not when it was skipped for want of jq
   adb_info "claude → ~/.claude"
   # THE PER-HOOK OPT-OUTS ARE READ HERE, under the settings lock and BEFORE linking: a hook this run
   # is about to link for the first time must not read as "removed by hand", and a choice read by the
@@ -1361,6 +1369,7 @@ EOF
     # owned link with no entry, the per-hook opt-out's exact shape, so both take them back.
     if [ "$wrc" -ne 0 ]; then
       [ "$wrc" -eq 3 ] || rc=1
+      [ "$wrc" -eq 3 ] || hooks_failed=1
       for (( i = 0; i < ${#fresh_name[@]}; i++ )); do
         dest="$HOME/.claude/scripts/${fresh_name[$i]}"
         adb_link_into "$dest" "$REPO" || continue
@@ -1402,9 +1411,22 @@ EOF
   if adb_link_into "$HOME/.claude/CLAUDE.md" "$REPO"; then
     wire_settings || src=$?
     [ "$src" -eq 0 ] || [ "$src" -eq 3 ] || rc=1
+    # THE THIRD SETTINGS SURFACE (#288, D155): the command allowlist. After the hooks and the
+    # fragment, and independent of the fragment's VERDICT — a refusal there leaves this one free to
+    # apply, and the reverse. Not after a FAILURE of either: that step met a settings file or a
+    # record it could not handle, and may have just put the file back, so nothing more is written
+    # over it in this run.
+    if [ "$hooks_failed" -eq 0 ] && { [ "$src" -eq 0 ] || [ "$src" -eq 3 ]; }; then   # allowlist-after-failure
+      src=0
+      adb_permissions_apply "$REPO" "$HOME" "$BACKUP_DIR" "$((1 - WIRE_PERMISSIONS))" "${OPTOUT_IF_RECORDED:-0}" || src=$?
+      [ "$src" -eq 0 ] || [ "$src" -eq 3 ] || rc=1
+    else
+      adb_info "  allowlist  NOT written — an earlier settings step in this run failed (above). Fix that and re-run ./install.sh."
+    fi
   else
     adb_info "  sandbox  NOT written — ~/.claude/CLAUDE.md does not point into this clone, so an"
     adb_info "           uninstall from here could never remove them again. Fix the errors above and re-run."
+    adb_info "  allowlist  NOT written, for the same reason."
     rc=1
   fi
   return "$rc"
@@ -1619,6 +1641,7 @@ if [ "$(adb_update_channel 2>/dev/null)" = release ] && git -C "$REPO" rev-parse
     for _adb_a in "${AGENTS[@]}"; do _adb_rel_agents="$_adb_rel_agents --agent $(adb_display_value "$_adb_a")"; done
     [ "$WIRE_HOOKS" -eq 0 ] && _adb_rel_flags="$_adb_rel_flags --no-hooks"
     [ "$WIRE_SETTINGS" -eq 0 ] && _adb_rel_flags="$_adb_rel_flags --no-sandbox"
+    [ "$WIRE_PERMISSIONS" -eq 0 ] && _adb_rel_flags="$_adb_rel_flags --no-permissions"
     while IFS= read -r _adb_h; do
       [ -n "$_adb_h" ] && _adb_rel_flags="$_adb_rel_flags --skip-hook $(adb_display_value "$_adb_h")"
     done <<EOF

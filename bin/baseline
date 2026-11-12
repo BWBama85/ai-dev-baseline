@@ -27,6 +27,11 @@
 #                              #   'status' / 'upgrade --to X.Y.Z' / 'uninstall'. It operates on
 #                              #   the PROJECT you are standing in, never on the install-source
 #                              #   clone ('baseline pinned -h' for more)
+#   baseline permissions …     # the COMMAND ALLOWLIST (#288): 'audit' reports what would still
+#                              #   prompt, be refused or reach the classifier in this project
+#                              #   (0 clean / 10 findings / 11 not evaluated); 'missing' prints
+#                              #   the shipped allow entries your user settings lack; 'entries'
+#                              #   prints them all. Read-only
 #   baseline adopt status      # the ADOPTION COMPLETION CONTRACT (#81): is this project actually
 #                              #   ready to run the loop? Every rung fail-closed — a fact that
 #                              #   could not be established is never a pass. Re-runnable any time;
@@ -74,6 +79,8 @@
 # It exits 6 on a SUCCESSFUL same-HEAD repair — the clone was already current but an installed
 # link was broken and has been restored. Distinct from 0 ("nothing to do") because the installed
 # surface changed while HEAD did not, which a caller watching HEAD alone cannot see.
+# It exits 11 when its heal left the command allowlist REFUSED (#288): the installer would not
+# merge into the `permissions` already in settings.json, so no allow entry was written.
 # It exits 21 when the install is HELD ahead of the newest release (`--check` reports that as 20),
 # so the currency trigger can tell a held install from a clone that needs attention, and 40 on an
 # integrity refusal, as `--check` does.
@@ -120,6 +127,9 @@ REPO="$_adb_boot_abs"
 # bash 5.3 runtime floor (#256) — after the symlink-resolving REPO bootstrap, for the same
 # reason as bin/agent-init: this command is reached through a symlink on PATH.
 adb_require_bash "$@"
+# The command allowlist's currency question (#288): adb_permissions_pending.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/permissions-lib.sh"
 
 # Print the top comment block as --help (the shared idiom in common.sh, sourced not copied).
 usage() { adb_usage "$0"; }
@@ -169,6 +179,13 @@ fi
 if [ "${1:-}" = "adopt" ]; then
   shift
   exec bash "$REPO/scripts/lib/adopt-readiness.sh" "$@"
+fi
+
+# Delegate the command-allowlist audit to its library (#288) — before the wrong-clone guard for the
+# same reason as `adopt`: it answers about the project the operator is standing in.
+if [ "${1:-}" = "permissions" ]; then
+  shift
+  exec bash "$REPO/scripts/lib/permissions-lib.sh" "$@"
 fi
 
 # The newest stable release of the repository THIS clone's origin names (#534), validated — the one
@@ -862,16 +879,36 @@ _bl_current_arm() {
     esac
     SETTINGS_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-current
     SETTINGS_SIG_BEFORE="$(adb_settings_receipt_sig)"   # sig-before-current
-    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
+    # ...and the command allowlist is pending on the same terms (#288): a version skip the CLI has
+    # since cleared, or a payload a pull changed without moving a link.
+    PERMISSIONS_PENDING=0; adb_permissions_pending "$SRC"; PPRC=$?
+    case "$PPRC" in
+      0)      PERMISSIONS_PENDING=1 ;;
+      24)     echo "baseline: the command-allowlist payload $(adb_permissions_payload "$SRC") is missing or cannot be hashed (code 24)," >&2
+              echo "          so this run cannot tell whether the installed allowlist is current. Restore it in $SRC." >&2
+              exit 1 ;;   # allowlist-payload-unanswerable
+      2[0-9]) echo "baseline: the command-allowlist record $(adb_permissions_receipt "$HOME") cannot be read or classified (code $PPRC)." >&2
+              echo "          Restore it, or remove it and re-run ./install.sh — every entry then present is read as yours." >&2
+              exit 1 ;;   # allowlist-pending-unanswerable
+    esac
+    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ] && [ "$PERMISSIONS_PENDING" -eq 0 ]; then
       echo "baseline: all installed links resolve — nothing to do."
       exit 0
     fi
-    if [ "$LINKS_OK" -eq 1 ]; then
+    if [ "$LINKS_OK" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ]; then
+      echo "baseline: links are current, but the command allowlist is not applied yet (#288) — installing it …"
+    elif [ "$LINKS_OK" -eq 1 ]; then
       echo "baseline: links are current, but the least-privilege sandbox settings are not applied yet (#248) — installing them …"
     else
       echo "baseline: an installed path is broken though up to date — repairing …"
     fi
+    # BEFORE THE HEAL, so what it did to the allowlist is read from what changed.
+    PERM_ALLOW_BEFORE="$(adb_permissions_allow_sig "$HOME")"
+    PERM_RCPT_BEFORE="$(adb_sha256 "$(adb_permissions_receipt "$HOME")" 2>/dev/null)" || PERM_RCPT_BEFORE="none"
     adb_self_heal && adb_verify_links "$SRC" || { echo "baseline: repair failed — see above." >&2; exit 1; }
+    # SAID ON EVERY EXIT BELOW, whichever surface chooses the code: a refused or skipped allowlist
+    # is one stderr line, and it is not withheld because something else was repaired too.
+    PERM_CHANGED=0; adb_permissions_heal_report "$SRC" "$HOME" "$PERM_ALLOW_BEFORE" "$PERM_RCPT_BEFORE" && PERM_CHANGED=1
     # A SUCCESSFUL INSTALLER RUN IS NOT THE SAME AS A REPAIR. When the sandbox settings were the
     # thing pending and the operator already owns one of the shipped keys, the all-or-nothing
     # contract makes `install.sh` write `skipped-blocked` and return 0 — nothing was applied, and
@@ -904,6 +941,12 @@ _bl_current_arm() {
       [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
       exit 9
     }
+    # THE ALLOWLIST CAME BACK REFUSED (#288). Nothing of it was applied, and the SessionStart caller
+    # discards the line that says so, so the refusal chooses the code — after the sandbox's own two.
+    if adb_permissions_heal_refused "$HOME" "$PERM_RCPT_BEFORE"; then
+      [ "$LINKS_OK" -eq 1 ] || echo "baseline: repaired the installed links." >&2
+      exit 11   # allowlist-refused-current
+    fi
     if [ "$SETTINGS_PENDING" -eq 1 ] && [ "$LINKS_OK" -eq 1 ]; then
       case "$(adb_claude_settings_disposition "$(adb_claude_settings_receipt "$HOME")" 2>/dev/null)" in
         skipped-optout|skipped-below-floor|skipped-unprobeable)
@@ -919,6 +962,12 @@ _bl_current_arm() {
           fi
           exit 8 ;;
       esac
+    fi
+    # NOTHING BUT THE ALLOWLIST WAS PENDING, AND ITS LIST DID NOT CHANGE: no link and no setting
+    # moved, so this is not a repair. The line above already said what happened to the record.
+    if [ "$PERMISSIONS_PENDING" -eq 1 ] && [ "$SETTINGS_PENDING" -eq 0 ] && [ "$LINKS_OK" -eq 1 ] && [ "$PERM_CHANGED" -eq 0 ]; then
+      echo "baseline: no link or setting was changed."
+      exit 0   # allowlist-nothing-changed
     fi
     echo "baseline: repaired."
     # Exit 6, not 0: a repair CHANGED the installed surface without moving HEAD, and a caller that
@@ -943,7 +992,11 @@ _bl_after_move() {
     esac
     BEHIND_ROWS_BEFORE="$(adb_settings_row_count)" || { adb_settings_unreadable_record 20; exit 1; }   # row-count-before-behind
     BEHIND_SIG_BEFORE="$(adb_settings_receipt_sig)"   # sig-before-behind
+    BEHIND_PERM_ALLOW_BEFORE="$(adb_permissions_allow_sig "$HOME")"
+    BEHIND_PERM_RCPT_BEFORE="$(adb_sha256 "$(adb_permissions_receipt "$HOME")" 2>/dev/null)" || BEHIND_PERM_RCPT_BEFORE="none"
     if adb_self_heal && adb_verify_links "$SRC"; then
+      # The allowlist's outcome, from what changed — said before any of the exits below.
+      adb_permissions_heal_report "$SRC" "$HOME" "$BEHIND_PERM_ALLOW_BEFORE" "$BEHIND_PERM_RCPT_BEFORE" || true
       # ...and a refusal is reported here too. This branch exited 0 on any successful heal, so an
       # update that also refused the policy was rendered as a plain `updated` with the installer's
       # own output suppressed. The clone really did advance, and the message says so — but the
@@ -958,6 +1011,10 @@ _bl_after_move() {
       if adb_settings_downgraded_now "$(adb_settings_heal_touched "$BEHIND_SETTINGS_PENDING" "$BEHIND_SIG_BEFORE")" "$BEHIND_ROWS_BEFORE"; then
         echo "baseline: the clone WAS updated and every link resolves." >&2
         exit 9
+      fi
+      if adb_permissions_heal_refused "$HOME" "$BEHIND_PERM_RCPT_BEFORE"; then
+        echo "baseline: the clone WAS updated and every link resolves; only the command allowlist was refused." >&2
+        exit 11   # allowlist-refused-behind
       fi
       echo "baseline: update complete."
       exit 0

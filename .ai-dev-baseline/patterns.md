@@ -806,4 +806,5 @@ One line per resolved review thread, newest last.
 - `third-party-default` `scripts/lib/common.sh:2312` `b55a797` `PRRT_kwDOTfywrM61M9pQ` PR #620 2026-11-09 — collision dedupe marked a name seen before a same-skill exemption, hiding a distinct copy in the other Codex root
 - `path-divergence` `scripts/lib/adopt-lib.sh:3607` `ffdb30f` `PRRT_kwDOTfywrM616eHD` PR #622 2026-11-11 — an exemption lookup read a surface excluded by agent selection as nonexistent
 - `path-divergence` `scripts/lib/adopt-lib.sh:3439` `ffdb30f` `PRRT_kwDOTfywrM616eHO` PR #622 2026-11-11 — unknowns filtered by native agent only, unlike the surface report
+- `status-swallowed` `bin/baseline:962` `a176e2b` `PRRT_kwDOTfywrM62anOl` PR #628 2026-11-12 — A heal that left the command allowlist refused exited 0, and the session-start wrapper reads only the exit code, so the refusal reached nobody
 <!-- adb:hits:end -->

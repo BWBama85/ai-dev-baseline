@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m *)",
+      "Bash(git fetch)",
+      "Bash(git fetch --prune origin)",
+      "Bash(git fetch --tags origin)",
+      "Bash(git fetch origin)",
+      "Bash(git switch -c *)",
+      "Bash(gh auth status)",
+      "Bash(gh issue create *)",
+      "Bash(gh issue edit *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh label create *)",
+      "Bash(gh label list *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr diff *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh release list *)",
+      "Bash(gh release view *)",
+      "Bash(gh repo view *)",
+      "Bash(gh run list *)",
+      "Bash(gh run view *)",
+      "Bash(gh workflow run *)",
+      "Bash(jq *)",
+      "Bash(agent-init)",
+      "Bash(baseline adopt status *)",
+      "Bash(baseline permissions *)",
+      "Bash(baseline repo status *)",
+      "Bash(baseline update --check)"
+    ]
+  }
+}

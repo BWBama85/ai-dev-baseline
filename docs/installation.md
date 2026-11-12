@@ -74,6 +74,7 @@ cd ~/Code/ai-dev-baseline
 ./install.sh --agent claude --no-hooks
 ./install.sh --agent claude --skip-hook precommit-gate.sh
 ./install.sh --agent claude --no-sandbox
+./install.sh --agent claude --no-permissions
 ```
 
 Options:
@@ -84,6 +85,7 @@ Options:
 | `--no-hooks` | Skip wiring the global Stop-hook gates into `~/.claude/settings.json`. |
 | `--skip-hook <name>` | Repeatable. Wire every shipped hook **except** `<name>` (its exact script name, e.g. `precommit-gate.sh`), removing its entry if it was wired. Recorded, so `baseline update` keeps honouring it — which needs `jq`: without it the install fails rather than leave the skip unrecorded. An unknown name exits 2 before anything changes; `--no-hooks` wins over it. |
 | `--no-sandbox` | Skip the [least-privilege sandbox settings](#least-privilege-sandbox-settings). Recorded, so `baseline update` keeps honouring it. |
+| `--no-permissions` | Skip the [command allowlist](#command-allowlist). Recorded, so `baseline update` keeps honouring it. |
 | `-h`, `--help` | Print the usage header. |
 
 `codex` and `gemini` run their `agents/<token>/adapter.sh`, which symlinks that
@@ -336,7 +338,8 @@ What the patterns match is the vendor's rule, not ours (checked 2026-10-13):
   goes through the regular permission flow. In Manual mode a `git`/`gh` command that is not
   read-only prompts unless one of your allow rules covers it, auto mode sends it to the classifier,
   and `bypassPermissions` runs it unless one of your ask rules matches it. A matching deny rule
-  blocks it in every mode, allow rules included. The installer ships no allow rules.
+  blocks it in every mode, allow rules included. The allow rules the installer adds are the
+  [command allowlist](#command-allowlist), a separate surface with its own record.
 - **Matching changed in newer CLIs.** Before v2.1.277 a compound command was taken out whole when
   only one part matched, and before v2.1.290 a short-form `git clone` option kept the exemption, so
   between the v2.1.187 floor and those versions the exclusion is broader than described here.
@@ -391,6 +394,230 @@ The fragment does neither for you, and the owner decided on #505 not to change i
 
 An exclusion you add costs what the `git`/`gh` one does: the excluded call runs with your full
 access, and the agents codex and agy host are then held only by those CLIs' own sandboxing.
+
+### Command allowlist
+
+Claude only (#288, D155). The installer adds a curated list of `permissions.allow` rules to
+`~/.claude/settings.json` — unless `--no-permissions` is passed. Source:
+`agents/claude/settings.permissions.json`; `baseline permissions entries` prints it.
+
+A command an allow rule matches runs without a prompt and, in Auto Mode, without a call to the
+classifier — unless an `ask` or `deny` rule matches it too, the CLI protects the path it touches,
+the command carries per-command allowed domains, or Auto Mode has set the rule aside (all under
+"What still prompts or is still judged", below). The classifier half is the reason for the list: a run whose every `gh` call waits on the classifier
+stops when the classifier is unavailable.
+
+**What is allowlisted.** Every rule is a `Bash(…)` rule naming one command, or one command prefix
+followed by ` *`:
+
+| Family | Rules |
+|---|---|
+| git | `git add *` · `git commit -m *` · `git fetch` · `git fetch origin` · `git fetch --prune origin` · `git fetch --tags origin` · `git switch -c *` |
+| gh, read | `gh auth status` · `gh issue list *` · `gh issue view *` · `gh label list *` · `gh pr checks *` · `gh pr diff *` · `gh pr list *` · `gh pr view *` · `gh release list *` · `gh release view *` · `gh repo view *` · `gh run list *` · `gh run view *` |
+| gh, write | `gh issue create *` · `gh issue edit *` · `gh label create *` · `gh pr create *` · `gh pr edit *` · `gh workflow run *` |
+| jq | `jq *` |
+| the baseline's own commands | `agent-init` · `baseline adopt status *` · `baseline permissions *` · `baseline repo status *` · `baseline update --check` |
+
+**What is deliberately not allowlisted, and why.** An allow rule matches text, so a rule can only
+be as narrow as the words before its `*`:
+
+- **`git push`, in any form.** A prefix rule cannot tell `git push origin HEAD` from
+  `git push --force` or a push to the default branch. `/implement-issue` pushes from inside
+  `implement-lib.sh open-pr`, a library call that is not allowlisted either. One allowlisted
+  command can still publish the branch you are on: `gh pr create` (under "What the allowlist gives
+  up").
+- **Anything that discards or deletes**: `git reset --hard`, `git checkout`, `git restore`,
+  `git clean`, `git stash`, branch and ref deletion, `rm`.
+- **`git fetch` with anything after it, and `git merge`.** `git fetch --upload-pack=<program>`
+  runs that program, and `git merge -s <strategy>` runs a `git-merge-<strategy>` program found on
+  your `PATH`. `git` is outside the sandbox, so a wildcard rule for either would run code unasked.
+  `git fetch` is allowed in the four exact forms in the table; `git merge` not at all.
+- **`gh api`, `gh pr merge`, `gh pr close`, `gh run rerun`, `gh auth token`.** `gh api` is every
+  REST and GraphQL call, deletions included. Merging and closing are decisions. `gh auth status` is
+  allowed only as that exact command, so `--show-token` is not.
+- **`curl`, `wget`, and any interpreter or wrapper as a whole** (`bash *`, `sh -c`, `python`,
+  `npx`, `env`, `xargs`). A rule like that approves whatever follows it, which is
+  `bypassPermissions` by another name.
+- **A project's own scripts**, such as `bash scripts/check-*.sh`. The path is relative, so a
+  user-level rule would approve a file by that name in every project, and it is a file the session
+  can write. Under the [sandbox](#least-privilege-sandbox-settings) these already run without a
+  prompt.
+- **Stack tooling** (`npm`, `cargo`, `go`, `pytest`, `composer`). It differs per project, and Auto
+  Mode suspends package-manager and interpreter rules. The [audit](#auditing-a-project) lists each
+  detected gate command and whether a direct call of it matches an allow rule.
+- **The baseline's own library scripts** (`bash "$HOME/.claude/scripts/lib/<library>.sh" …`),
+  which is how most workflow steps run. A rule for one names an interpreter and a script path. The
+  vendor does not say whether Auto Mode keeps a rule of that shape, and a probe could not tell
+  (CLI 2.1.322, 2026-11-11: no log line separates a rule match from a classifier decision, and the
+  decision times did not order the cases). A rule whose effect is unknown is not shipped. It would
+  also approve a script by path, which is only as narrow as that script is unwritable. These calls
+  run as they did: sandboxed, or judged.
+- **`codex` and `agy`.** They are reached through `role-dispatch.sh`, never as that text.
+- **`baseline update`, `baseline release`, `baseline repo apply`, `agent-init --force`.**
+
+**What the allowlist gives up.** This framework reads issue bodies, review threads and CI logs —
+text anyone can write — into an agent that can run commands. Every rule here removes one check on
+what that text can induce:
+
+- A matched command is not shown to you and not judged by the classifier. `git commit -m *` also
+  matches `git commit -m x --no-verify`; `git switch -c *` also matches a `--discard-changes`
+  after it. The words before the `*` are the whole limit.
+- `git` runs programs your git configuration names, and a matched command runs them unasked:
+  the repository's hooks on `git commit` and `git switch -c`, a clean filter on `git add`, and the
+  configured editor on `git commit -m x --edit`. No shipped rule lets the *command line* name the
+  program — that is what rules out `git fetch *` and `git merge` below — but none checks who wrote
+  the hook or the configuration. `git config` is not allowlisted.
+- `gh issue create`, `gh issue edit`, `gh pr create` and `gh pr edit` write text to the tracker —
+  with `--repo`, to any repository your token can reach. Whatever the session can read, it can
+  put there.
+- **`gh pr create` can push.** When the current branch is not fully on a remote it pushes it, and
+  can create a fork to push to; `--dry-run` may still push (gh 2.103.3, `gh pr create --help`). So
+  "no `git push` rule" means no rule approves a push the command line aims — a force, another
+  ref — not that no allowlisted command ever publishes the branch you are on.
+- **`gh workflow run *` starts workflows.** Any workflow with a `workflow_dispatch` trigger, at
+  any `--ref`, with any inputs, and with `--repo` in any repository your token can reach — a
+  deploy or release workflow included. It is allowlisted because the close-out dispatches the
+  mutation harnesses with it; the rule cannot tell that workflow from another.
+- `jq *` reads any file you can read, including one outside the project that would otherwise
+  prompt on first read.
+- `agent-init` writes `agents.toml`, a `.gitignore` entry and the state directory in the project it
+  is run in. Only the bare command is allowed, so `--force`, which overwrites, is not.
+
+**What still prompts or is still judged.** The allowlist does not make a run prompt-free by
+itself:
+
+- **Compound commands.** The CLI splits on `&&`, `||`, `;`, `|` and newlines, and every part must
+  be allowed or read-only. An allow rule does not match past a leading assignment of a variable
+  outside the CLI's known-safe set, so `X="$(gh pr view 5)"` is not covered by `gh pr view *`.
+- **A different spelling.** `git -C . add x` and `/usr/bin/git add x` do not match `git add *`.
+- **A command that carries per-command allowed domains** goes to the classifier in Auto Mode even
+  when an allow rule matches it: a rule approves the command, not its hosts.
+- **`ask` and `deny` rules** win over allow rules from any scope, in every mode.
+- **Protected paths, the first read outside the working directories, and critical-path removals**
+  are handled by the CLI whatever the rules say.
+- **Auto Mode suspends allow rules that grant arbitrary code execution.** The vendor names
+  `Bash(*)`, wildcarded interpreters such as `Bash(python *)`, and package-manager run commands.
+  No shipped rule has that shape. `autoMode.classifyAllShell` suspends every shell allow rule.
+- **`permissions.defaultMode` is never written.** It is yours. In `default` every unlisted command
+  prompts; `dontAsk` refuses instead; `acceptEdits` prompts for an unlisted Bash command the
+  sandbox does not cover; `auto` sends it to the classifier; in `plan` it depends on the session.
+  `auto` is the built-in starting mode of an interactive terminal session when the key is unset;
+  `claude -p` and SDK runs start in default mode.
+
+Vendor sources, read 2026-11-11: <https://code.claude.com/docs/en/permissions> (rule syntax,
+compound commands, wrappers, precedence), <https://code.claude.com/docs/en/permission-modes> (the
+evaluation order and the rules Auto Mode suspends), and
+<https://code.claude.com/docs/en/settings-reference> (`permissions.allow`,
+`permissions.defaultMode`, `autoMode.classifyAllShell`).
+
+**How it is installed.** The list is merged into the array you already have, entry by entry:
+
+| An entry that is… | …is |
+|---|---|
+| absent | appended after your own, and recorded as added |
+| already there | left alone and never recorded: it is yours |
+| recorded as added, then gone from the list | left out from then on. Add it back yourself to restore it |
+| recorded as added, and no longer shipped | removed |
+
+Nothing else in the file is written. The record is `~/.claude/.adb-permissions-owned`; it lists
+the entries this install added, and `./uninstall.sh` removes exactly those and then the record.
+An entry becomes yours once an install has seen it gone: put back after that, it stays through
+an uninstall. Removed and put back between two installs, it was never seen gone, is still recorded
+as added, and an uninstall removes it. A `permissions` or `permissions.allow` that is
+not an object and an array refuses the whole step, and `baseline update` retries it when the list
+changes. In a run whose hook wiring or sandbox step failed, the allowlist is not written either,
+and the run says so.
+
+An entry that is gone is read as removed by you, whatever removed it. If you restored
+`settings.json` from a backup and lost them all that way, delete
+`~/.claude/.adb-permissions-owned` and re-run `./install.sh`: with no record, every missing entry
+is added again, and every entry already there is read as yours.
+
+**Only the current CLI is supported.** The floor is the newest Claude Code release this surface was
+read against — **v2.1.322** now, raised with each release — and nothing older is modelled. Below
+it, or when no `claude` binary can be probed, nothing is written and the next `baseline update`
+tries again; update Claude Code. The audit below evaluates nothing there either (exit 11).
+
+When your settings hold a `permissions` block the install will not merge into — `permissions.allow`
+is not a list of strings, say — the allowlist is refused whole. `./install.sh` names what is in the
+way; a `baseline update` whose heal ends that way exits 11, and the session-start update reports it
+once instead of staying silent. `--no-permissions` records an opt-out that
+`baseline update` keeps honouring; it does not take out entries an earlier install added, which
+`./uninstall.sh` does.
+
+User scope only. The release-pinned install does not write it: its `.claude/settings.json` is
+tracked. `baseline permissions missing` prints the shipped entries your user settings lack.
+
+#### Auditing a project
+
+`baseline permissions audit`, run in a project, reports what would prompt, be refused, or reach
+the classifier there, for the shipped commands, in an interactive terminal session started in that
+directory. `/adopt` runs it. It reads the files such a session loads: the managed
+`managed-settings.json`; your user settings; the `.claude/settings.json` of the directory itself,
+which is where Claude Code reads the shared file from, not the repository root; and the
+`.claude/settings.local.json` at the repository root — the main checkout's, in a linked worktree.
+The local file is read beside the shared one instead when there is no repository, when the root is
+your home directory, or when the root, its `.git` or its `.claude` is not yours. A
+local file an older CLI left in the directory itself is read as well. It takes only the rule lists and mode keys
+out of each file, and writes nothing. Each line is `kind`, `level`, where it
+was found, and what it means:
+
+| Level | Meaning |
+|---|---|
+| `ok`, `info` | nothing to do |
+| `classifier` | in Auto Mode, a shipped entry no allow rule holds: that command is judged on every use |
+| `prompt` | an `ask` rule that can match a shipped entry, or an unlisted command in a mode that asks |
+| `blocked` | a `deny` rule that can match a shipped entry; or what would prompt, under `dontAsk` or `permissions.denyInsteadOfPrompting` |
+| `unevaluated` | something the audit could not read or cannot model: a settings file that is empty, is not exactly one JSON object, holds a number JSON does not have (`NaN`, `Infinity`), or sits under a directory that cannot be searched; `permissions` or a rule list of the wrong type; a rule that is not rule-shaped; a rule matching Bash by input parameter; `plan`, an undocumented mode, or `bypassPermissions` under `disableBypassPermissionsMode`; a `CLAUDE_CONFIG_DIR` naming another root; a `managed-settings.d`; a worktree whose main checkout cannot be found; or a setting whose effect depends on a CLI version that could not be read |
+
+It exits **0** clean, **10** when it found a `classifier`, `prompt` or `blocked` line, and **11**
+when anything was `unevaluated` — a file it could not read is never reported as clean.
+
+**What exit 0 says, and nothing more:** the starting mode is one the audit can state and is
+`auto`, `acceptEdits` or `bypassPermissions`; and, outside `bypassPermissions`, every shipped rule
+is held by an allow rule in effect and matched by no `deny` or `ask` rule. So the shipped commands
+run unasked. It says nothing about any other command: in `acceptEdits` an unlisted Bash command
+the sandbox does not cover still prompts, and in `auto` it is judged. Where it reports `auto` it
+assumes auto mode is available to the session — a supported model, not turned off for the
+account, no HIPAA configuration — because where it is not, the session starts in default mode. It
+also assumes each file it parsed is one the CLI loads: it reads JSON as `jq` does and does not
+check the settings schema, so a file the CLI rejects at startup with a Settings Error is counted as
+if it had loaded. And where project or local allow rules count, it assumes the workspace is
+trusted. Each assumption is printed as an `assume` line. A
+rule about another tool (`Read(./.env)`, `mcp__*`) is listed as `info` and not judged: whether a
+workflow step runs into it is outside the audit. The one exception is an `ask` or `deny` rule on
+the whole of `Read`, `Edit` or `Write`, which stops every workflow step and is a finding. The sandbox is not modelled either — a sandboxed
+command it auto-allows runs unasked whatever is reported here.
+
+How it reads the rules, each from the vendor pages cited above:
+
+- **Allow lists merge across scopes**, so a shorter project list narrows nothing. A project's own
+  allow rules count only once its workspace trust dialog has been accepted, and the audit says so
+  when it meets any. A shipped entry
+  counts as held by its own rule, by the whole tool (`Bash`), or by a broader `<prefix> *` rule of
+  yours. An allow rule that globs the tool name (`B*`) approves nothing.
+- **A `deny` or `ask` rule from any scope wins**, and is named with its file. It may name the
+  tool by glob (`*`, `Bash*`). A rule matching Bash by input parameter
+  (`Bash(run_in_background:true)`) is `unevaluated`; `Bash(command:…)` is ignored by the CLI and
+  reported as such. An `ask` rule is listed as `info` when one `deny` rule matches every command
+  it does: deny is evaluated first. A tool name is matched without regard to case.
+- **In Auto Mode, allow rules that would run arbitrary code hold nothing**: the whole tool, and a
+  wildcard directly after an interpreter, a wrapper or a package-manager run command. The vendor
+  describes that class by example, so the list is this audit's reading of it.
+- **The starting mode** is the `defaultMode` of the highest of managed, local, project and user
+  settings that sets one, else the built-in default. Two values do not take effect from project or
+  local settings: `auto` there falls to the built-in default, not to your user value, and
+  `bypassPermissions` there starts the session in default mode. What a missing entry becomes follows the mode: judged in `auto`, asked in `default`
+  and `acceptEdits`, refused in `dontAsk`, and nothing at all in `bypassPermissions`.
+  `permissions.denyInsteadOfPrompting` turns what would be asked into a refusal.
+
+`gate` lines list each gate command the project runs and whether a direct call of it matches an
+allow rule; they never change the exit code, a gate set that could not be detected included. MDM and server-managed settings and a session's
+`--settings`, `--permission-mode` and `--allowedTools` flags are not inspected.
+`baseline permissions match -- '<command>'` names the shipped entry that covers one simple command.
+It reads text, not shell syntax: a command holding `;`, `&`, `|`, a newline or a substitution —
+inside quotes too — is refused (exit 2), since the CLI may match it part by part.
+A git that fails for any reason but "not a repository" leaves the local settings file not evaluated.
 
 ### Run markers are session-owned
 
@@ -1101,6 +1328,7 @@ Said plainly, because a model that overstates itself is worse than a narrow one:
   sandbox policy there commits one on behalf of every contributor to that repository, and the
   ownership and uninstall semantics are the global install's, not a reviewed file's. The install
   says so rather than omitting them silently; run the global `./install.sh` to get them.
+- **It does not write the [command allowlist](#command-allowlist).** That is user scope too.
 - **Codex reads project instructions only up to a byte budget.** Its `project_doc_max_bytes`
   defaults to 32 KiB, shared by the project's `AGENTS.md` and any nested ones, and what lies past it
   is never read. Since #434 the rendered rules fit it with room to spare — the procedures are
@@ -1161,6 +1389,10 @@ object of your own elsewhere in the file is not. **With no receipt, nothing is r
 install that predates this surface, a below-floor skip and an already-cleaned home are
 indistinguishable from `settings.json` alone, and guessing would delete `sandbox` keys the
 installer never wrote.
+
+And it removes the **[command allowlist](#command-allowlist) entries it added**, by the record at
+`~/.claude/.adb-permissions-owned`: an entry that was already in your `permissions.allow` was
+never recorded and stays, as does one an install saw gone and you then put back.
 
 Your backups under
 `~/.claude/backups/ai-dev-baseline-*` are **never** touched by uninstall —

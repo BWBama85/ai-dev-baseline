@@ -32,6 +32,9 @@ REPO="$_adb_boot_abs"
 . "$REPO/scripts/lib/common.sh"
 # bash 5.3 runtime floor (#256) — re-exec into a >= 5.3 interpreter, or exit with instructions.
 adb_require_bash "$@"
+# The command allowlist (#288): adb_permissions_remove, called from _uninstall_claude_locked.
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib/permissions-lib.sh"
 # Same dispatch shape as install.sh, and for the same reason: the two models share no
 # destination, so a run is one or the other.
 for _adb_arg in "$@"; do
@@ -287,6 +290,8 @@ EOF
   fi
 
   unwire_settings "$ours_settings" || rc=1
+  # The mirror of install.sh's allowlist step (#288, D155): only the entries its receipt records.
+  adb_permissions_remove "$REPO" "$HOME" || rc=1
   return "$rc"
 }
 
