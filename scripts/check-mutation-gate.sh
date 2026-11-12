@@ -205,6 +205,10 @@ if [ "$MODE" = mutation ]; then
     '        11|12) printf '"'"'%s\n'"'"' "$step"; [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '        11|12) [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '…and lists EVERY harness, never none'
+  shmutant_mut touched-reads-past-inputs \
+    "    while IFS=\$'\\t' read -r step _ _ _ inputs _; do   # row-touched-field5" \
+    "    while IFS=\$'\\t' read -r step _ _ _ inputs; do   # row-touched-field5" \
+    "a change on a harness's LAST declared input lists it"
   shmutant_mut steps-narrow-name-grammar \
     "awk -F'\\t' '\$1 ~ /^[A-Za-z0-9_-]*-mutation\$/'" \
     "awk -F'\\t' '\$1 ~ /^[a-z0-9-]+-mutation\$/'" \
@@ -264,8 +268,8 @@ if [ "$MODE" = mutation ]; then
     '        run: bash scripts/check-common-lib.sh --mutation' \
     'invokes a mutation harness directly'
   shmutant_mut ci-macos-hand-listed-skip \
-    '          bash scripts/selfcheck.sh --skip "$skip" 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
-    '          bash scripts/selfcheck.sh --skip adopt-mutation 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
+    '          bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
+    '          bash scripts/selfcheck.sh --skip adopt-mutation --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
     'without skipping the registry'
   shmutant_mut ci-macos-skip-overwritten \
     'echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"' \
@@ -295,6 +299,10 @@ if [ "$MODE" = mutation ]; then
     'skip="$(bash scripts/mutation-gate.sh steps --csv)" ||' \
     'skip="adopt-mutation" ||' \
     'does not build its --skip'
+  shmutant_mut ci-macos-stops-early \
+    'bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1' \
+    'bash scripts/selfcheck.sh --skip "$skip" 2>&1' \
+    'runs selfcheck with --collect-all'
   check_shmutant_pool "check-mutation-gate (ci.yml)" "$work/ci" mut_prepare mut_run 4
 
   shmutant_reset
@@ -879,6 +887,15 @@ T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
 eq "$T_RC" "0" "touched: a change on one harness's input → exit 0"
 eq "$T_OUT" "gated-mutation" "touched: …lists exactly that harness"
 check_git "$R" checkout -q -- scripts/check-gated.sh
+# …and a change on a harness's LAST declared input lists it too. The row carries a field after the
+# inputs (the tier, #630); read into the inputs, it would turn the last path into one that matches
+# nothing, and the one harness whose only touched input is its last would be skipped in silence.
+printf 'dirty\n' >> "$R/scripts/lib/stub.sh"
+T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "0" "touched: a change on a harness's last declared input → exit 0 (decided)"
+eq "$(printf '%s\n' "$T_OUT" | tr '\n' ' ')" "gated-mutation rows-mutation " \
+   "touched: a change on a harness's LAST declared input lists it (the field after the inputs is not one of them)"
+check_git "$R" checkout -q -- scripts/lib/stub.sh
 # Fail-closed and override: every harness listed, each on its own code.
 T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched --base no-such-ref 2>/dev/null)"; T_RC=$?
 eq "$T_RC" "11" "touched: an unresolvable base → exit 11 (fail-closed)"
@@ -971,7 +988,7 @@ LIST="$(bash "$ROOT/scripts/selfcheck.sh" --list)" || bad "the shipped registry 
 # a harness gated on a set that omits its own gate skips exactly the run that would have caught a
 # change to it (`declared-inputs-incomplete`). Derived from the suites, never from a list here.
 _rowsteps=0
-while IFS="$(printf '\t')" read -r _s _cmd _ _ _in; do
+while IFS="$(printf '\t')" read -r _s _cmd _ _ _in _; do   # field 5 alone: the last name takes the rest of the row
   [ -n "$_s" ] || continue
   [ "$_in" != "-" ] || continue
   _suite="$(printf '%s' "$_cmd" | awk '{print $2}')"
@@ -990,7 +1007,7 @@ done <<< "$LIST"
 # `check_shmutant_pool` EXECUTES `scripts/shmutant.sh`, so a step gated on inputs that omit it would
 # skip exactly the run that proves a new pin of it still kills every row. Derived from the suites.
 _shmsteps=0
-while IFS="$(printf '\t')" read -r _s _cmd _ _ _in; do
+while IFS="$(printf '\t')" read -r _s _cmd _ _ _in _; do   # field 5 alone: the last name takes the rest of the row
   [ -n "$_s" ] || continue
   [ "$_in" != "-" ] || continue
   _suite="$(printf '%s' "$_cmd" | awk '{print $2}')"
@@ -1093,6 +1110,10 @@ eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls sel
 eq "$(printf '%s\n' "$recv" | sed -n 2p | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
    "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
    "the macOS suite step HANDS selfcheck exactly the registry's *-mutation steps to skip"
+# …and runs collect-all (#630, D156): a local run ends at a red static step, CI reports every step
+# it selected.
+eq "$(printf '%s\n' "$recv" | sed -n 3p)" "--collect-all" \
+   "the macOS suite step runs selfcheck with --collect-all, so a red lint does not hide the suites"
 grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \
   || bad "ci.yml's selfcheck-macos does not build its --skip from 'bash scripts/mutation-gate.sh steps --csv' (with a failure branch)"
 runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list)' || true)"

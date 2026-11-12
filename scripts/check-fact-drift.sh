@@ -1984,6 +1984,11 @@ for _wslcmd in 'scripts/check-bash-floor\.sh' 'install\.sh' 'scripts/selfcheck\.
     "regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\\.exe[[:space:]])[^#]*(--user|-u)[[:space:]]+adb[[:space:]]+--cd[[:space:]]+/home/adb/[^|;&#]*--[[:space:]]+bash[[:space:]]+$_wslcmd" \
     -- .github/workflows/wsl-smoke.yml
 done
+# …and the suite it runs there is COLLECT-ALL (#630, D156): a local run ends at a red static step,
+# and a weekly job that did the same would report one lint and nothing about the platform.
+fact wsl-smoke-collect-all \
+  'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*bash[[:space:]]+scripts/selfcheck\.sh[[:space:]]+--collect-all([[:space:]]|$)' \
+  -- .github/workflows/wsl-smoke.yml
 # The distro's `bash --version` log is the fifth `--user adb` line and gets its own pin, because it
 # matches none of the shapes above: no `--cd`, no script name. It is also the line the negative rule
 # missed until review found it.

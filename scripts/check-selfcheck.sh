@@ -20,12 +20,13 @@
 # What is asserted:
 #   1. a deliberately failing step under parallelism still fails the run, and is NAMED;
 #   2. the failure is attributed to the step that actually failed, with its actual exit code;
-#   3. collect-all, not fail-fast: a red step does not stop the others being run and reported;
+#   3. collect-all, not fail-fast, WITHIN a tier: a red step does not stop the others in its tier
+#      being run and reported (and with `--collect-all`, not the next tier either — see 13);
 #   4. per-step output is ATOMIC — no step's lines appear inside another's block;
 #   5. the concurrency bound is honoured, and the pool is genuinely concurrent (a pool of 1 that
 #      passes every other assertion would be this whole change doing nothing);
 #   6. `--serial` runs in declaration order, one at a time;
-#   7. the serial prologue runs alone and first, even when declared last;
+#   7. a serial-lane step runs alone and before its tier's pool, even when declared last;
 #   8. a filter that selects nothing, or names an unknown step, is an ERROR and not a clean run;
 #   9. large output survives intact;
 #  10. cancellation terminates the workers instead of orphaning them — including a worker forked
@@ -37,7 +38,11 @@
 #      (a detached worker, a STOPPED process, a holder in the checkout, one started only after the
 #      TERM), leaves alone what merely works in the checkout, still sweeps after the runner was
 #      KILLed, answers 4, never "nothing left", when it cannot see the process table, and is not
-#      undone by a second run in the same checkout.
+#      undone by a second run in the same checkout;
+#  13. the static tier (#630) runs first and to completion, a red static step ends a plain run
+#      before any suite starts — named, with the steps not dispatched named and counted out of the
+#      result — `--collect-all` and `--serial` run on, and a step is dispatched in the tier `--list`
+#      reports for it.
 #
 # Usage: bash scripts/check-selfcheck.sh   (exit 0 = all pass, 1 = a failure)
 
@@ -239,6 +244,41 @@ if [ "$MODE" = mutation ]; then
     'for _p in "${ISOLATED_STEPS[@]}"; do [ "$1" = "$_p" ] && { printf '"'"'load-sensitive\n'"'"'; return 0; }; done' \
     ':' \
     "--list's lane and its reason never disagree about any step"
+
+  # The static tier (#630, D156). Membership is policy, like a lane, and the stop is a reporting
+  # path: each is one literal edit, and each fails in silence without a row of its own.
+  shmutant_mut "static-stop-removed" \
+    '  if [ "${#FAILED[@]}" -gt 0 ] && [ "$COLLECT_ALL" -eq 0 ]; then   # row-static-stop' \
+    '  if false; then   # row-static-stop' \
+    'a red static step ends the run before any suite starts'
+  shmutant_mut "collect-all-ignored" \
+    '  if [ "${#FAILED[@]}" -gt 0 ] && [ "$COLLECT_ALL" -eq 0 ]; then   # row-static-stop' \
+    '  if [ "${#FAILED[@]}" -gt 0 ]; then   # row-static-stop' \
+    '--collect-all runs the suites after a red static step'
+  # The stop asks whether a STEP failed. `fail` is also set by an unusable mutation lock.
+  shmutant_mut "stop-on-any-failure" \
+    '  if [ "${#FAILED[@]}" -gt 0 ] && [ "$COLLECT_ALL" -eq 0 ]; then   # row-static-stop' \
+    '  if [ "$fail" -ne 0 ] && [ "$COLLECT_ALL" -eq 0 ]; then   # row-static-stop' \
+    'lock: an unusable lock never ends the run early, as a red static step does'
+  shmutant_mut "undispatched-counted-passed" \
+    'RAN=$(( ${#SELECTED[@]} - ${#UNDISPATCHED[@]} ))   # row-ran-count' \
+    'RAN=${#SELECTED[@]}   # row-ran-count' \
+    'the result counts only what was dispatched'
+  shmutant_mut "undispatched-unnamed" \
+    'runs them): %s\n'"'"' "${UNDISPATCHED[*]}"   # row-undispatched-named' \
+    'runs them): \n'"'"'   # row-undispatched-named' \
+    'the result block names every step not dispatched'
+  shmutant_mut "digest-drops-undispatched" \
+    '    summarize_undispatched "$log"' ':' \
+    'the digest names the steps a red static tier kept from running'
+  shmutant_mut "tier-emptied" \
+    'STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index)' \
+    'STATIC_STEPS=()' \
+    'the static tier is exactly the steps that lint the tracked tree'
+  # `--list` still says static; the dispatcher puts the step in the suite pool.
+  shmutant_mut "tier-dispatch-drifts" \
+    '    static/pool)   STATIC_POOL+=("$_s") ;;' '    static/pool)   POOLED+=("$_s") ;;' \
+    'every static step ends before any suite step starts'
 
   # The overrun warning (#445). Each of its halves is a report, and a report's failure mode is the
   # silent one: a ticker that never prints, a result block that drops the names and a digest that
@@ -777,26 +817,30 @@ block_of() {
 # ============================== 1-4. a failing step under parallelism ==========================
 # THE acceptance criterion: a deliberately failing step must still fail the run, and the run must
 # say which one. Everything about the pool that could go wrong quietly shows up here.
+#
+# The failing step is a SUITE (`gates`), deliberately: a red STATIC step ends the run before the
+# suites start (section 7e), and what this section is about is the pool carrying on around a red.
 reset_ctl
-printf '3\n' > "$FX/ctl/claims.rc"
+printf '3\n' > "$FX/ctl/gates.rc"
 sc --only "$ONLY" --jobs 4
 
 no "$RC_" "a failing step under parallelism fails the run"
 eq "$RC_" 1 "...with exit 1, the same status the sequential runner used"
 has "$OUT" "SOME CHECKS FAILED" "the terminal verdict line is unchanged"
-has "$OUT" "FAILED: claims" "the summary NAMES the failing step"
+has "$OUT" "FAILED: gates" "the summary NAMES the failing step"
 has "$OUT" "7 passed, 1 failed" "the counts are right: one red, the rest green"
 
 # ATTRIBUTION. `wait -n -p` is what maps a reaped pid back to a name; without it a pool can only
 # report "something failed". A dispatcher that mixed the two up would still print one FAIL and one
 # failing name — just the wrong one — so this asserts the RIGHT step carries it, with the RIGHT
 # code, and that no sibling was blamed.
-claims_verdict="$(printf '%s\n' "$OUT" | awk '$0 == "=== claims ===" {inb=1; next} inb && /^(PASS|FAIL) \(/ {print; exit}')"
-has "$claims_verdict" "FAIL (exit 3" "the failing step's own verdict carries its actual exit code"
+gates_verdict="$(printf '%s\n' "$OUT" | awk '$0 == "=== gates ===" {inb=1; next} inb && /^(PASS|FAIL) \(/ {print; exit}')"
+has "$gates_verdict" "FAIL (exit 3" "the failing step's own verdict carries its actual exit code"
 eq "$(printf '%s\n' "$OUT" | grep -c '^FAIL (')" "1" "exactly one step is reported failed"
 
 # COLLECT-ALL, not fail-fast. The pre-#260 runner set `fail=1` and carried on; a pool that killed
-# its siblings on the first red would be a behaviour change no acceptance criterion asked for.
+# its siblings on the first red would be a behaviour change no acceptance criterion asked for. The
+# one place a red ends a run is BETWEEN the tiers, and only for a static step (section 7e, D156).
 for s in "${STUBS[@]}"; do
   has "$OUT" "=== $s ===" "collect-all: $s still ran and was reported after a sibling failed"
 done
@@ -874,7 +918,9 @@ has "$OUT" "FAILED: gates" "--serial names the failing step too"
 
 # ============================== 7. the serial prologue ========================================
 # The MECHANISM, tested by pinning a different step in the COPY: `zulu` is declared last, so if the
-# prologue works it is emitted first and holds the pool empty while it runs. Pinning build-drift
+# prologue works it is emitted before every pooled step OF ITS TIER and holds the pool empty while
+# it runs. `zulu` is a suite, so the static tier's stubs come before it (#630); the second half of
+# this section makes it static as well, and it is then first of all. Pinning build-drift
 # for real cannot be tested here — it runs scripts/build.sh over the working tree, which is
 # precisely the thing this suite must not do while the rest of the suite is reading that tree.
 cp "$ROOT/scripts/selfcheck.sh" "$FX/scripts/pinned.sh"
@@ -905,11 +951,26 @@ for s in "${STUBS[@]}"; do printf '1\n' > "$FX/ctl/$s.sleep"; done
 OUT="$(ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/pinned.sh" --only "$ONLY,zulu" --jobs 8 2>&1)"; RC_=$?
 yes "$RC_" "the prologue run exits 0"
 has "$OUT" "serial prologue: zulu" "the header names what runs in the prologue"
-eq "$(sed -n 's/^=== \(.*\) ===$/\1/p' <<< "$OUT" | head -1)" "zulu" \
-  "a pinned step is emitted FIRST even though it is declared LAST"
+# The first SUITE to start, asked of the event log: the four static stubs precede it, by tier.
+eq "$(sed -n 's/^+//p' "$FX/ctl/events" | grep -vxE 'practice-index|claims|workflow-shell|injection' | head -1)" "zulu" \
+  "a pinned step runs before every pooled step of its tier even though it is declared LAST"
 # Nothing else may be live while the prologue step runs: its `+zulu` and `-zulu` must be adjacent.
 eq "$(awk '/^\+zulu$/{getline nxt; print nxt}' "$FX/ctl/events")" "-zulu" \
   "the prologue step runs ALONE — no pooled step overlapped it"
+# …and the same step in the STATIC tier is first of all: a tier's serial members precede its pool,
+# and the static tier precedes the suites.
+sed 's/^STATIC_STEPS=(shellcheck /STATIC_STEPS=(zulu shellcheck /' "$FX/scripts/pinned.sh" > "$work/pinned.tmp" \
+  && mv "$work/pinned.tmp" "$FX/scripts/pinned.sh"
+grep -q '^STATIC_STEPS=(zulu shellcheck ' "$FX/scripts/pinned.sh" && ok \
+  || bad "fixture setup: could not put zulu in the copied runner's static tier (STATIC_STEPS line changed shape?)"
+reset_ctl
+for s in "${STUBS[@]}"; do printf '1\n' > "$FX/ctl/$s.sleep"; done
+OUT="$(ADB_STUB_CTL="$FX/ctl" bash "$FX/scripts/pinned.sh" --only "$ONLY,zulu" --jobs 8 2>&1)"; RC_=$?
+yes "$RC_" "the static-prologue run exits 0"
+eq "$(sed -n 's/^=== \(.*\) ===$/\1/p' <<< "$OUT" | head -1)" "zulu" \
+  "a pinned STATIC step is emitted FIRST even though it is declared LAST"
+eq "$(awk '/^\+zulu$/{getline nxt; print nxt}' "$FX/ctl/events")" "-zulu" \
+  "…and runs ALONE — no static pooled step overlapped it"
 
 # ...and the REAL runner's prologue is exactly this set, asked of the runner rather than grepped
 # out of it. TWO LANES share the prologue since #423 and they are pinned SEPARATELY, because the
@@ -938,6 +999,154 @@ eq "$(bash "$ROOT/scripts/selfcheck.sh" --list \
 # the length is the other half of the complaint this change answers.
 eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$1 == "pinned-install" {print $3}')" "pool" \
   "pinned-install is NOT isolated — speculative isolation is out of scope by decision"
+
+# ============================== 7e. the static tier (#630) =====================================
+# The steps that lint the tracked tree run FIRST, and a red one ends a plain run before any suite
+# starts (D156). An early stop's failure mode is the quiet one in both directions: a stop that never
+# fires prints what a full run prints, and a stop that fires prints a shorter run that reads as a
+# smaller registry. So every claim is asked of the EVENT LOG — did the suite execute? — and the
+# result block is required to count out, and name, what it did not dispatch.
+#
+# WHICH STUBS ARE STATIC IS ASKED OF THE RUNNER, never typed here: the fixture's registry is the
+# shipped one, so `--list` field 6 is the dispatcher's own answer for each stub.
+tier_stubs() {   # <static|suite> — the selected stubs in that tier, comma-joined, in registry order
+  bash "$FX/scripts/selfcheck.sh" --list \
+    | awk -F'\t' -v t="$1" -v keep=",$ONLY," '$6 == t && index(keep, "," $1 ",") { printf "%s%s", sep, $1; sep = "," }'
+}
+S_STATIC="$(tier_stubs static)"; S_SUITE="$(tier_stubs suite)"
+eq "$S_STATIC" "workflow-shell,injection,claims,practice-index" "fixture setup: four of the stubs are static-tier steps"
+eq "$S_SUITE" "gates,state-assert,bash-floor-guard,release-skill" "fixture setup: …and four are suites"
+IFS=',' read -r -a SUITE_STUBS <<< "$S_SUITE"
+IFS=',' read -r -a STATIC_STUBS <<< "$S_STATIC"
+
+# tier_order — `ordered` when every static stub ENDED before any suite stub STARTED, `overlapped`
+# when one did not, `unobserved` when the log holds no such pair (so a run that dispatched neither
+# tier can never read as ordered).
+tier_order() {
+  awk -v st="$S_STATIC" -v su="$S_SUITE" '
+    BEGIN { n = split(st, a, ","); for (i = 1; i <= n; i++) S[a[i]] = 1
+            n = split(su, b, ","); for (i = 1; i <= n; i++) U[b[i]] = 1 }
+    { name = substr($0, 2) }
+    /^-/ && (name in S) { last_static_end = NR }
+    /^\+/ && (name in U) && !first_suite { first_suite = NR }
+    END { if (!last_static_end || !first_suite) { print "unobserved"; exit }
+          print (last_static_end < first_suite) ? "ordered" : "overlapped" }' "$FX/ctl/events"
+}
+suites_started() { grep -cE "^\+(${S_SUITE//,/|})\$" "$FX/ctl/events"; }
+
+# A GREEN static tier: the suites run, and a step is DISPATCHED in the tier `--list` reports for it.
+# Every stub sleeps and the pool is wide enough for all eight, so a dispatcher that ignored the tier
+# would start the suites beside the static steps.
+reset_ctl
+for s in "${STUBS[@]}"; do printf '1\n' > "$FX/ctl/$s.sleep"; done
+sc --only "$ONLY" --jobs 8
+yes "$RC_" "a run whose static tier is green passes"
+eq "$(tier_order)" "ordered" "every static step ends before any suite step starts (dispatch agrees with --list's tier)"
+eq "$(suites_started)" "4" "a green static tier is followed by every selected suite"
+has "$OUT" "static tier first: workflow-shell injection claims practice-index" "the header names the static tier, in the order it is dispatched"
+hasnt "$OUT" "STOPPED" "a green static tier stops nothing"
+hasnt "$OUT" "not dispatched" "…and the result block reports nothing as undispatched"
+
+# THE acceptance criterion: a failing static step and a slow suite. The run ends red before the
+# suite starts, names the static step, and states how many steps were not dispatched.
+reset_ctl
+printf '3\n' > "$FX/ctl/claims.rc"
+printf '3\n' > "$FX/ctl/gates.sleep"
+sc --only "$ONLY" --jobs 4
+eq "$RC_" "1" "a red static step fails the run"
+eq "$(grep -c '^+gates$' "$FX/ctl/events")" "0" "a red static step ends the run before any suite starts (the slow suite never EXECUTED)"
+eq "$(suites_started)" "0" "…and neither did any other suite"
+has "$OUT" "selfcheck: STOPPED after the static tier — 1 static step(s) failed (claims); 4 step(s) not dispatched (--collect-all runs them): gates state-assert bash-floor-guard release-skill" \
+  "the stop names the static step that failed and how many steps were not dispatched"
+# The tier itself is collect-all: one red lint does not hide a second.
+for s in "${STATIC_STUBS[@]}"; do
+  has "$OUT" "=== $s ===" "the static tier runs to completion: $s was reported beside a red sibling"
+done
+eq "$(printf '%s\n' "$OUT" | grep -c '^4 step(s) in ')" "1" "the result counts only what was dispatched (4 of the 8 selected)"
+has "$OUT" "3 passed, 1 failed" "…so an undispatched step is never counted as passed"
+_nd="$(printf '%s\n' "$OUT" | grep '^not dispatched (')"
+for s in "${SUITE_STUBS[@]}"; do
+  has "$_nd" " $s" "the result block names every step not dispatched ($s)"
+done
+eq "$(printf '%s\n' "$OUT" | tail -2 | head -1)" "FAILED: claims" "an early stop keeps the failing names on the second-to-last line"
+eq "$(printf '%s\n' "$OUT" | tail -1)" "SOME CHECKS FAILED" "…and the verdict on the last"
+# An early stop is an ordinary exit: the run's record goes with it, as after any finished run.
+if [ -e "$FX/.selfcheck-run" ] || [ -e "$FX/.selfcheck-run.incomplete" ]; then
+  bad "an early stop left a run record (or its incomplete marker) behind in the fixture"
+else ok; fi
+# …and the digest a CI summary would carry says so too: without it a stopped run reads as one in
+# which only the named step failed and the rest passed.
+printf '%s\n' "$OUT" > "$work/stopped.log"
+DOUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$work/stopped.log" 2>&1)"
+has "$DOUT" 'Not dispatched (a static step failed first, so these did not run):** `gates` `state-assert` `bash-floor-guard` `release-skill`' \
+  "the digest names the steps a red static tier kept from running"
+
+# TWO red static steps: both are named, in one run.
+reset_ctl
+printf '3\n' > "$FX/ctl/claims.rc"; printf '4\n' > "$FX/ctl/injection.rc"
+sc --only "$ONLY" --jobs 4
+has "$OUT" "2 static step(s) failed (" "two red static steps are both counted by the stop"
+has "$(printf '%s\n' "$OUT" | grep '^FAILED: ')" "claims" "…and both are named (claims)"
+has "$(printf '%s\n' "$OUT" | grep '^FAILED: ')" "injection" "…and both are named (injection)"
+eq "$(suites_started)" "0" "…and still no suite starts"
+
+# --collect-all: the SAME fixture runs the suite and reports both.
+reset_ctl
+printf '3\n' > "$FX/ctl/claims.rc"
+printf '3\n' > "$FX/ctl/gates.sleep"; printf '4\n' > "$FX/ctl/gates.rc"
+sc --only "$ONLY" --jobs 4 --collect-all
+eq "$RC_" "1" "--collect-all: a red static step still fails the run"
+eq "$(grep -c '^+gates$' "$FX/ctl/events")" "1" "--collect-all runs the suites after a red static step"
+eq "$(suites_started)" "4" "--collect-all: every selected suite runs"
+has "$OUT" "FAILED: claims gates" "--collect-all reports both the static failure and the suite's"
+eq "$(printf '%s\n' "$OUT" | grep -c '^8 step(s) in ')" "1" "--collect-all: the result counts all eight"
+has "$OUT" "6 passed, 2 failed" "--collect-all: …six green, two red"
+hasnt "$OUT" "STOPPED" "--collect-all: nothing is stopped"
+hasnt "$OUT" "not dispatched" "--collect-all: nothing is reported as undispatched"
+has "$OUT" "selfcheck: --collect-all — a red static step does not end the run" "--collect-all: the header says the run will not stop"
+eq "$(tier_order)" "ordered" "--collect-all changes whether the run stops, never the order"
+
+# --serial is the debugging mode: declaration order, no tier, no stop. `gates` is declared before
+# `claims`, and `state-assert` after it, so both sides of the red step are observed.
+reset_ctl
+printf '3\n' > "$FX/ctl/claims.rc"
+sc --serial --only "$ONLY"
+eq "$RC_" "1" "--serial: a red static step still fails the run"
+eq "$(suites_started)" "4" "--serial never stops early: every suite runs, the ones declared after the red step included"
+hasnt "$OUT" "STOPPED" "--serial: nothing is stopped"
+
+# A pool of one stops the same way: the stop is between the tiers, not a property of concurrency.
+reset_ctl
+printf '3\n' > "$FX/ctl/claims.rc"
+sc --only "$ONLY" --jobs 1
+eq "$(suites_started)" "0" "--jobs 1: a red static step still ends the run before any suite starts"
+has "$OUT" "4 step(s) not dispatched" "--jobs 1: …and says how many"
+
+# Selections with one tier only. A red SUITE is not a reason to stop anything, and a red static step
+# with nothing after it has nothing to report as undispatched.
+reset_ctl
+printf '1\n' > "$FX/ctl/gates.rc"
+sc --only gates,state-assert --jobs 2
+eq "$RC_" "1" "a suite-only selection with a red suite fails"
+eq "$(grep -c '^+state-assert$' "$FX/ctl/events")" "1" "…and its other suite still runs"
+hasnt "$OUT" "not dispatched" "…with nothing reported as undispatched"
+reset_ctl
+printf '1\n' > "$FX/ctl/claims.rc"
+sc --only claims,injection --jobs 2
+eq "$RC_" "1" "a static-only selection with a red step fails"
+eq "$(printf '%s\n' "$OUT" | grep -c '^2 step(s) in ')" "1" "…having run both"
+hasnt "$OUT" "STOPPED" "…and announces no stop, since nothing was left to dispatch"
+
+# THE SHIPPED TIER, asked of the runner. Membership is policy, as a lane is: emptying the array
+# changes nothing any other assertion watches on a green tree, so it is pinned by name.
+eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$6 == "static" {print $1}' | tr '\n' ' ')" \
+  "shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index " \
+  "the static tier is exactly the steps that lint the tracked tree, in declaration order"
+# A tier member that is not registered is in no tier at all, so it is refused at load.
+sed 's/^STATIC_STEPS=(shellcheck /STATIC_STEPS=(nosuchstep shellcheck /' "$FX/scripts/selfcheck.sh" > "$FX/scripts/badtier.sh"
+OUT="$(bash "$FX/scripts/badtier.sh" --list 2>&1)"; RC_=$?
+eq "$RC_" "2" "a static-tier name that is not a registered step is an error"
+has "$OUT" "static-tier step nosuchstep is not registered" "…and says which"
 
 # ============================== 7b. FUNCTION-valued steps ====================================
 # Six of the shipped registry's commands are shell FUNCTIONS (`step_shellcheck`,
@@ -1050,16 +1259,19 @@ eq "$RC_" "2" "--jobs with no value is rejected"
 sc --nonsense
 eq "$RC_" "2" "an unknown flag is rejected rather than ignored"
 
-# --list is the registry contract other guards read; it must stay FIVE TAB-separated fields (#423
-# added the fourth, #441 the fifth). Field 3 keeps its original meaning — does this run in the
+# --list is the registry contract other guards read; it must stay SIX TAB-separated fields (#423
+# added the fourth, #441 the fifth, #630 the sixth). Field 3 keeps its original meaning — does this run in the
 # serial prologue — so a consumer asking `$3 == "serial"` still gets the right answer across both
 # lanes; the reason went into a new field rather than widening field 3 into three values, which
 # would have made every existing correct query silently wrong instead of erroring. The fifth is
-# the step's declared input set, comma-joined, or `-`; appended for the same reason.
+# the step's declared input set, comma-joined, or `-`; appended for the same reason. The sixth is
+# the tier, `static` or `suite`, appended for the same reason again.
 sc --list
 yes "$RC_" "--list exits 0"
-eq "$(printf '%s\n' "$OUT" | awk -F'\t' 'NF != 5 {n++} END {print n + 0}')" "0" \
-  "--list emits exactly five TAB-separated fields on every row"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' 'NF != 6 {n++} END {print n + 0}')" "0" \
+  "--list emits exactly six TAB-separated fields on every row"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$6 != "static" && $6 != "suite" {n++} END {print n + 0}')" "0" \
+  "--list's sixth field is always static or suite"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$5 != "-" && $5 !~ /^[A-Za-z0-9_.\/-]+(,[A-Za-z0-9_.\/-]+)*$/ {n++} END {print n + 0}')" "0" \
   "--list's fifth field is '-' or a comma-joined list of [A-Za-z0-9_./-] paths on every row"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 ~ /-mutation$/ && $5 == "-" {n++} END {print n + 0}')" "0" \
@@ -1337,6 +1549,7 @@ reset_ctl "$FXH"; mkdir -p "$work/nl"; : > "$nl_path"
 OUT="$(XDG_STATE_HOME="$nl_path" ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
 eq "$RC_" "1" "lock: an unusable lock fails the run"
 eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: …and runs no harness without it"
+eq "$(grep -c '^+gates$' "$FXH/ctl/events")" "1" "lock: an unusable lock never ends the run early, as a red static step does"
 has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is unavailable: " "lock: …and says why"
 eq "$(printf '%s\n' "$OUT" | grep -c '^ALL CHECKS PASSED$')" "0" "lock: a newline in the lock's path never forges a line of the log"
 # A relative state home is ignored, as the basedir spec says, never resolved inside each checkout.
@@ -1476,16 +1689,17 @@ overrun_sc() {   # <ceiling> <args...> — the fixture's selfcheck under a given
 overran_line() { printf '%s\n' "$OUT" | grep '^overran (past '; }
 
 reset_ctl
+# Both are SUITES: a red static step would end the run before `gates` started (section 7e).
 printf '10\n' > "$FX/ctl/gates.sleep"
-printf '5\n' > "$FX/ctl/claims.sleep"; printf '5\n' > "$FX/ctl/claims.rc"
+printf '5\n' > "$FX/ctl/state-assert.sleep"; printf '5\n' > "$FX/ctl/state-assert.rc"
 overrun_sc 2 --only "$ONLY" --jobs 4
 eq "$RC_" "1" "a red step past the ceiling still fails the run"
-has "$OUT" "FAILED: claims" "...and is named, with the ticker running"
+has "$OUT" "FAILED: state-assert" "...and is named, with the ticker running"
 has "$OUT" "FAIL (exit 5," "...with its own exit code"
 has "$OUT" "selfcheck: still running past 2s: gates (" "a step past the ceiling is named LIVE"
 has "$(block_of gates)" "gates-line-1" "an overrunning step still runs to completion and emits its block"
 has "$(overran_line)" "gates" "the result block names a step that overran and passed"
-has "$(overran_line)" "claims" "the result block names a step that overran and failed"
+has "$(overran_line)" "state-assert" "the result block names a step that overran and failed"
 hasnt "$(overran_line)" "practice-index" "a step that finished inside the ceiling is not named"
 # The ticker is a job in the same `wait -n` and must never be mistaken for a step.
 eq "$(printf '%s\n' "$OUT" | grep -c '^=== ')" "9" "the ticker is never emitted as a step (8 banners + result)"
@@ -1804,6 +2018,16 @@ arm_cancel "$FX"
 cancel_case "$FX" "cancellation" 4 "$CANCEL_DEADLINE" --jobs 4
 no "$CANCEL_RC" "a cancelled run exits non-zero"
 eq "$CANCEL_TERMINATED" "1" "cancellation terminates the workers instead of orphaning them ($CANCEL_DIAG)"
+
+# --- 10.1b the SUITE tier's pool (#630) --------------------------------------------------------
+# 10.1's four enrolments are the STATIC tier's: its four stubs fill the four slots and the suites
+# never start. Here only the suites heartbeat, so the static stubs end at once and the closed set is
+# the second pool's — the same reaping, reached through the second `run_pool` call.
+reset_ctl "$FX"
+for s in "${SUITE_STUBS[@]}"; do printf '0\n' > "$FX/ctl/$s.beat"; done
+cancel_case "$FX" "cancellation (suite tier)" 4 "$CANCEL_DEADLINE" --jobs 4
+no "$CANCEL_RC" "a run cancelled in its suite tier exits non-zero"
+eq "$CANCEL_TERMINATED" "1" "cancelling in the suite tier terminates its workers too ($CANCEL_DIAG)"
 
 # --- 10.2 --serial ----------------------------------------------------------------------------
 # A DIFFERENT code path, and the one that was left uncovered. A serial step used to run in the

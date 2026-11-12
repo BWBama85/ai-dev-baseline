@@ -20,6 +20,11 @@
 # parallel failure is hard to attribute. See "the concurrency contract" below for what may run
 # concurrently and what may not.
 #
+# IN TWO TIERS (#630, D156): the static tier — the steps that lint the tracked tree — runs first,
+# and a red one ends a plain run before any suite starts, naming the steps it did not dispatch.
+# `--collect-all` runs every selected step regardless, and CI passes it. See "the static tier" and
+# "the dispatch plan" below.
+#
 # WHAT A GREEN HERE DOES NOT COVER — three things, stated so the promise is the true one (#257):
 #
 #   1. The two LIVE CI steps (`required-drift`, the claim lint's `--live` half). Deliberate: D13/D24
@@ -137,6 +142,26 @@ lane_reason() {
   printf 'concurrent\n'
 }
 
+# THE STATIC TIER (#630, D156). A step is `static` when its command LINTS THE TRACKED TREE: it scans
+# tracked files and a finding names a tracked line. A lint that also self-tests its own scan is
+# still one. A suite that drives a script through fixtures is not, however fast it is.
+#
+# The tier is WHEN a step runs, the lane is whether it runs ALONE; the two are independent. A plain
+# run takes the static tier first — its serial members alone, then its pooled ones together — and
+# when one of them is red it ends there, before any suite starts (`--collect-all` runs on).
+# `--serial` keeps declaration order and never stops early.
+STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index)
+
+# tier_of <step> — `static` or `suite`. THE one home for that decision, as lane_of is for the lane:
+# the dispatcher's split and `--list`'s sixth field both call it.
+tier_of() {
+  local _p
+  for _p in "${STATIC_STEPS[@]}"; do
+    [ "$1" = "$_p" ] && { printf 'static\n'; return 0; }
+  done
+  printf 'suite\n'
+}
+
 # Concurrent git against ONE repo, made safe the documented way rather than by hoping. `git diff`
 # and friends opportunistically write back a refreshed index, and two of them racing produce
 # "Unable to create '.git/index.lock'" — a failure that looks like a broken check and is not.
@@ -231,10 +256,9 @@ add() {
 #
 # AND ONE HOME FOR THE PER-ROW GATE TOO (#470, D108). A harness built on per-test rows asks the
 # same question once more per row, and it asks it of THIS set: a row's inputs are the file that
-# row mutates plus every declared input NO row targets. Nothing new is declared here for that —
-# adding a sixth `--list` field would break the pin that `--list` carries exactly five — so a step
-# whose rows mutate a file it does not declare here refuses gating altogether and names the file,
-# which is what keeps this list, rather than the row table, the place the answer comes from.
+# row mutates plus every declared input NO row targets. Nothing new is declared here for that: a
+# step whose rows mutate a file it does not declare here refuses gating altogether and names the
+# file, which is what keeps this list, rather than the row table, the place the answer comes from.
 declare -A STEP_INPUTS=()
 
 inputs() {
@@ -991,10 +1015,16 @@ inputs mutation-gate-mutation scripts/check-mutation-gate.sh scripts/check-lib.s
 
 add install-dry-run     step_install_dry_run
 
+# A tier member that is not registered would be in no tier at all, in silence.
+for _s in "${STATIC_STEPS[@]}"; do
+  [ -n "${STEP_CMD[$_s]+x}" ] || { printf 'selfcheck: FATAL — static-tier step %s is not registered\n' "$_s" >&2; exit 2; }
+done
+
 # ======================================== the runner ===========================================
 
 JOBS=0
 SERIAL=0
+COLLECT_ALL=0  # --collect-all: a red static tier does not end the run (#630)
 ONLY=""
 ONLY_GIVEN=0   # distinct from ONLY="" — see the --only handling below
 MUTATION_REQ=0 # --mutation: a local run holds every mutation harness back unless asked (#599)
@@ -1006,11 +1036,16 @@ SUMMARIZE_GIVEN=0   # same distinction as --only/--skip: `--summarize ""` must n
 usage() {
   cat <<'USAGE'
 usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip a,b,...]
-                                 [--mutation] [--list] [--summarize FILE]
+                                 [--mutation] [--collect-all] [--list] [--summarize FILE]
        bash scripts/selfcheck.sh --stop
 
   --serial      Run every step sequentially, in declaration order, with output streaming
-                live. Reach for this when a parallel failure is hard to attribute.
+                live. Reach for this when a parallel failure is hard to attribute. No tier
+                reorders it and it never stops early.
+  --collect-all Run every selected step even when a static step is red. Without it a run takes
+                the static tier first — the steps that lint the tracked tree — and when one of
+                them fails it ends there, naming what failed and the steps it did not dispatch
+                (#630). CI passes this flag, so a CI log reports every step its run selected.
   --jobs N      Cap concurrency at N (default: min(cpu, 8)). --jobs 1 still buffers;
                 --serial is the mode that does not.
   --only a,b    Run only the named steps (still honouring the serial prologue). An unknown
@@ -1021,11 +1056,12 @@ usage: bash scripts/selfcheck.sh [--serial] [--jobs N] [--only a,b,...] [--skip 
                 This is a per-invocation choice for a caller that runs the suite twice on two
                 platforms; a plain run selects the whole registry (and then applies the gate).
   --list        Print the registry as
-                "<name><TAB><command><TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive<TAB><inputs>"
+                "<name><TAB><command><TAB>pool|serial<TAB>concurrent|mutates-tree|load-sensitive<TAB><inputs><TAB>static|suite"
                 and exit. This is the runner's own answer to "what does it run", so a guard can
-                ask instead of grepping. The third field says whether the step runs in the serial
-                prologue; the fourth says why; the fifth is the comma-joined input set the step's
-                verdict depends on (#441), or "-" for a step that always runs.
+                ask instead of grepping. The third field says whether the step runs alone, in a
+                serial lane; the fourth says why; the fifth is the comma-joined input set the
+                step's verdict depends on (#441), or "-" for a step that always runs; the sixth
+                is the tier (#630): "static" runs first and a red one ends a plain run.
 
   --mutation    Run the mutation harnesses (the steps that declare inputs) that the change under
                 test touches. Without it, or ADB_MUTATION_RUN_ALL=1, or naming the step in
@@ -1095,6 +1131,7 @@ ORIG_ARGS=("$@")   # replayed by the priority re-exec (#599)
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --serial) SERIAL=1 ;;
+    --collect-all) COLLECT_ALL=1 ;;
     --jobs)
       [ "$#" -ge 2 ] || { echo "selfcheck: --jobs needs a value" >&2; exit 2; }
       # `0` alone is not the test. `000` is not the literal 0 and passes a pattern check, then
@@ -1189,6 +1226,7 @@ summarize_run() {   # <captured-log>
       esac
     done
     printf '\n\n'
+    summarize_undispatched "$log"
   else
     printf 'The run emitted no `FAILED:` line — it did not reach its `result` block, so it was\n'
     printf 'cancelled, killed, or died before finishing. Nothing below is a step verdict.\n\n'
@@ -1223,6 +1261,26 @@ summarize_overran() {   # <captured-log>
   [ -n "$names" ] || names="$(sed -n 's/^selfcheck: still running past [0-9]*s: \([^ ]*\) (.*/\1/p' "$1" | awk '!seen[$0]++' | tr '\n' ' ')"
   [ -n "${names// /}" ] || return 0
   printf '\n**Ran past the overrun warning:**'
+  read -r -a _names <<< "$names"   # an array, never an unquoted expansion — see summarize_run
+  for _n in "${_names[@]}"; do
+    case "$_n" in
+      *[!A-Za-z0-9_-]*|'') printf ' (one unparsable name omitted)' ;;
+      *) printf ' `%s`' "$_n" ;;
+    esac
+  done
+  printf '\n\n'
+}
+
+# summarize_undispatched <captured-log> — the digest's paragraph for the steps a red static tier kept
+# from running (#630), or nothing. Without it the digest of a run that stopped early names the
+# failed steps and says nothing of the rest, which reads as "everything else passed". From the
+# result block's own line; every name is re-validated as `FAILED:`'s are.
+summarize_undispatched() {   # <captured-log>
+  local names _n
+  local -a _names
+  names="$(sed -n 's/^not dispatched ([^)]*): //p' "$1" | tail -1)"
+  [ -n "${names// /}" ] || return 0
+  printf '**Not dispatched (a static step failed first, so these did not run):**'
   read -r -a _names <<< "$names"   # an array, never an unquoted expansion — see summarize_run
   for _n in "${_names[@]}"; do
     case "$_n" in
@@ -2287,8 +2345,8 @@ if [ "$SUMMARIZE_GIVEN" -eq 1 ]; then
 fi
 
 if [ "$LIST" -eq 1 ]; then
-  # FIVE TAB-separated fields: name, command, whether it runs in the serial prologue, WHY, and the
-  # step's input set.
+  # SIX TAB-separated fields: name, command, whether it runs in a serial lane, WHY, the step's input
+  # set, and its tier.
   #
   # The third is here so a guard can ask the runner which steps are pinned instead of grepping the
   # arrays out of this file — and, unlike a grep, asking cannot pass while the array it read has
@@ -2304,9 +2362,14 @@ if [ "$LIST" -eq 1 ]; then
   # The FIFTH is the step's declared input set (#441), comma-joined, or `-` when the step declares
   # none. Appended rather than folded into an existing field for the reason the fourth was: every
   # consumer asking `$3`/`$4` keeps its answer, and a consumer that wants the inputs asks `$5`.
+  #
+  # The SIXTH is the tier (#630): `static` | `suite`. Appended for the same reason again. It is the
+  # last field this grammar is expected to need: #629 gives plain steps declared inputs, which
+  # changes the VALUES of field 5 and adds no field, and a static step is the one it will mark as
+  # reading the whole tree.
   for _s in "${STEP_ORDER[@]}"; do
-    printf '%s\t%s\t%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$(lane_of "$_s")" "$(lane_reason "$_s")" \
-      "${STEP_INPUTS[$_s]:--}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$_s" "${STEP_CMD[$_s]}" "$(lane_of "$_s")" "$(lane_reason "$_s")" \
+      "${STEP_INPUTS[$_s]:--}" "$(tier_of "$_s")"
   done
   exit 0
 fi
@@ -2970,13 +3033,6 @@ run_pool() {   # names...
   set +m
 }
 
-# The serial prologue: whatever the selection contains of PINNED_STEPS, alone and first. See the
-# concurrency contract at the top of this file for why each one is there.
-declare -a PROLOGUE=() POOLED=()
-for _s in "${SELECTED[@]}"; do
-  if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
-done
-
 # SAY WHAT WAS SKIPPED, BY NAME, BEFORE ANYTHING RUNS. A step dropped from the selection produces
 # exactly what a step that passed produces: nothing. This line and its twin in the `result` block
 # are the whole difference between "the caller chose not to run this" and "this silently stopped
@@ -3024,10 +3080,6 @@ if [ "$MUTATION_REQ" -eq 0 ] && [ -z "${ADB_MUTATION_RUN_ALL:-}" ]; then
   done
   SELECTED=("${_asked[@]}")
   [ "${#SELECTED[@]}" -gt 0 ] || { echo "selfcheck: every selected step is a mutation harness held back — add --mutation" >&2; exit 2; }
-  PROLOGUE=(); POOLED=()
-  for _s in "${SELECTED[@]}"; do
-    if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
-  done
   [ "${#HELD[@]}" -eq 0 ] || printf 'selfcheck: HELD %s mutation harness(es) — not requested (--mutation runs the ones this change touches, ADB_MUTATION_RUN_ALL=1 all): %s\n' \
     "${#HELD[@]}" "${HELD[*]}"
 fi
@@ -3060,11 +3112,6 @@ else
       "${#GATED[@]}" "${GATED[*]}"
     printf '  %s\n' "${GATE_LINES[@]}"
   fi
-  # The prologue split was computed from the pre-gate selection; recompute from what survived.
-  PROLOGUE=(); POOLED=()
-  for _s in "${SELECTED[@]}"; do
-    if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
-  done
 fi
 
 # =================================== the machine lock (#599) ===================================
@@ -3141,31 +3188,73 @@ if [ "$_mlock_rc" -ne 0 ]; then
   SELECTED=("${_free[@]}")
   printf 'selfcheck: LOCKED OUT %s mutation harness(es) — the machine lock is %s: %s\n' \
     "${#LOCKED_OUT[@]}" "$MLOCK_WHY" "${LOCKED_OUT[*]}"
-  PROLOGUE=(); POOLED=()
-  for _s in "${SELECTED[@]}"; do
-    if [ "$(lane_of "$_s")" = serial ]; then PROLOGUE+=("$_s"); else POOLED+=("$_s"); fi
-  done
 fi
+
+# ================================== the dispatch plan (#630) ===================================
+# The selection is final here — after --only, --skip, the hold-back, the gate and the lock — so it
+# is split ONCE, by two independent answers: the tier (when) and the lane (alone, or pooled).
+#
+#   static tier   its serial members alone (build-drift, which rewrites what the rest read), then
+#                 its pooled members together, every one run to its own verdict
+#   -- a red static step ends the run here, unless --collect-all --
+#   suite tier    its serial members alone (the load-sensitive lane), then the pool
+#
+# Each serial lane still runs with nothing beside it: a tier's pool starts only after that tier's
+# serial members have been reaped, and the suite tier starts only after the static pool has drained.
+declare -a STATIC_SERIAL=() STATIC_POOL=() PROLOGUE=() POOLED=()
+for _s in "${SELECTED[@]}"; do
+  case "$(tier_of "$_s")/$(lane_of "$_s")" in
+    static/serial) STATIC_SERIAL+=("$_s") ;;
+    static/pool)   STATIC_POOL+=("$_s") ;;
+    suite/serial)  PROLOGUE+=("$_s") ;;
+    *)             POOLED+=("$_s") ;;
+  esac
+done
+
+# The steps a red static tier kept from running. Counted out of the result line, and named there.
+declare -a UNDISPATCHED=()
 
 RUN_T0="$EPOCHSECONDS"
 if [ "$SERIAL" -eq 1 ]; then
   printf 'selfcheck: %s step(s), serial (--serial)\n' "${#SELECTED[@]}"
   run_serial "${SELECTED[@]}"
 else
+  # In the order they run. `serial prologue` names every step that runs alone, in either tier.
+  _tier=("${STATIC_SERIAL[@]}" "${STATIC_POOL[@]}")
+  _alone=("${STATIC_SERIAL[@]}" "${PROLOGUE[@]}")
   printf 'selfcheck: %s step(s), %s parallel job(s)' "${#SELECTED[@]}" "$JOBS"
-  [ "${#PROLOGUE[@]}" -gt 0 ] && printf ', serial prologue: %s' "${PROLOGUE[*]}"
+  [ "${#_tier[@]}" -gt 0 ] && printf ', static tier first: %s' "${_tier[*]}"
+  [ "${#_alone[@]}" -gt 0 ] && printf ', serial prologue: %s' "${_alone[*]}"
   printf '\n'
-  [ "${#PROLOGUE[@]}" -gt 0 ] && run_serial "${PROLOGUE[@]}"
-  [ "${#POOLED[@]}" -gt 0 ] && run_pool "${POOLED[@]}"
+  [ "$COLLECT_ALL" -eq 0 ] || printf 'selfcheck: --collect-all — a red static step does not end the run\n'
+  [ "${#STATIC_SERIAL[@]}" -gt 0 ] && run_serial "${STATIC_SERIAL[@]}"
+  [ "${#STATIC_POOL[@]}" -gt 0 ] && run_pool "${STATIC_POOL[@]}"
+  # THE STOP. Asked of FAILED, which only a step's own verdict fills — never of `fail`, which an
+  # unusable mutation lock also sets, so a lock problem cannot end a run as if a lint had failed.
+  # Nothing but static steps has run yet, so every name in FAILED is one.
+  if [ "${#FAILED[@]}" -gt 0 ] && [ "$COLLECT_ALL" -eq 0 ]; then   # row-static-stop
+    UNDISPATCHED=("${PROLOGUE[@]}" "${POOLED[@]}")
+  fi
+  if [ "${#UNDISPATCHED[@]}" -gt 0 ]; then
+    printf '\nselfcheck: STOPPED after the static tier — %s static step(s) failed (%s); %s step(s) not dispatched (--collect-all runs them): %s\n' \
+      "${#FAILED[@]}" "${FAILED[*]}" "${#UNDISPATCHED[@]}" "${UNDISPATCHED[*]}"
+  else
+    [ "${#PROLOGUE[@]}" -gt 0 ] && run_serial "${PROLOGUE[@]}"
+    [ "${#POOLED[@]}" -gt 0 ] && run_pool "${POOLED[@]}"
+  fi
 fi
 RUN_SECS=$(( EPOCHSECONDS - RUN_T0 ))
 
 banner "result"
 # SAY WHAT IT RAN, not merely whether it passed. A pool that dispatched nothing reports the same
-# clean verdict as a full green run, and a count is what makes that readable in a log.
+# clean verdict as a full green run, and a count is what makes that readable in a log. The count is
+# of what was DISPATCHED: a step a red static tier kept from running did not pass.
+RAN=$(( ${#SELECTED[@]} - ${#UNDISPATCHED[@]} ))   # row-ran-count
 printf '%s step(s) in %sm%02ds — %s passed, %s failed\n' \
-  "${#SELECTED[@]}" "$(( RUN_SECS / 60 ))" "$(( RUN_SECS % 60 ))" \
-  "$(( ${#SELECTED[@]} - ${#FAILED[@]} ))" "${#FAILED[@]}"
+  "$RAN" "$(( RUN_SECS / 60 ))" "$(( RUN_SECS % 60 ))" \
+  "$(( RAN - ${#FAILED[@]} ))" "${#FAILED[@]}"
+# …and those steps by name, so a short count never reads as a short registry.
+[ "${#UNDISPATCHED[@]}" -gt 0 ] && printf 'not dispatched (a static step failed; --collect-all runs them): %s\n' "${UNDISPATCHED[*]}"   # row-undispatched-named
 # The count above is of what RAN, so on its own it cannot distinguish a smaller registry from a
 # filtered one. Naming the skipped steps here is what keeps `57 step(s)` and `56 step(s)` from
 # being the same sentence to a reader.

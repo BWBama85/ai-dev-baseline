@@ -69,7 +69,11 @@
 # path runs on an ephemeral single-tenant runner with no concurrency to collide with. It sits
 # outside the four scanned roots, so it is not reached.
 #
-# Usage: bash scripts/check-tmp-paths.sh   (exit 0 = pass, 1 = fail)
+# Usage: bash scripts/check-tmp-paths.sh            (exit 0 = pass, 1 = fail)
+#        bash scripts/check-tmp-paths.sh --files    part 2 alone, over the NUL-delimited paths on
+#                                                   stdin (#630; see `scan_paths` for what that
+#                                                   does and does not cover) — 0 clean · 1 a
+#                                                   violation · 2 usage or an unreadable file
 
 # bash 5.3 runtime floor (#256) — FIRST, and deliberately before BOTH `set -u` and the cd.
 #
@@ -91,6 +95,13 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 }
 adb_require_bash "$@"
 set -uo pipefail
+MODE=full
+case "${1:-}" in
+  "")      ;;
+  --files) MODE=files ;;
+  *) echo "usage: check-tmp-paths.sh [--files]   (--files reads NUL-delimited paths on stdin)" >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { echo "usage: check-tmp-paths.sh [--files]   (--files reads NUL-delimited paths on stdin)" >&2; exit 2; }
 cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
@@ -146,6 +157,215 @@ ENTROPY_TEMPLATE='XXXXXX'
 # is CURRENT, never that it is CORRECT, so a placeholder that resolved to something host-global
 # would otherwise be invisible to every gate.
 SCAN_ROOTS=(base scripts docs agents)
+
+# =============================================================================================
+# THE SCANNER — part 2's rule, defined first because the changed-file mode needs it before part 1
+# =============================================================================================
+#
+# COMMENTS ARE STRIPPED IN EVERYTHING BUT MARKDOWN, and the trade is stated rather than hidden: a
+# `#` inside a string is stripped too, so this can only cause a MISSED report, never a false one —
+# the same bargain `check-workflow-shell.sh` documents. Markdown is NOT stripped, because prose is
+# exactly where `create-issue.md`'s fixed issue-body path lived and a leading `#` there is a
+# heading; a markdown line that must name a fixed path carries the marker instead.
+
+# scan_file <file> <rel> — the scanner proper, over ONE file: print "<rel>:<line>: <raw>" per
+# violation. THE one home for the rule: the tree walk (`scan_fixed_tmp`) and the changed-file mode
+# (`scan_paths`, #630) both call it, so the two cannot disagree about what a violation is. Returns
+# awk's status, which a caller that must not read a failed scan as a clean one checks.
+#
+# The NAME reaches awk through the environment, never `-v`: an assignment there is read as a string
+# literal, so a backslash in a name is rewritten and a newline in one stops awk outright.
+scan_file() {
+  ADB_TMP_REL="$2" awk -v exempt="$EXEMPT_RE" -v tmpl="$ENTROPY_TEMPLATE" -v pfx="$TMP_LIT/" '
+    BEGIN { rel = ENVIRON["ADB_TMP_REL"] }
+    # `$$` — a plain substring; `$$anything` is still the pid plus literal text.
+    function has_pid(tok) { return index(tok, "$$") > 0 }
+    # `$RANDOM` as a WHOLE parameter. `${RANDOM}` is its own spelling and is accepted;
+    # `$RANDOM_SUFFIX` is a different parameter and is NOT.
+    function has_random(tok,   i, nxt) {
+      if (index(tok, "${RANDOM}") > 0) return 1
+      i = index(tok, "$RANDOM")
+      while (i > 0) {
+        nxt = substr(tok, i + 7, 1)
+        if (nxt == "" || nxt !~ /[A-Za-z0-9_]/) return 1
+        tok = substr(tok, i + 7)
+        i = index(tok, "$RANDOM")
+      }
+      return 0
+    }
+    # `XXXXXX` is a TEMPLATE only where a real mktemp consumes it: on the comment-stripped
+    # line, and positioned BEFORE the token, which is where a command sits relative to its
+    # argument. `before` is the stripped text preceding this token.
+    function has_template(tok, before) {
+      return index(tok, tmpl) > 0 && index(before, "mktemp") > 0
+    }
+    function has_entropy(tok, before) {
+      return has_pid(tok) || has_random(tok) || has_template(tok, before)
+    }
+    {
+      raw = $0
+      # The exemption is read from the RAW line, before any stripping — otherwise a marker
+      # written as a trailing shell comment would be removed before it could be seen.
+      if (raw ~ exempt) next
+      line = raw
+      # Comment stripping for everything EXCEPT Markdown. Markdown prose is where
+      # create-issue.md-s fixed issue-body path lived, and a leading `#` there is a heading,
+      # not a comment. Everywhere else `#` starts one — in shell, in YAML, in a Makefile —
+      # and the trade is the one check-workflow-shell.sh documents: a `#` inside a string is
+      # stripped too, which can only cause a MISS, never a false positive.
+      if (rel !~ /\.md$/) sub(/(^|[[:space:]])#.*$/, "", line)
+      # A CONCRETE name under the shared temp dir: the prefix plus at least one character
+      # from a filename charset. The charset deliberately EXCLUDES `<`, so a documentation
+      # placeholder such as the literal prefix followed by an angle-bracketed name is not
+      # mistaken for a real path.
+      # `seen` accumulates the stripped text consumed so far, so `has_template` can ask
+      # whether a `mktemp` appears BEFORE this token rather than anywhere on the line.
+      seen = ""
+      while (1) {
+        i = index(line, pfx)
+        if (i == 0) break
+        seen = seen substr(line, 1, i - 1)
+        rest = substr(line, i + length(pfx))
+        if (match(rest, /^[A-Za-z0-9._$*{}@%+,=:-]+/)) {
+          tok = pfx substr(rest, 1, RLENGTH)
+          if (!has_entropy(tok, seen)) { printf "%s:%d: %s\n", rel, FNR, raw; break }
+          seen = seen pfx substr(rest, 1, RLENGTH)
+          line = substr(rest, RLENGTH + 1)
+        } else {
+          seen = seen pfx
+          line = rest
+        }
+      }
+    }
+  ' "$1"
+}
+
+scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
+  local tree="$1" r f
+  local -a dirs=()
+  for r in "${SCAN_ROOTS[@]}"; do [ -d "$tree/$r" ] && dirs+=( "$tree/$r" ); done
+  [ "${#dirs[@]}" -gt 0 ] || return 0
+  # EVERY regular text file, whatever its extension: an extensionless script, `tool.bash` and a
+  # shell command in a `.yml` all carry this class (D50). `grep -Iq` is the binary filter.
+  #
+  # NUL-delimited end to end: a newline is a legal byte of a filename, and a name split in two is
+  # two paths that do not exist.
+  while IFS= read -r -d '' f; do
+    LC_ALL=C grep -Iq . "$f" 2>/dev/null || continue
+    scan_file "$f" "${f#"$tree"/}"
+  done < <(find "${dirs[@]}" -type f -print0 2>/dev/null | _tmp_nul_sort)
+}
+
+# Order the NUL-delimited stream, or pass it through unchanged where that is not possible.
+#
+# `sort -z` is not POSIX, so it is PROBED, and on its OUTPUT rather than its exit status: an
+# implementation that accepted `-z` and reordered nothing would pass a status check. Ordering is a
+# REPORT property only, so falling through to `find`'s own order never misses a violation (D50).
+_tmp_nul_sort() {
+  if [ "${_TMP_SORT_Z:-}" = "" ]; then
+    if [ "${ printf 'b\0a\0' | LC_ALL=C sort -z 2>/dev/null | tr '\0' ','; }" = "a,b," ]
+    then _TMP_SORT_Z=1; else _TMP_SORT_Z=0; fi
+  fi
+  if [ "$_TMP_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
+}
+
+# _tp_ancestry <tree> <rel> — what the directories ABOVE <rel> are, top down, as one word:
+#   linked  one of them is a symlink. The tree walk never descends a symlinked directory (`find`
+#           does not follow one), so nothing below it is in scope — wherever the link points, and
+#           whether or not its target can be read.
+#   file    one of them exists and is not a directory, so no name below it can exist.
+#   plain   every one that exists is a real directory.
+# The last component of <rel> is not looked at. Whether a `plain` path is ABSENT is a different
+# question, and the shared `adb_parents_searchable` answers it.
+_tp_ancestry() {
+  local d="$1" rest="$2"
+  while :; do
+    case "$rest" in */*) ;; *) break ;; esac
+    d="$d/${rest%%/*}"; rest="${rest#*/}"
+    if [ -L "$d" ]; then printf 'linked'; return 0; fi
+    [ -e "$d" ] || break
+    [ -d "$d" ] || { printf 'file'; return 0; }
+  done
+  printf 'plain'
+}
+
+# scan_paths <tree> — the CHANGED-FILE mode (#630): the same scan over the NUL-delimited,
+# tree-relative paths on stdin, for a caller that knows which files changed and has seconds, not
+# the tree walk's. Prints each violation as the tree walk does, then ONE count line on stdout:
+#
+#   check-tmp-paths: --files: <N> scanned, <M> out of scope, <K> gone, <B> binary or empty
+#
+# WHAT IS THE SAME as the tree walk: the scanner (`scan_file`), the four roots, the regular-file
+# rule (`find -type f` there, a non-symlink regular file here), that a symlinked directory is never
+# descended, the binary filter and the `adb-tmp-ok` exemption. A path outside the roots, or below a
+# symlinked directory, is counted `out of scope` and never scanned, exactly as the walk never
+# reaches it.
+#
+# WHAT IT DOES NOT COVER, said rather than implied: parts 1 and 1b (the issue snapshot's own path,
+# which are properties of two named files, not of a change), the self-test and the mutations. A
+# green here is part 2 over the files named, and nothing else; the full run is the registry step.
+#
+# A READ THAT FAILS IS NEVER A CLEAN SCAN. The tree walk skips a file it cannot read; here that is
+# status 2, as is an empty list, because this mode's caller reads a zero as "these files are
+# clean". 0 = no violation · 1 = a violation · 2 = usage, nothing to scan, or a file it could not read.
+#
+# EVERY RECORD ENDS WITH A NUL, the last one included. A list cut short mid-name would otherwise be
+# read as a shorter name, which is most likely `gone`. What no reader can see is a list cut at a
+# record boundary; the caller covers that by checking the count line against what it sent.
+scan_paths() {
+  local tree="$1" p="" r f h rc inroot scanned=0 outside=0 gone=0 binary=0 err=0 hits=""
+  local -a paths=()
+  while IFS= read -r -d '' p; do paths+=("$p"); done
+  # `read` fails at end of input and leaves what it had read: non-empty is an unterminated record.
+  [ -z "$p" ] || { check_note "--files: the path list does not end with a NUL — it may have been cut short, so nothing in it is trusted"; return 2; }
+  [ "${#paths[@]}" -gt 0 ] || { check_note "--files: no path on stdin — a scan of nothing is a refusal, never a pass"; return 2; }
+  for p in "${paths[@]}"; do
+    case "$p" in
+      ''|/*|..|../*|*/..|*/../*) check_note "--files: [$p] is not a path inside the tree"; err=1; continue ;;
+    esac
+    inroot=0
+    for r in "${SCAN_ROOTS[@]}"; do case "$p" in "$r"/*) inroot=1 ;; esac; done
+    [ "$inroot" -eq 1 ] || { outside=$((outside + 1)); continue; }
+    f="$tree/$p"
+    case "$(_tp_ancestry "$tree" "$p")" in
+      linked) outside=$((outside + 1)); continue ;;
+      file)   gone=$((gone + 1)); continue ;;
+    esac
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      # Deleted by the change — but only when the absence is CONFIRMED. The same test fails for a
+      # file under a directory this user cannot search, and that file is there and unscanned.
+      if adb_parents_searchable "$tree" "$p"; then gone=$((gone + 1)); else check_note "--files: cannot tell whether $p exists (a directory above it cannot be searched)"; err=1; fi
+      continue
+    fi
+    if [ -L "$f" ] || [ ! -f "$f" ]; then outside=$((outside + 1)); continue; fi
+    [ -r "$f" ] || { check_note "--files: cannot read $p"; err=1; continue; }
+    LC_ALL=C grep -Iq . "$f" 2>/dev/null; rc=$?
+    case "$rc" in
+      0) ;;
+      1) binary=$((binary + 1)); continue ;;
+      *) check_note "--files: could not classify $p (grep exited $rc)"; err=1; continue ;;
+    esac
+    h="$(scan_file "$f" "$p")" || { check_note "--files: the scan of $p failed"; err=1; continue; }
+    scanned=$((scanned + 1))
+    [ -z "$h" ] || hits="${hits:+$hits$'\n'}$h"
+  done
+  if [ -n "$hits" ]; then
+    check_note "fixed shared-temp path(s) — a name every checkout and every session on the host shares:"
+    printf '%s\n' "$hits" | sed 's/^/    /' >&2
+    check_note 'use mktemp ("${TMPDIR:-/tmp}/name.XXXXXX"), a $$ suffix, or {{STATE_DIR}} for run state.'
+    check_note "A line that must name one carries '$MARK: <reason>'."
+  fi
+  printf 'check-tmp-paths: --files: %s scanned, %s out of scope, %s gone, %s binary or empty\n' \
+    "$scanned" "$outside" "$gone" "$binary"
+  [ "$err" -eq 0 ] || return 2
+  [ -z "$hits" ] || return 1
+  return 0
+}
+
+if [ "$MODE" = files ]; then
+  scan_paths "$ROOT"
+  exit $?
+fi
 
 # =============================================================================================
 # 1. THE SNAPSHOT'S PATH IS PER-CHECKOUT
@@ -327,112 +547,8 @@ fi
 # The belt to part 1's braces. Part 1 knows one filename; this knows the CLASS, so a future fixed
 # path under any other name still fails.
 #
-# COMMENTS ARE STRIPPED IN EVERYTHING BUT MARKDOWN, and the trade is stated rather than hidden: a
-# `#` inside a string is stripped too, so this can only cause a MISSED report, never a false one —
-# the same bargain `check-workflow-shell.sh` documents. Markdown is NOT stripped, because prose is
-# exactly where `create-issue.md`'s fixed issue-body path lived and a leading `#` there is a
-# heading; a markdown line that must name a fixed path carries the marker instead.
-scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
-  local tree="$1" r f
-  local -a dirs=()
-  for r in "${SCAN_ROOTS[@]}"; do [ -d "$tree/$r" ] && dirs+=( "$tree/$r" ); done
-  [ "${#dirs[@]}" -gt 0 ] || return 0
-  # EVERY regular text file, not just `*.md` and `*.sh`. The extension allowlist was the review's
-  # finding and it was right: `scripts/helper` with a shebang, `tool.bash`, and a shell command
-  # embedded in a `.yml` are all places this class lives, and every one of them was invisible while
-  # the changelog claimed the roots were covered. `grep -Iq` is the binary filter, so a future
-  # image or archive under these roots is skipped rather than scanned as mojibake.
-  #
-  # `-print0` and a NUL reader: `find`'s newline-delimited output splits a filename containing a
-  # newline into two nonexistent paths, and a violation inside such a file would be missed silently
-  # — the same class of quiet miss this whole file exists to prevent, one level up.
-  while IFS= read -r -d '' f; do
-    LC_ALL=C grep -Iq . "$f" 2>/dev/null || continue
-        awk -v exempt="$EXEMPT_RE" -v tmpl="$ENTROPY_TEMPLATE" \
-            -v rel="${f#"$tree"/}" -v pfx="$TMP_LIT/" '
-          # `$$` — a plain substring; `$$anything` is still the pid plus literal text.
-          function has_pid(tok) { return index(tok, "$$") > 0 }
-          # `$RANDOM` as a WHOLE parameter. `${RANDOM}` is its own spelling and is accepted;
-          # `$RANDOM_SUFFIX` is a different parameter and is NOT.
-          function has_random(tok,   i, nxt) {
-            if (index(tok, "${RANDOM}") > 0) return 1
-            i = index(tok, "$RANDOM")
-            while (i > 0) {
-              nxt = substr(tok, i + 7, 1)
-              if (nxt == "" || nxt !~ /[A-Za-z0-9_]/) return 1
-              tok = substr(tok, i + 7)
-              i = index(tok, "$RANDOM")
-            }
-            return 0
-          }
-          # `XXXXXX` is a TEMPLATE only where a real mktemp consumes it: on the comment-stripped
-          # line, and positioned BEFORE the token, which is where a command sits relative to its
-          # argument. `before` is the stripped text preceding this token.
-          function has_template(tok, before) {
-            return index(tok, tmpl) > 0 && index(before, "mktemp") > 0
-          }
-          function has_entropy(tok, before) {
-            return has_pid(tok) || has_random(tok) || has_template(tok, before)
-          }
-          {
-            raw = $0
-            # The exemption is read from the RAW line, before any stripping — otherwise a marker
-            # written as a trailing shell comment would be removed before it could be seen.
-            if (raw ~ exempt) next
-            line = raw
-            # Comment stripping for everything EXCEPT Markdown. Markdown prose is where
-            # create-issue.md-s fixed issue-body path lived, and a leading `#` there is a heading,
-            # not a comment. Everywhere else `#` starts one — in shell, in YAML, in a Makefile —
-            # and the trade is the one check-workflow-shell.sh documents: a `#` inside a string is
-            # stripped too, which can only cause a MISS, never a false positive.
-            if (rel !~ /\.md$/) sub(/(^|[[:space:]])#.*$/, "", line)
-            # A CONCRETE name under the shared temp dir: the prefix plus at least one character
-            # from a filename charset. The charset deliberately EXCLUDES `<`, so a documentation
-            # placeholder such as the literal prefix followed by an angle-bracketed name is not
-            # mistaken for a real path.
-            # `seen` accumulates the stripped text consumed so far, so `has_template` can ask
-            # whether a `mktemp` appears BEFORE this token rather than anywhere on the line.
-            seen = ""
-            while (1) {
-              i = index(line, pfx)
-              if (i == 0) break
-              seen = seen substr(line, 1, i - 1)
-              rest = substr(line, i + length(pfx))
-              if (match(rest, /^[A-Za-z0-9._$*{}@%+,=:-]+/)) {
-                tok = pfx substr(rest, 1, RLENGTH)
-                if (!has_entropy(tok, seen)) { printf "%s:%d: %s\n", rel, FNR, raw; break }
-                seen = seen pfx substr(rest, 1, RLENGTH)
-                line = substr(rest, RLENGTH + 1)
-              } else {
-                seen = seen pfx
-                line = rest
-              }
-            }
-          }
-        ' "$f"
-  done < <(find "${dirs[@]}" -type f -print0 2>/dev/null | _tmp_nul_sort)
-}
-
-# Order the NUL-delimited stream, or pass it through unchanged where that is not possible.
-#
-# `sort -z` IS NOT POSIX. Review flagged it as GNU-only and unavailable to the `selfcheck-macos`
-# job, which deliberately keeps coreutils' `gnubin` off PATH. Measured rather than assumed: Apple's
-# `/usr/bin/sort` (2.3-Apple, macOS 26.5.1) round-trips `b\0a\0c\0` to `a\0b\0c\0` correctly,
-# so the stated failure does not occur on that build — but the runner's image is a different one,
-# and a required job going red on an option flag is not a thing to find out from CI.
-#
-# So PROBE, and probe the OUTPUT rather than the exit status: an implementation that accepted `-z`
-# and did something else would pass a status check and silently reorder nothing. Ordering is a
-# REPORT property only — the pass/fail verdict does not depend on it — so falling through to
-# `find`'s own order costs reproducible diagnostics and never a missed violation.
-_tmp_nul_sort() {
-  if [ "${_TMP_SORT_Z:-}" = "" ]; then
-    if [ "${ printf 'b\0a\0' | LC_ALL=C sort -z 2>/dev/null | tr '\0' ','; }" = "a,b," ]
-    then _TMP_SORT_Z=1; else _TMP_SORT_Z=0; fi
-  fi
-  if [ "$_TMP_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
-}
-
+# The scanner itself is defined above, under "THE SCANNER", because `--files` needs it before
+# part 1 runs.
 hits="${ scan_fixed_tmp "$ROOT"; }"
 if [ -n "$hits" ]; then
   bad_quiet
@@ -518,6 +634,121 @@ else
   ok
 fi
 rm -f "$st/scripts/bare.sh"
+
+
+# --- the changed-file mode (#630): the same rule, the same filters, and never a quiet zero -------
+# `scan_paths` is what the turn-end gate runs, so each way it could report a clean scan it did not
+# perform is driven here: a path it must not scan, a path that is gone, a file it cannot read, and
+# no path at all. `fm <expected-status> <label> <paths…>` runs it over the self-test tree.
+fm() {
+  local want="$1" label="$2"; shift 2
+  FM_OUT="$(printf '%s\0' "$@" | scan_paths "$st" 2>&1)"; FM_RC=$?
+  if [ "$FM_RC" -eq "$want" ]; then ok; else bad "--files: $label → want status $want, got $FM_RC: $FM_OUT"; fi
+}
+mkdir -p "$st/docs" "$st/other"
+mk "scripts/changed.sh" "cat foo > $TMP_LIT/adb-changed.log"
+fm 1 "a changed file carrying a fixed temp path is a violation" scripts/changed.sh
+has "$FM_OUT" "scripts/changed.sh:1: cat foo > $TMP_LIT/adb-changed.log" "--files: the violation names the file and the line"
+has "$FM_OUT" "check-tmp-paths: --files: 1 scanned, 0 out of scope, 0 gone, 0 binary or empty" "--files: the count line says what was scanned"
+# Agreement with the tree walk, on the same tree: one scanner, so one answer.
+eq "$(printf '%s' "$FM_OUT" | grep -c "^    scripts/changed.sh:1: ")" "$(scan_fixed_tmp "$st" | grep -c '^scripts/changed.sh:1: ')" \
+  "--files: reports the line the tree walk reports"
+mk "scripts/changed.sh" "echo \"$TMP_LIT/deliberate.log\"   # $MARK: a stated reason"
+fm 0 "the exemption marker is honoured, as in the tree walk" scripts/changed.sh
+rm -f "$st/scripts/changed.sh"
+# The four roots are the scope here too: the same line outside them is not this lint's to judge.
+mk "other/outside.sh" "cat foo > $TMP_LIT/adb-outside.log"
+fm 0 "a path outside the scanned roots is out of scope, never scanned" other/outside.sh
+has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and is counted as out of scope"
+# A file the change DELETED is in the list and not on disk.
+fm 0 "a path that no longer exists is counted, not an error" scripts/deleted-by-the-change.sh
+has "$FM_OUT" "0 scanned, 0 out of scope, 1 gone" "--files: …and is counted as gone"
+# NUL-delimited end to end: a name with a space and a newline arrives whole.
+odd="scripts/with space
+and newline.sh"
+printf 'cat foo > %s/adb-odd.log\n' "$TMP_LIT" > "$st/$odd"
+fm 1 "a name carrying a space and a newline is scanned whole" "$odd" docs/absent.md
+has "$FM_OUT" "1 scanned, 0 out of scope, 1 gone" "--files: …as ONE path, beside the next one"
+rm -f "$st/$odd"
+# A binary file is skipped by the same filter the tree walk uses, and said.
+printf 'cat > %s/adb-bin.log\0\n' "$TMP_LIT" > "$st/scripts/blob.bin"
+fm 0 "a binary file is skipped, as in the tree walk" scripts/blob.bin
+has "$FM_OUT" "0 scanned, 0 out of scope, 0 gone, 1 binary or empty" "--files: …and counted"
+rm -f "$st/scripts/blob.bin"
+# A symlink is not a regular file to the tree walk (`find -type f`), so it is out of scope here too.
+mk "scripts/linktarget.sh" "cat foo > $TMP_LIT/adb-linked.log"
+ln -s linktarget.sh "$st/scripts/link.sh"
+fm 0 "a symlink is out of scope, as the tree walk never follows one" scripts/link.sh
+has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and is counted as out of scope"
+rm -f "$st/scripts/link.sh" "$st/scripts/linktarget.sh"
+# A path under a directory this user cannot search is NOT gone: the file is there and unscanned.
+# (Root searches anything, so the case cannot be staged there; it says so.)
+mkdir -p "$st/scripts/sealed"
+mk "scripts/sealed/inside.sh" "cat foo > $TMP_LIT/adb-sealed.log"
+chmod 000 "$st/scripts/sealed"
+if [ -x "$st/scripts/sealed" ]; then
+  printf 'SKIP: --files: this user can search a mode-000 directory, so an unsearchable parent cannot be staged\n'
+else
+  fm 2 "a path under a directory that cannot be searched is status 2, never counted as gone" scripts/sealed/inside.sh
+  has "$FM_OUT" "cannot tell whether scripts/sealed/inside.sh exists" "--files: …and names the path"
+  has "$FM_OUT" "0 scanned, 0 out of scope, 0 gone" "--files: …and does not count it as gone"
+fi
+chmod 700 "$st/scripts/sealed"; rm -rf "$st/scripts/sealed"
+# …while a name under a path component that is a FILE cannot exist, and is gone.
+mk "scripts/afile.sh" "echo ok"
+fm 0 "a name below a regular file is confirmed absent" scripts/afile.sh/below.sh
+has "$FM_OUT" "0 scanned, 0 out of scope, 1 gone" "--files: …and counted as gone"
+rm -f "$st/scripts/afile.sh"
+# A SYMLINKED DIRECTORY IS NEVER DESCENDED, as the tree walk never descends one — wherever it
+# points. The violation is real and reachable through the link; the walk reports it once, under its
+# own name, and `--files` must not report it a second time under the link's.
+mkdir -p "$st/scripts/realdir" "$work/outside-tree"
+mk "scripts/realdir/bad.sh" "cat foo > $TMP_LIT/adb-realdir.log"
+ln -s realdir "$st/scripts/linkdir"
+fm 0 "a path below a symlinked directory is out of scope" scripts/linkdir/bad.sh
+has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and counted as out of scope, never scanned through the link"
+eq "$(scan_fixed_tmp "$st" | grep -c 'adb-realdir.log')" "1" "--files: …matching the tree walk, which reports that file once, under its real name"
+rm -f "$st/scripts/linkdir"; rm -rf "$st/scripts/realdir"
+# …including a link that leaves the tree: a deleted directory replaced by a symlink leaves its old
+# descendants in a change set, and those names then resolve to files that are not this tree's.
+printf 'cat foo > %s/adb-external.log\n' "$TMP_LIT" > "$work/outside-tree/x.sh"
+ln -s "$work/outside-tree" "$st/scripts/escaped"
+fm 0 "a path that resolves outside the tree through a symlinked directory is never scanned" scripts/escaped/x.sh
+has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and is counted as out of scope"
+rm -f "$st/scripts/escaped"
+# …and a link whose TARGET cannot be searched is still a link: out of scope, not gone and not an error.
+mkdir -p "$work/outside-tree/sealed/in"
+ln -s "$work/outside-tree/sealed/in" "$st/scripts/indirect"
+chmod 000 "$work/outside-tree/sealed"
+fm 0 "a path below a symlink whose target cannot be searched is out of scope" scripts/indirect/x.sh
+has "$FM_OUT" "0 scanned, 1 out of scope, 0 gone" "--files: …and is never counted as gone"
+chmod 700 "$work/outside-tree/sealed"; rm -f "$st/scripts/indirect"
+# EVERY RECORD ENDS WITH A NUL. A list cut short mid-name would read as a shorter name.
+mk "scripts/whole.sh" "cat foo > $TMP_LIT/adb-whole.log"
+FM_OUT="$(printf 'scripts/whole.sh' | scan_paths "$st" 2>&1)"; FM_RC=$?
+eq "$FM_RC" "2" "--files: a path list with no terminating NUL is refused (2)"
+has "$FM_OUT" "does not end with a NUL" "--files: …and says why"
+FM_OUT="$(printf 'scripts/whole.sh\0scripts/who' | scan_paths "$st" 2>&1)"; FM_RC=$?
+eq "$FM_RC" "2" "--files: a list whose LAST record is cut short is refused whole, never scanned in part"
+hasnt "$FM_OUT" "scanned," "--files: …before anything is counted"
+rm -f "$st/scripts/whole.sh"
+# NOTHING TO SCAN IS A REFUSAL. An empty list read as clean is the gate checking nothing.
+FM_OUT="$(scan_paths "$st" 2>&1 </dev/null)"; FM_RC=$?
+eq "$FM_RC" "2" "--files: an empty path list is a refusal (2), never a pass"
+# A path that leaves the tree is refused, not resolved.
+fm 2 "a path that climbs out of the tree is refused" ../escape.sh
+fm 2 "an absolute path is refused" "$st/scripts/x.sh"
+# A file that cannot be READ is never a clean scan. (Root reads anything, so the case cannot be
+# staged there; it says so rather than passing in silence.)
+mk "scripts/locked.sh" "cat foo > $TMP_LIT/adb-locked.log"
+chmod 000 "$st/scripts/locked.sh"
+if [ -r "$st/scripts/locked.sh" ]; then
+  printf 'SKIP: --files: this user can read a mode-000 file, so an unreadable file cannot be staged\n'
+else
+  fm 2 "a file that cannot be read is status 2, never a clean scan" scripts/locked.sh
+  has "$FM_OUT" "cannot read scripts/locked.sh" "--files: …and names the file"
+fi
+chmod 600 "$st/scripts/locked.sh"; rm -f "$st/scripts/locked.sh"
 
 # =============================================================================================
 # 3. THE GUARD SEEN GOING RED — mutate a COPY, never the working tree
@@ -621,6 +852,10 @@ m_pseudo_random() { printf '\nprintf x > %s/adb-pseudo.$RANDOM_SUFFIX\n' "$TMP_L
 # `mktemp` named only in a COMMENT beside a literal template. The Xs stay literal.
 m_mktemp_comment(){ printf '\nprintf x > %s/adb-todo.XXXXXX   # TODO: use mktemp here\n' "$TMP_LIT" >> "$1/scripts/check-lib.sh"; }
 
+# The changed-file mode over the file a mutator edits (#630): the same defect, reached through the
+# path the turn-end gate takes. Its diagnostics go to stderr, so both streams are the report.
+files_mode_out() { printf 'scripts/check-lib.sh\0' | scan_paths "$1" 2>&1 | grep -v '^check-tmp-paths: --files: 1 scanned, 0 out of scope, 0 gone, 0 binary or empty$'; }
+
 # part1 writes its counts into variables and its violations to stdout; the harness reads stdout.
 part1_out()     { P1_SITES=0; P1_FILES=0; part1 "$1"; }
 # 1b's demonstration, driven over the mutated tree. Its own fixture roots live under mktemp, so a
@@ -658,6 +893,7 @@ mutate_must_fail "XXXXXX with no mktemp on the line"        m_bare_template  sca
 mutate_must_fail "\$RANDOM as a prefix of another parameter" m_pseudo_random scan_fixed_tmp  "$TMP_LIT/adb-pseudo."
 mutate_must_fail "mktemp named only in a trailing COMMENT"  m_mktemp_comment scan_fixed_tmp  "$TMP_LIT/adb-todo.XXXXXX"
 mutate_must_fail "a fixed path in an EXTENSIONLESS script"  m_extensionless  scan_fixed_tmp  "$TMP_LIT/adb-helper.log"
+mutate_must_fail "a fixed temp write, through --files"      m_tmp_in_script  files_mode_out  "$TMP_LIT/adb-regression.log"
 
 printf 'check-tmp-paths: %s mutations required to go red\n' "$MUTATIONS"
 
