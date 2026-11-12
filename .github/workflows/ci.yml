@@ -991,7 +991,10 @@ jobs:
   precommit-gate:
     name: precommit-gate
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    # 20, resized with #630: the suite runs this repo's real turn-end gate about twenty times, and
+    # the gate gained seven lints. Measured back to back on one machine on 2026-11-12, the suite
+    # went from 239s to 382s; this job took 4.7 minutes before that (run 43056592366).
+    timeout-minutes: 20
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
       # us, in the log. A later step is what proves it clears the floor; this is what

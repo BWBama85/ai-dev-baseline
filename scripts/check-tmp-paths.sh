@@ -245,15 +245,11 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
   local -a dirs=()
   for r in "${SCAN_ROOTS[@]}"; do [ -d "$tree/$r" ] && dirs+=( "$tree/$r" ); done
   [ "${#dirs[@]}" -gt 0 ] || return 0
-  # EVERY regular text file, not just `*.md` and `*.sh`. The extension allowlist was the review's
-  # finding and it was right: `scripts/helper` with a shebang, `tool.bash`, and a shell command
-  # embedded in a `.yml` are all places this class lives, and every one of them was invisible while
-  # the changelog claimed the roots were covered. `grep -Iq` is the binary filter, so a future
-  # image or archive under these roots is skipped rather than scanned as mojibake.
+  # EVERY regular text file, whatever its extension: an extensionless script, `tool.bash` and a
+  # shell command in a `.yml` all carry this class (D50). `grep -Iq` is the binary filter.
   #
-  # `-print0` and a NUL reader: `find`'s newline-delimited output splits a filename containing a
-  # newline into two nonexistent paths, and a violation inside such a file would be missed silently
-  # — the same class of quiet miss this whole file exists to prevent, one level up.
+  # NUL-delimited end to end: a newline is a legal byte of a filename, and a name split in two is
+  # two paths that do not exist.
   while IFS= read -r -d '' f; do
     LC_ALL=C grep -Iq . "$f" 2>/dev/null || continue
     scan_file "$f" "${f#"$tree"/}"
@@ -262,16 +258,9 @@ scan_fixed_tmp() {   # <tree> — print "<file>:<line>: <raw>" per violation
 
 # Order the NUL-delimited stream, or pass it through unchanged where that is not possible.
 #
-# `sort -z` IS NOT POSIX. Review flagged it as GNU-only and unavailable to the `selfcheck-macos`
-# job, which deliberately keeps coreutils' `gnubin` off PATH. Measured rather than assumed: Apple's
-# `/usr/bin/sort` (2.3-Apple, macOS 26.5.1) round-trips `b\0a\0c\0` to `a\0b\0c\0` correctly,
-# so the stated failure does not occur on that build — but the runner's image is a different one,
-# and a required job going red on an option flag is not a thing to find out from CI.
-#
-# So PROBE, and probe the OUTPUT rather than the exit status: an implementation that accepted `-z`
-# and did something else would pass a status check and silently reorder nothing. Ordering is a
-# REPORT property only — the pass/fail verdict does not depend on it — so falling through to
-# `find`'s own order costs reproducible diagnostics and never a missed violation.
+# `sort -z` is not POSIX, so it is PROBED, and on its OUTPUT rather than its exit status: an
+# implementation that accepted `-z` and reordered nothing would pass a status check. Ordering is a
+# REPORT property only, so falling through to `find`'s own order never misses a violation (D50).
 _tmp_nul_sort() {
   if [ "${_TMP_SORT_Z:-}" = "" ]; then
     if [ "${ printf 'b\0a\0' | LC_ALL=C sort -z 2>/dev/null | tr '\0' ','; }" = "a,b," ]
@@ -280,19 +269,24 @@ _tmp_nul_sort() {
   if [ "$_TMP_SORT_Z" = 1 ]; then LC_ALL=C sort -z; else cat; fi
 }
 
-# _tp_absent <tree> <rel> — 0 when <tree>/<rel> is CONFIRMED absent, 1 when the lookup itself could
-# not be made. Walks up to the nearest ancestor that exists: the name is absent for certain when
-# that ancestor can be searched, or is not a directory at all. An ancestor that exists and cannot be
-# searched hides whatever is below it. Never climbs above <tree>.
-_tp_absent() {
-  local d="$1/$2"
-  while [ "$d" != "$1" ]; do
-    d="${d%/*}"
-    [ -e "$d" ] || [ -L "$d" ] || continue
-    if [ -d "$d" ]; then [ -x "$d" ]; return $?; fi
-    return 0
+# _tp_ancestry <tree> <rel> — what the directories ABOVE <rel> are, top down, as one word:
+#   linked  one of them is a symlink. The tree walk never descends a symlinked directory (`find`
+#           does not follow one), so nothing below it is in scope — wherever the link points, and
+#           whether or not its target can be read.
+#   file    one of them exists and is not a directory, so no name below it can exist.
+#   plain   every one that exists is a real directory.
+# The last component of <rel> is not looked at. Whether a `plain` path is ABSENT is a different
+# question, and the shared `adb_parents_searchable` answers it.
+_tp_ancestry() {
+  local d="$1" rest="$2"
+  while :; do
+    case "$rest" in */*) ;; *) break ;; esac
+    d="$d/${rest%%/*}"; rest="${rest#*/}"
+    if [ -L "$d" ]; then printf 'linked'; return 0; fi
+    [ -e "$d" ] || break
+    [ -d "$d" ] || { printf 'file'; return 0; }
   done
-  return 1
+  printf 'plain'
 }
 
 # scan_paths <tree> — the CHANGED-FILE mode (#630): the same scan over the NUL-delimited,
@@ -302,9 +296,10 @@ _tp_absent() {
 #   check-tmp-paths: --files: <N> scanned, <M> out of scope, <K> gone, <B> binary or empty
 #
 # WHAT IS THE SAME as the tree walk: the scanner (`scan_file`), the four roots, the regular-file
-# rule (`find -type f` there, a non-symlink regular file here), the binary filter and the
-# `adb-tmp-ok` exemption. A path outside the roots is counted `out of scope` and never scanned,
-# exactly as the walk never reaches it.
+# rule (`find -type f` there, a non-symlink regular file here), that a symlinked directory is never
+# descended, the binary filter and the `adb-tmp-ok` exemption. A path outside the roots, or below a
+# symlinked directory, is counted `out of scope` and never scanned, exactly as the walk never
+# reaches it.
 #
 # WHAT IT DOES NOT COVER, said rather than implied: parts 1 and 1b (the issue snapshot's own path,
 # which are properties of two named files, not of a change), the self-test and the mutations. A
@@ -332,10 +327,14 @@ scan_paths() {
     for r in "${SCAN_ROOTS[@]}"; do case "$p" in "$r"/*) inroot=1 ;; esac; done
     [ "$inroot" -eq 1 ] || { outside=$((outside + 1)); continue; }
     f="$tree/$p"
+    case "$(_tp_ancestry "$tree" "$p")" in
+      linked) outside=$((outside + 1)); continue ;;
+      file)   gone=$((gone + 1)); continue ;;
+    esac
     if [ ! -e "$f" ] && [ ! -L "$f" ]; then
       # Deleted by the change — but only when the absence is CONFIRMED. The same test fails for a
       # file under a directory this user cannot search, and that file is there and unscanned.
-      if _tp_absent "$tree" "$p"; then gone=$((gone + 1)); else check_note "--files: cannot tell whether $p exists (a directory above it cannot be searched)"; err=1; fi
+      if adb_parents_searchable "$tree" "$p"; then gone=$((gone + 1)); else check_note "--files: cannot tell whether $p exists (a directory above it cannot be searched)"; err=1; fi
       continue
     fi
     if [ -L "$f" ] || [ ! -f "$f" ]; then outside=$((outside + 1)); continue; fi
@@ -700,6 +699,30 @@ mk "scripts/afile.sh" "echo ok"
 fm 0 "a name below a regular file is confirmed absent" scripts/afile.sh/below.sh
 has "$FM_OUT" "0 scanned, 0 out of scope, 1 gone" "--files: …and counted as gone"
 rm -f "$st/scripts/afile.sh"
+# A SYMLINKED DIRECTORY IS NEVER DESCENDED, as the tree walk never descends one — wherever it
+# points. The violation is real and reachable through the link; the walk reports it once, under its
+# own name, and `--files` must not report it a second time under the link's.
+mkdir -p "$st/scripts/realdir" "$work/outside-tree"
+mk "scripts/realdir/bad.sh" "cat foo > $TMP_LIT/adb-realdir.log"
+ln -s realdir "$st/scripts/linkdir"
+fm 0 "a path below a symlinked directory is out of scope" scripts/linkdir/bad.sh
+has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and counted as out of scope, never scanned through the link"
+eq "$(scan_fixed_tmp "$st" | grep -c 'adb-realdir.log')" "1" "--files: …matching the tree walk, which reports that file once, under its real name"
+rm -f "$st/scripts/linkdir"; rm -rf "$st/scripts/realdir"
+# …including a link that leaves the tree: a deleted directory replaced by a symlink leaves its old
+# descendants in a change set, and those names then resolve to files that are not this tree's.
+printf 'cat foo > %s/adb-external.log\n' "$TMP_LIT" > "$work/outside-tree/x.sh"
+ln -s "$work/outside-tree" "$st/scripts/escaped"
+fm 0 "a path that resolves outside the tree through a symlinked directory is never scanned" scripts/escaped/x.sh
+has "$FM_OUT" "0 scanned, 1 out of scope" "--files: …and is counted as out of scope"
+rm -f "$st/scripts/escaped"
+# …and a link whose TARGET cannot be searched is still a link: out of scope, not gone and not an error.
+mkdir -p "$work/outside-tree/sealed/in"
+ln -s "$work/outside-tree/sealed/in" "$st/scripts/indirect"
+chmod 000 "$work/outside-tree/sealed"
+fm 0 "a path below a symlink whose target cannot be searched is out of scope" scripts/indirect/x.sh
+has "$FM_OUT" "0 scanned, 1 out of scope, 0 gone" "--files: …and is never counted as gone"
+chmod 700 "$work/outside-tree/sealed"; rm -f "$st/scripts/indirect"
 # EVERY RECORD ENDS WITH A NUL. A list cut short mid-name would read as a shorter name.
 mk "scripts/whole.sh" "cat foo > $TMP_LIT/adb-whole.log"
 FM_OUT="$(printf 'scripts/whole.sh' | scan_paths "$st" 2>&1)"; FM_RC=$?

@@ -892,6 +892,7 @@ check_git "$R" checkout -q -- scripts/check-gated.sh
 # nothing, and the one harness whose only touched input is its last would be skipped in silence.
 printf 'dirty\n' >> "$R/scripts/lib/stub.sh"
 T_OUT="$(cd "$R" && bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "0" "touched: a change on a harness's last declared input → exit 0 (decided)"
 eq "$(printf '%s\n' "$T_OUT" | tr '\n' ' ')" "gated-mutation rows-mutation " \
    "touched: a change on a harness's LAST declared input lists it (the field after the inputs is not one of them)"
 check_git "$R" checkout -q -- scripts/lib/stub.sh

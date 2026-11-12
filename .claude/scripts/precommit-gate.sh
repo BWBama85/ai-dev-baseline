@@ -289,8 +289,9 @@ run workflow-shell  bash scripts/check-workflow-shell.sh
 # default branch with no remote.
 run "claims (commits)" bash scripts/check-claims.sh --range "${base_ref}...HEAD"
 run bash-floor      bash scripts/check-bash-floor.sh
-# Three static lints that exist only as steps of the runner's registry, so the runner is asked for
-# each by name. One step per call, so a red one is named by its own line.
+# Three more static lints, each asked of the runner by name so it runs exactly as its registry
+# step does (two of them exist only as functions there). One step per call, so a red one is named
+# by its own line.
 for _st in workflow-map skill-frontmatter shmutant-pin; do
   run "$_st" bash scripts/selfcheck.sh --only "$_st"
 done

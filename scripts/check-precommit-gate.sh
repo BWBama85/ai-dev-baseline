@@ -786,7 +786,7 @@ if fx_setup; then
   has "$POUT" "workflow-render  PASS"    "project gate: workflow-render actually RAN and passed"
   has "$POUT" "practice-index   PASS"    "project gate: practice-index actually RAN and passed"
   has "$POUT" "fact-drift       PASS"    "project gate: fact-drift actually RAN and passed"
-  # The four lints #630 added. The fixture's only delta is a file at the repository root, so the
+  # The lints #630 added. The fixture's only delta is a file at the repository root, so the
   # changed-file temp-path scan has nothing in scope: a SKIP that says so, never a PASS over nothing.
   has "$POUT" "tmp-paths        SKIP (none of the 1 changed file(s) is one it scans" \
       "project gate: tmp-paths with no changed file in scope is a stated SKIP, not a PASS"
@@ -803,18 +803,40 @@ if fx_setup; then
   #   none; 17o-17p observe it. `injection` measured well over the rule and has no changed-file
   #   mode, so it is left out by decision.
   gate_static_elsewhere=" shellcheck injection "
-  gate_static_seen=0
-  while IFS= read -r st; do
-    [ -n "$st" ] || continue
-    gate_static_seen=$((gate_static_seen + 1))
-    case "$gate_static_elsewhere" in *" $st "*) ok; continue ;; esac
-    case "$POUT" in
-      *"precommit-gate: $st "*) ok ;;
-      *) bad "project gate: static-tier step $st is neither run by the turn-end gate nor named as left out — measure it against D156's rule, then do one or the other" ;;
-    esac
-  done < <(bash "$fx/scripts/selfcheck.sh" --list | awk -F'\t' '$6 == "static" {print $1}')
-  [ "$gate_static_seen" -ge 12 ] && ok \
-    || bad "project gate: the registry named only $gate_static_seen static-tier step(s) — the accounting above compared too little to mean anything"
+  # gate_static_unaccounted <runner> <gate-output> — print each static-tier step the output does not
+  # show the gate running and that is not named above. Returns 1 when the registry could not be read
+  # WHOLE: the runner's status is taken before anything is compared, since a listing cut short
+  # would simply have fewer steps to miss — and a listing that names no static step at all has
+  # nothing to account for, which is not the same as everything being accounted for.
+  gate_static_unaccounted() {
+    local reg st tier seen=0
+    reg="$(bash "$1" --list)" || return 1
+    while IFS=$'\t' read -r st _ _ _ _ tier _; do
+      [ "$tier" = static ] || continue
+      seen=$((seen + 1))
+      case "$gate_static_elsewhere" in *" $st "*) continue ;; esac
+      case "$2" in *"precommit-gate: $st "*) ;; *) printf '%s\n' "$st" ;; esac
+    done <<< "$reg"
+    [ "$seen" -ge 1 ]
+  }
+  if gate_missing="$(gate_static_unaccounted "$fx/scripts/selfcheck.sh" "$POUT")"; then
+    eq "$gate_missing" "" "project gate: every static-tier step is run by the turn-end gate or named as left out (else: measure it against D156's rule, then do one or the other)"
+  else
+    bad "project gate: the registry could not be listed whole, so the static-tier accounting compared nothing it can vouch for"
+  fi
+  # THE ACCOUNTING IS A GUARD, so it is observed answering wrong both ways. A gate that runs one
+  # static step fewer is named; a registry that prints its rows and THEN fails is refused, never
+  # read as the whole list.
+  eq "$(gate_static_unaccounted "$fx/scripts/selfcheck.sh" "${POUT//precommit-gate: shmutant-pin /precommit-gate: dropped }")" "shmutant-pin" \
+     "project gate: a static step the gate stops running is named by the accounting"
+  printf '#!/usr/bin/env bash\nbash "%s" --list; exit 3\n' "$fx/scripts/selfcheck.sh" > "$work/list-then-fail.sh"
+  if gate_static_unaccounted "$work/list-then-fail.sh" "$POUT" >/dev/null; then
+    bad "project gate: a registry listing that failed after printing its rows was accepted as whole"
+  else ok; fi
+  printf '#!/usr/bin/env bash\nbash "%s" --list | cut -f1-5\n' "$fx/scripts/selfcheck.sh" > "$work/list-no-tier.sh"
+  if gate_static_unaccounted "$work/list-no-tier.sh" "$POUT" >/dev/null; then
+    bad "project gate: a registry listing that names no static step was read as every step accounted for"
+  else ok; fi
 
   # 17c. A REAL red check → exit 2, attributed by name. Editing a practice file makes `build.sh`
   # regenerate the three root docs, which is what the gate's own build-drift check compares — so
@@ -1037,6 +1059,12 @@ if fx_setup; then
     # 31, not 30: the mutated pool is itself a changed shell file on this branch, so the gate hands
     # it to the lint too.
     has "$POUT" "without reporting that it linted the 31 file(s)" "mut-poolsilent: …and says why"
+    # The mutated pool is the one changed file under a root the temp-path scan reads (the thirty
+    # lint fixtures sit outside them), so this run also shows that scan's PASS line whole: its time,
+    # and what it scanned of what changed (#630).
+    if [[ "$POUT" =~ tmp-paths\ +PASS\ \([0-9]+s,\ 1\ scanned\ of\ [0-9]+\ changed\) ]]; then ok; else
+      bad "tmp-paths: want 'tmp-paths PASS (Ns, 1 scanned of N changed)', the gate printed: $POUT"
+    fi
   fi
   fx_reset
   # 17s. A changed-file READ that fails is a lint FAIL naming it, never a smaller set linted as whole.
@@ -1053,9 +1081,9 @@ if fx_setup; then
   hasnt "$POUT" "build-drift" "lint pool: …before any check runs on a partial set"
   fx_reset
   # --- 17t-17v. A FIXED TEMP PATH IN A CHANGED FILE (#630) ---------------------------------------
-  # The lint whose finding once cost a whole selfcheck run to learn. The gate runs it over the
-  # changed files only, so the fixture's change is ONE new docs file carrying the literal — composed
-  # at run time, because this suite's own source is under the same lint.
+  # The gate runs this lint over the changed files only, so the fixture's change is ONE new docs
+  # file carrying the literal — composed at run time, because this suite's own source is under the
+  # same lint.
   tl='/tmp'
   printf 'Write the draft to `%s/adb-gate-fixture.md` first.\n' "$tl" > "$fx/docs/gate-fixture-tmp.md"
 
@@ -1068,17 +1096,14 @@ if fx_setup; then
   eq "$(printf '%s\n' "$POUT" | grep -c ' FAIL (')" "1" "tmp-paths: …and it is the only check that is red"
   has "$POUT" "shmutant-pin     PASS" "tmp-paths: a red temp-path scan does not abort the checks after it"
 
-  # 17u. The line marked as deliberate → PASS, and the PASS line prints its time and what it scanned.
-  printf 'Write the draft to `%s/adb-gate-fixture.md` first. <!-- adb-tmp-ok: a fixture line -->\n' "$tl" > "$fx/docs/gate-fixture-tmp.md"
-  POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
-  eq "$PRC" "0" "tmp-paths: the same file with the path exempted → exit 0"
-  if [[ "$POUT" =~ tmp-paths\ +PASS\ \([0-9]+s,\ 1\ scanned\ of\ [0-9]+\ changed\) ]]; then ok; else
-    bad "tmp-paths: want 'tmp-paths PASS (Ns, 1 scanned of N changed)', the gate printed: $POUT"
-  fi
+  # (The PASS line — its time, and what it scanned of what changed — is asserted on 17r's run above,
+  # which the suite already makes; a gate run costs a full build, so no run is added to see it.)
 
   # 17v. A scan that does not ACCOUNT FOR every file it was handed is a FAIL — the guard that
   # scanned less than it was given. Observed failing: the fixture's mode stops counting what it
-  # scanned, still exits 0, and the gate must refuse the green.
+  # scanned, still exits 0, and the gate must refuse the green. The fixture line is marked as
+  # deliberate first, so the scan itself is clean and the missing count is the only thing wrong.
+  printf 'Write the draft to `%s/adb-gate-fixture.md` first. <!-- adb-tmp-ok: a fixture line -->\n' "$tl" > "$fx/docs/gate-fixture-tmp.md"
   if check_mutate_line "$fx/scripts/check-tmp-paths.sh" '    scanned=$((scanned + 1))' \
        's#^    scanned=\$((scanned [+] 1))$#    :#' "mut-tmp-undercount"; then
     POUT="$(cd "$fx" && PATH="$scstub:$PATH" bash .claude/scripts/precommit-gate.sh </dev/null 2>&1)"; PRC=$?
