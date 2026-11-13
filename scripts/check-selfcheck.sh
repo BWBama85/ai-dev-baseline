@@ -1423,7 +1423,10 @@ awk -v frag="$work/gated.frag" '
   ' "$FXG/scripts/selfcheck.sh" > "$work/gated.tmp" && mv "$work/gated.tmp" "$FXG/scripts/selfcheck.sh"
 grep -q '^inputs gatedstep-mutation ' "$FXG/scripts/selfcheck.sh" && ok \
   || bad "fixture setup: could not register the gated step in the copied runner"
-printf 'ctl/\n' > "$FXG/.gitignore"
+# The run record is ignored here as it is in the real checkout. Left untracked, every run of this
+# fixture would itself be a change, and no tree would ever be UNTOUCHED for the gate — which is the
+# state 8f's whole-tree case has to be in.
+printf 'ctl/\n.selfcheck-run*\n' > "$FXG/.gitignore"
 check_git "$FXG" init -q -b main >/dev/null 2>&1 && check_git "$FXG" add -A >/dev/null 2>&1 \
   && check_git "$FXG" commit -q -m base >/dev/null 2>&1 \
   && check_git "$FXG" update-ref refs/remotes/origin/main HEAD >/dev/null 2>&1 \

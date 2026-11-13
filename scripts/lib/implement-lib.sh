@@ -3216,22 +3216,26 @@ cmd_dispatch_review() {
   # — both landed the truncated sentinel prefix as "the diff". So the stage is measured before
   # and after (from descriptors held since creation), and 141 — git dying on head's close — is
   # decided by the same count rather than read as the only over-bound signal.
-  local _dbefore _dafter
+  local _dbefore _dafter _drc
   _dbefore="$(_il_fd_size "$_rpfd")" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
   # `--ignore-submodules=none`: a reviewer must see every gitlink change. The project's textconv and
   # diff drivers stay ON here, unlike sweep-identity's byte digest: for a binary format they are the
   # only rendering a reviewer can read.
+  # THE COUNT IS ASKED FIRST (#629): past the bound, head closed the pipe and the producer's status
+  # says only how it took that — 141 here, another code where a wrapper or a platform reports a
+  # pipe-killed child differently — so it decides nothing. Below the bound, the status decides.
   git diff --ignore-submodules=none "$mb" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
-  case "$?" in
-    0|141) : ;;
-    *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the %s/%s merge-base failed\n' "$db_remote" "$db" >&2; return 20 ;;
-  esac
+  _drc=$?
   _dafter="$(_il_fd_size "$_rpfd")" \
     || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not measure the tracked diff\n' >&2; return 20; }
   if [ $((_dafter - _dbefore)) -ge 8388609 ]; then
     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: the tracked diff exceeds the 8388608-byte bound — split the change; a review prompt cannot carry it\n' >&2; return 20
   fi
+  case "$_drc" in
+    0|141) : ;;
+    *)     exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: git diff against the %s/%s merge-base failed\n' "$db_remote" "$db" >&2; return 20 ;;
+  esac
   # UNTRACKED non-ignored files produce NO diff from a tree-ish, so a brand-new helper created
   # before this dispatch would be committed without independent review — append each as a
   # /dev/null diff. `--no-index` exits 1 whenever the files differ, which is every time here;
@@ -3301,14 +3305,13 @@ cmd_dispatch_review() {
     # command substitution strips trailing newlines, so a record whose one-past-the-bound byte
     # was a newline measured as exactly the bound and a truncated patch was accepted. The byte
     # count decides; 141 (git dying on head's close) is decided by the same count.
-    local _ub _ua
+    local _ub _ua _urc
     _ub="$(_il_fd_size "$_rpfd")" \
       || { exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not measure the review prompt stage\n' >&2; return 20; }
+    # The count first, then the status, for the reason the tracked diff gives above: on the ubuntu
+    # runner the bounded runner reported a pipe-killed git as neither 141 nor 0/1 (#629).
     adb_run_bounded 60 5 git -C "$_utop" diff --no-index -- /dev/null "$uf" 2>/dev/null | head -c 8388609 1>&"$_rpfd"
-    case "$?" in
-      0|1|141) : ;;
-      *)   exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
-    esac
+    _urc=$?
     _ua="$(_il_fd_size "$_rpfd")" \
       || { exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not measure the review prompt stage\n' >&2; return 20; }
     if [ $((_ua - _ub)) -ge 8388609 ]; then
@@ -3316,6 +3319,10 @@ cmd_dispatch_review() {
       printf 'implement-lib: untracked %s diffs past the 8388608-byte bound — gitignore it or shrink it; a review prompt cannot carry it\n' "$uf" >&2
       return 20
     fi
+    case "$_urc" in
+      0|1|141) : ;;
+      *)   exec {_rpfd}>&-; rm -f "$pft" "$_usnap"; printf 'implement-lib: could not diff untracked %s into the review prompt\n' "$uf" >&2; return 20 ;;
+    esac
     if [ "$_ua" -eq "$_ub" ]; then
       # The name is JSON-encoded onto ONE line: git quotes unusual names in its own headers, and
       # this synthetic record must not let a newline in an agent-creatable name open extra
@@ -3738,7 +3745,7 @@ cmd_dispatch_sweep() {
       printf 'sibling\t%s\t-\tskipped\tthe review role has no usable agent, so no sibling search ran\n' "$c"
     done <<< "$classes" 1>&"$sfd"
   else
-    local prompt pfd="" rfd="" errf="" efd="" mb dbefore dafter line fc fs ft fsum
+    local prompt pfd="" rfd="" errf="" efd="" mb dbefore dafter drc line fc fs ft fsum
     prompt="$dir/$name.prompt.$$"
     _il_excl_create "$prompt" pfd \
       || { exec {sfd}>&-; rm -f "$stage"; echo "implement-lib: dispatch-sweep: could not create the prompt stage exclusively" >&2; return 20; }
@@ -3781,10 +3788,11 @@ cmd_dispatch_sweep() {
       || { _sweep_abort "git merge-base $sw_remote/$base_ref HEAD failed — fetch the base branch"; return 20; }
     dbefore="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
     git diff --ignore-submodules=none "$mb" HEAD 2>/dev/null | head -c 8388609 1>&"$pfd"
-    case "$?" in 0|141) : ;; *) _sweep_abort "git diff against the merge-base failed"; return 20 ;; esac
+    drc=$?   # the count first, then the status (see the tracked diff in dispatch-review)
     dafter="$(_il_fd_size "$pfd")" || { _sweep_abort "could not measure the prompt"; return 20; }
     [ $((dafter - dbefore)) -lt 8388609 ] \
       || { _sweep_abort "the pull request diff exceeds the 8388608-byte bound"; return 20; }
+    case "$drc" in 0|141) : ;; *) _sweep_abort "git diff against the merge-base failed"; return 20 ;; esac
     exec {pfd}>&-
     # The reply and the log are KEPT on failure, one of each per attempt and never overwritten: a
     # caller retries a failed dispatch, and for codex the log is the only evidence it leaves (D134).

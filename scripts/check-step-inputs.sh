@@ -557,7 +557,7 @@ si_tracked_list() {
 
 # si_shipped — lint the tracked tree. The registry is asked of the runner, the tracked list of git.
 si_shipped() {
-  local work="$1" out rc line why
+  local work="$1" out rc line why n_named=0
   bash scripts/selfcheck.sh --list > "$work/registry.tsv" \
     || { bad "step-inputs: scripts/selfcheck.sh --list failed — the registry could not be read"; return; }
   why="$(si_tracked_list . "$work/tracked.txt")" || { bad "step-inputs: $why — it judged nothing"; return; }
@@ -572,9 +572,12 @@ si_shipped() {
   while IFS= read -r line; do
     case "$line" in
       'step-inputs: '*' step(s) — '*) printf '%s\n' "$line" ;;
-      ?*) bad "$line" ;;
+      ?*) bad "$line"; n_named=$((n_named + 1)) ;;
     esac
   done <<< "$out"
+  # EVERY unsuccessful verdict is a failure, including one that said nothing: a scan killed
+  # before it printed a finding has judged nothing, and that must not read as a clean tree.
+  [ "$n_named" -gt 0 ] || bad "step-inputs: the lint exited $rc without naming a finding — it judged nothing it can vouch for"
 }
 
 work="$(mktemp -d)" || { echo "check-step-inputs: FATAL — cannot create a scratch directory" >&2; exit 1; }
@@ -591,6 +594,13 @@ si_shipped "$work"
 
 # The shipped table excuses shipped steps; the fixtures below set their own entries.
 SI_NOT_INPUT=()
+
+# A VERDICT THAT FAILS IN SILENCE is a failure of the shipped lint: with the verdict replaced by one
+# that exits non-zero and prints nothing, the shipped-tree check must record a failure.
+( si_verdict() { return 137; }; mkdir -p "$work/silent"; rejects si_shipped "$work/silent" )
+yes "$?" "a shipped-tree verdict that exits non-zero with no output is recorded as a failure"
+( si_verdict() { printf 'step-inputs: x: a finding\n'; return 1; }; mkdir -p "$work/loud"; rejects si_shipped "$work/loud" )
+yes "$?" "…and so is one that names a finding"
 
 # fx <name> — a fresh fixture tree under $work/<name>: three libraries (the first names the
 # second), one suite that drives the first and globs a directory, one static lint, one function
