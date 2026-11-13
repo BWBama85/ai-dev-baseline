@@ -130,8 +130,9 @@ only by a release it upgrades to. These entries are the notes for both.
   macOS (`docs-lib`, `bootstrap`, `implement-lib`, `mutation-gate`) gained a step in an existing
   ubuntu job, and no job was added or renamed. The weekly WSL job passes `--all`. A new lint,
   `scripts/check-step-inputs.sh`, fails when a suite names a tracked file its step does not
-  declare or when no ubuntu job is certain to run a step the scope can hold; it cannot see a
-  path a suite computes or a tree it copies whole. "Is a mutation harness" is now the step's name
+  declare or when a step the scope can hold is not wired into an ubuntu job as a single-line
+  `run:` of its own; it cannot see a path a suite computes or a tree it copies whole, and it
+  pins that wiring without proving what a runner executes. "Is a mutation harness" is now the step's name
   (`*-mutation`), no longer "declares inputs". Against the last full macOS run on `main` (run
   43328767178), the declarations select 29% to 34% of the step time for a change to one library
   and its suite and 11% for a change to three docs (`docs/installation.md`, `CHANGELOG.md`,

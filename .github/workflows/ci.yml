@@ -1462,7 +1462,7 @@ jobs:
 
       # THE REGISTRY'S OWN STEP, BY NAME (#629, D157), for the reason the `gate-detector` job gives:
       # the steps above mirror the `install-dry-run` function by hand, and the step
-      # `selfcheck-macos` can hold back must be certain to run here. It installs into a throwaway
+      # `selfcheck-macos` can hold back must be wired to run here. It installs into a throwaway
       # home of its own, after the real one above has been uninstalled.
       - name: The registry's install-dry-run step, through the runner (#629)
         run: bash scripts/selfcheck.sh --only install-dry-run

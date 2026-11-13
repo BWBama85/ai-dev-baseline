@@ -870,7 +870,7 @@ inputs bash-floor          .
 # against throwaway fixtures. A workflow scanner that quietly stops recognizing job keys reports
 # exactly what a clean repo reports, and no other check in this suite would notice.
 add bash-floor-guard    bash scripts/check-bash-floor-guard.sh
-inputs bash-floor-guard    agents/claude bin docs/installation.md scripts
+inputs bash-floor-guard    .claude/scripts/precommit-gate.sh agents bin docs/installation.md docs/roles-and-agents.md install.sh scripts templates/agents.toml uninstall.sh
 
 # The vendored mutation harness (#519, D125) is a third-party file pinned by digest and never edited
 # here: this fails when scripts/shmutant.sh stops matching scripts/shmutant.sh.sha256, and drives each
@@ -881,13 +881,13 @@ inputs shmutant-pin        .
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it
 # must never fast-forward over dirty/ahead/diverged/detached/non-default state).
 add baseline            bash scripts/check-baseline.sh
-inputs baseline            scripts/check-baseline.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
+inputs baseline            scripts/check-baseline.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin docs/roles-and-agents.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
 
 # The SessionStart currency hook (#36) must act ONLY on a genuinely new session, never touch the
 # clone the session is working in, refuse unsafe clone state by name, and always exit 0 — a
 # non-zero SessionStart hook renders an error notice on every start.
 add session-currency    bash scripts/check-session-currency.sh
-inputs session-currency    scripts/check-lib.sh scripts/check-session-currency.sh .claude/scripts agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
+inputs session-currency    scripts/check-lib.sh scripts/check-session-currency.sh .claude/scripts agents bin docs/roles-and-agents.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
 
 # The Stop-hook quality gate must FAIL LOUD (never silently no-op) when its own shared
 # library is missing — a broken install is enforcement secretly off (#35).
@@ -962,12 +962,12 @@ inputs permissions-mutation scripts/check-permissions.sh scripts/check-lib.sh sc
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
 add install-migration   bash scripts/check-install-migration.sh
-inputs install-migration   scripts/check-install-migration.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib templates uninstall.sh
+inputs install-migration   scripts/check-install-migration.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin docs/roles-and-agents.md install.sh scripts/lib templates uninstall.sh
 
 # adb_link's fail-loud source guard must thread through install.sh: a missing manifest source
 # makes the real installer exit non-zero, never dangling a link or disturbing a real dest (#48).
 add install-guard       bash scripts/check-install-guard.sh
-inputs install-guard       scripts/check-install-guard.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh templates uninstall.sh
+inputs install-guard       scripts/check-install-guard.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin docs/roles-and-agents.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
 
 # Every entry point locates its own clone root BEFORE it can source common.sh, and `$(…)` strips
 # every trailing newline — so an unsentinelled capture shortens a clone named `clone<NL>` onto an
@@ -994,7 +994,7 @@ inputs bootstrap-mutation       scripts/check-bootstrap.sh scripts/check-lib.sh 
 # uninstall that deletes an operator's edits or leaves orphans. Every one is driven red against
 # fixtures under `mktemp -d`; the tracked tree is never mutated.
 add pinned-install      bash scripts/check-pinned-install.sh
-inputs pinned-install      scripts/check-lib.sh scripts/check-pinned-install.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh templates uninstall.sh
+inputs pinned-install      scripts/check-lib.sh scripts/check-pinned-install.sh .claude/scripts/precommit-gate.sh agents bin docs/roles-and-agents.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
 
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)
 # must stay consistent across their consumer docs.
@@ -1104,7 +1104,7 @@ add step-inputs         bash scripts/check-step-inputs.sh --self-test
 inputs step-inputs         .
 
 add install-dry-run     step_install_dry_run
-inputs install-dry-run     .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib scripts/selfcheck.sh templates uninstall.sh
+inputs install-dry-run     .claude/scripts/precommit-gate.sh agents bin docs/roles-and-agents.md install.sh scripts/lib scripts/selfcheck.sh templates uninstall.sh
 
 # A tier member that is not registered would be in no tier at all, in silence.
 for _s in "${STATIC_STEPS[@]}"; do
@@ -1330,7 +1330,7 @@ summarize_run() {   # <captured-log>
     done
     printf '\n\n'
     summarize_undispatched "$log"
-    summarize_gated "$log"   # row-digest-gated
+    summarize_gated "$log"   # row-digest-gated-red
   else
     printf 'The run emitted no `FAILED:` line — it did not reach its `result` block, so it was\n'
     printf 'cancelled, killed, or died before finishing. Nothing below is a step verdict.\n\n'

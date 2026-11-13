@@ -585,7 +585,7 @@ if [ "$MODE" = mutation ]; then
     '   # row-gated-named' '>/dev/null   # row-gated-named' \
     'scope: …and again in the result block'
   shmutant_mut "digest-drops-gated" \
-    '    summarize_gated "$log"   # row-digest-gated' ':   # row-digest-gated' \
+    '    summarize_gated "$log"   # row-digest-gated-red' ':   # row-digest-gated-red' \
     'the digest of a red scoped run names the steps the gate held'
   shmutant_mut "digest-drops-gated-green" \
     '    summarize_gated "$log"   # row-digest-gated-green' ':   # row-digest-gated-green' \

@@ -16,21 +16,29 @@
 #                every tracked file or directory the suite's own text NAMES
 #   library      …and every `scripts/lib/*.sh` sibling that a declared `scripts/lib/*.sh` names
 #   entry point  …and every tracked path that a declared entry point (`install.sh`,
-#                `uninstall.sh`, a file under `bin/`) names
+#                `uninstall.sh`, a file under `bin/`) names. A declared DIRECTORY is read as the
+#                libraries and entry points tracked under it, so a broader input checks no less
 #   function     …and a function step that declares paths declares `scripts/selfcheck.sh`, where
 #                its body lives
 #   ubuntu       every plain step that declares paths — every step a scoped run can hold — is
-#                CERTAIN to be run by an ubuntu job of `.github/workflows/ci.yml`, so a suite the
-#                macOS leg scopes out of a pull request still ran on that pull request
+#                wired into an ubuntu job of `.github/workflows/ci.yml`, so a suite the macOS leg
+#                scopes out of a pull request still has a job that runs it on that pull request
 #
-# WHAT "CERTAIN TO BE RUN" MEANS. One form counts, and nothing else does: a step whose `run:` is a
-# single line that IS the step's command (`run: bash scripts/check-x.sh`, optionally quoted; for a
-# function step, `run: bash scripts/selfcheck.sh --only <step>`), whose every key is one of `name`,
-# `run`, `env`, `id`, `shell`, `working-directory` and `timeout-minutes`, in a job whose every key
-# is one of `name`, `runs-on`, `timeout-minutes`, `permissions`, `env`, `defaults` and `steps`. A
-# key this does not list — `if`, `continue-on-error`, `needs`, `strategy`, however it is quoted —
-# makes the step or the job uncertain, and so does a block scalar, a pipe, a second argument or a
-# trailing comment. It does not decide what such a form would do; it refuses to count it.
+# WHAT "WIRED" MEANS, AND WHAT IT DOES NOT PROVE. One form counts: a step whose `run:` is a single
+# line that IS the step's command (`run: bash scripts/check-x.sh`, optionally quoted; for a function
+# step, `run: bash scripts/selfcheck.sh --only <step>`), whose every key is one of `name`, `run`,
+# `env`, `id` and `timeout-minutes`, in a job whose every key is one of `name`, `runs-on`,
+# `timeout-minutes`, `permissions`, `env` and `steps`, in a workflow with no top-level `defaults`.
+# A key this does not list — `if`, `continue-on-error`, `shell`, `needs`, `strategy`, however it is
+# quoted and wherever in the job it sits — a block or continued scalar, a pipe, a second argument
+# or a trailing comment each make the step not count. The lint does not decide what such a form
+# would do; it refuses to count it.
+#
+# This is a WIRING PIN, not a proof of execution (owner decision, D157). Three review rounds each
+# found a way text that runs nothing could satisfy a looser reading, and a text lint cannot close
+# that class: an `env` that changes `PATH` or `BASH_ENV`, an earlier step that rewrites the tree or
+# `GITHUB_PATH`, and a runner image without the tool all change what the counted line does. Those
+# are review's to catch, as they are for every other workflow pin in this repo.
 #
 # WHAT "NAMES" MEANS. A reference is a run of path characters (`[A-Za-z0-9_./-]`) that resolves to
 # a tracked file or directory and is spelled one of three ways:
@@ -38,7 +46,9 @@
 #            `local`, `export`, `declare`) from `$(pwd …)`, a backquoted `pwd`, `$PWD` or `${PWD}`;
 #            the entry points' bootstrap variable; or a name assigned from exactly one of those.
 #            Written `$ROOT/x`, `${ROOT}/x`, or with only quotes and a closing brace between the
-#            name and the path (`"$ROOT"/x`, `'…'"$ROOT"'/x'`)
+#            name and the path (`"$ROOT"/x`, `'…'"$ROOT"'/x'`). An assignment is read where
+#            it starts its line, and all of them are collected before any use is read, so
+#            their order in the file does not matter
 #   self     after `$(dirname "$0")`, relative to the file's own directory
 #   bare     relative to the tree's root, with at least one `/`
 # A name that stops at a `/` (`base/workflows/*.md`, `agents/$agent/skills`) is a reference to the
@@ -115,15 +125,18 @@ declare -A SI_NOT_INPUT=(
 )
 
 # si_load_tree <list-file> — fill SI_FILES and SI_DIRS from a newline-delimited list of tracked
-# paths, and remember the list itself (SI_LIST) for the scans that read it whole. Returns 1 on an empty list: a lint over no files would pass everything.
+# paths, remember the list itself (SI_LIST) for the scans that read it whole, and the tracked entry
+# points (SI_ENTRY) a declared directory stands for. Returns 1 on an empty list: a lint over no files would pass everything.
 declare -A SI_FILES=() SI_DIRS=()
+declare -a SI_ENTRY=()
 SI_LIST=""
 si_load_tree() {
   local f d n=0
-  SI_FILES=(); SI_DIRS=(); SI_LIST="$1"
+  SI_FILES=(); SI_DIRS=(); SI_ENTRY=(); SI_LIST="$1"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     SI_FILES["$f"]=1; n=$((n + 1))
+    case "$f" in install.sh|uninstall.sh|bin/*) SI_ENTRY+=("$f") ;; esac
     d="$f"
     while [[ "$d" == */* ]]; do d="${d%/*}"; SI_DIRS["$d"]=1; done
   done < "$1"
@@ -170,9 +183,17 @@ si_tokens() {
         rootvar[v] = 1
       } else if (match(val, /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"?[[:space:]]*$/)) {
         src = val; sub(/^\$\{?/, "", src); sub(/\}?"?[[:space:]]*$/, "", src)
-        if (src in rootvar) rootvar[v] = 1
+        alias[v] = src
       }
       next
+    }
+    # Aliases are resolved once every assignment has been collected, to a fixpoint, so an alias
+    # written above the root it names (in a function called later) is still one.
+    FNR == 1 {
+      do {
+        grew = 0
+        for (v in alias) if (!(v in rootvar) && (alias[v] in rootvar)) { rootvar[v] = 1; grew = 1 }
+      } while (grew)
     }
     /^[[:space:]]*#/ { next }
     {
@@ -302,8 +323,8 @@ si_listed() {
   return 1
 }
 
-# si_ubuntu_runs <ci.yml> — `<job-key><TAB><command>` for every command an ubuntu job is CERTAIN
-# to run, by the one form the header defines. Structure comes from the shared reader
+# si_ubuntu_runs <ci.yml> — `<job-key><TAB><command>` for every command an ubuntu job is wired
+# to run, by the one form the header defines ("wired"). Structure comes from the shared reader
 # (`adb_wf_jobs`: its JOB, RANGE, RUNSON and STEP records); the keys are judged here by ALLOWLIST,
 # so a key or a scalar style this does not know is refused, never interpreted. Returns 1 when the
 # reader fails or when no such command exists, so an unreadable workflow is never read as "nothing
@@ -318,7 +339,7 @@ si_ubuntu_runs() {
       $1 == "STEP"   { n[$2]++; st[$2, n[$2]] = $4 }
       END {
         for (j in u) {
-          printf "J\t%s\t%s\t%s\n", key[j], s[j], (n[j] ? st[j, 1] - 1 : e[j])
+          printf "J\t%s\t%s\t%s\n", key[j], s[j], e[j]
           for (k = 1; k <= n[j]; k++)
             printf "S\t%s\t%s\t%s\n", key[j], st[j, k], (k < n[j]) ? st[j, k + 1] - 1 : e[j]
         }
@@ -331,9 +352,12 @@ si_ubuntu_runs() {
         else { ns++; skey[ns] = $2; ss[ns] = $3; se[ns] = $4 }
         next
       }
-      { L[FNR] = $0; last = FNR }
+      { L[FNR] = $0; last = FNR; if ($0 ~ /^defaults[[:space:]]*:/ || $0 ~ /^["\047]defaults["\047][[:space:]]*:/) wfdefaults = 1 }
       END {
-        # A job is certain only when every key at its own level is one this knows.
+        # A workflow-level `defaults` can change every step: nothing counts under one.
+        if (wfdefaults) exit
+        # A job counts only when every key at its own level is one this knows — over its WHOLE
+        # range, since a key may follow the steps.
         for (j = 1; j <= nj; j++) {
           col = -1; good[jkey[j]] = 1
           for (i = js[j] + 1; i <= je[j]; i++) {
@@ -341,24 +365,26 @@ si_ubuntu_runs() {
             if (l ~ /^[[:space:]]*(#|$)/) continue
             if (col < 0) col = lead(l)
             if (lead(l) != col) continue
-            if (substr(l, col + 1) !~ /^(name|runs-on|timeout-minutes|permissions|env|defaults|steps):/) good[jkey[j]] = 0
+            if (substr(l, col + 1) !~ /^(name|runs-on|timeout-minutes|permissions|env|steps):/) good[jkey[j]] = 0
           }
           if (col < 0) good[jkey[j]] = 0
         }
-        # A step is certain only when every key at its own level is one this knows, and its
-        # command only when `run:` holds it on that one line.
+        # A step counts only when every key at its own level is one this knows, and its command
+        # only when `run:` holds it on that one line: a deeper line straight after `run:` continues
+        # the scalar, and what it adds is not read.
         for (k = 1; k <= ns; k++) {
           if (!good[skey[k]]) continue
           l = L[ss[k]]
           if (!match(l, /^ *-[ ]+/)) continue
-          col = RLENGTH; okstep = 1; cmd = ""
+          col = RLENGTH; okstep = 1; cmd = ""; lastkey = ""
           for (i = ss[k]; i <= se[k]; i++) {
             l = L[i]
             if (i == ss[k]) l = sprintf("%" col "s", "") substr(l, col + 1)
             if (l ~ /^[[:space:]]*(#|$)/) continue
-            if (lead(l) != col) continue
+            if (lead(l) != col) { if (lastkey == "run") { okstep = 0; break } continue }
             t = substr(l, col + 1)
-            if (t !~ /^(name|run|env|id|shell|working-directory|timeout-minutes):/) { okstep = 0; break }
+            if (t !~ /^(name|run|env|id|timeout-minutes):/) { okstep = 0; break }
+            lastkey = t; sub(/:.*/, "", lastkey)
             if (t ~ /^run:/) {
               cmd = t; sub(/^run:[[:space:]]*/, "", cmd); sub(/[[:space:]]+$/, "", cmd)
               if (cmd ~ /^".*"$/ || cmd ~ /^\047.*\047$/) cmd = substr(cmd, 2, length(cmd) - 2)
@@ -379,11 +405,11 @@ si_verdict() {
   local root="$1" reg="$2" list="$3" wf="$4"
   local name cmd inputs tier suite kind ref dep scan refs u_text want findings=0
   local n_steps=0 n_whole=0 n_paths=0 n_harness=0 n_ubuntu=0 n_plain=0
-  local -a in=() undeclared=() waived=() named=()
+  local -a in=() undeclared=() waived=() named=() deps=()
   local -A scanned=() scan_rc=()
   si_load_tree "$list" || { printf 'step-inputs: the tracked-file list is empty or unreadable\n'; return 2; }
   [ -s "$reg" ] || { printf 'step-inputs: the registry listing is empty\n'; return 2; }
-  u_text="$(si_ubuntu_runs "$wf")" || { printf 'step-inputs: %s could not be read, or no ubuntu job of it is certain to run anything\n' "$wf"; return 2; }
+  u_text="$(si_ubuntu_runs "$wf")" || { printf 'step-inputs: %s could not be read, or no ubuntu job of it runs anything in the form this lint counts\n' "$wf"; return 2; }
 
   while IFS=$'\t' read -r name cmd _ _ inputs tier _; do
     [ -n "$name" ] || continue
@@ -412,7 +438,7 @@ si_verdict() {
       findings=$((findings + 1))
     done
 
-    # ubuntu: an ubuntu job is certain to run the step's command (the header says what counts).
+    # ubuntu: an ubuntu job is wired to run the step's command (the header says what counts).
     # A function step has no command of its own, so its job runs it through the runner by name.
     want="$cmd"
     case "$cmd" in
@@ -427,7 +453,7 @@ si_verdict() {
     if printf '%s\n' "$u_text" | awk -F'\t' -v c="$want" '$2 == c { f = 1 } END { exit !f }'; then
       n_ubuntu=$((n_ubuntu + 1))
     else
-      printf 'step-inputs: %s: no ubuntu job of %s is certain to run `%s` — a pull request that does not touch its inputs would run it on no platform\n' "$name" "${wf##*/}" "$want"
+      printf 'step-inputs: %s: no ubuntu job of %s runs `%s` in the one form this lint counts — a pull request that does not touch its inputs may run it on no platform\n' "$name" "${wf##*/}" "$want"
       findings=$((findings + 1))
     fi
 
@@ -472,14 +498,23 @@ si_verdict() {
       fi
     done
 
-    # library and entry point: what each declared one names, read the same way.
+    # library and entry point: what each declared one names, read the same way. A declared
+    # DIRECTORY stands for the entry points tracked under it (its libraries are under it too, so
+    # their siblings are covered already): a broader input must not check less than a narrow one.
+    deps=()
     for dep in "${in[@]}"; do
+      dep="${dep%/}"
+      if [ -n "${SI_FILES[$dep]+x}" ]; then deps+=("$dep"); continue; fi
+      for ref in "${SI_ENTRY[@]}"; do
+        case "$ref" in "$dep"/*) deps+=("$ref") ;; esac
+      done
+    done
+    for dep in "${deps[@]}"; do
       case "$dep" in
         scripts/lib/*.sh) scan=si_lib_siblings ;;
         install.sh|uninstall.sh|bin/*) scan=si_refs ;;
         *) continue ;;
       esac
-      [ -n "${SI_FILES[$dep]+x}" ] || continue
       # Scanned ONCE per file: `common.sh` is an input of nearly every step.
       if [ -z "${scanned[$dep]+x}" ]; then
         if scanned["$dep"]="$("$scan" "$root" "$dep")"; then scan_rc["$dep"]=0; else scan_rc["$dep"]=1; fi
@@ -655,6 +690,7 @@ names_three root-pwd-braced   'HERE="${PWD}"' '. "$HERE/scripts/lib/three.sh"'
 names_three root-readonly     'readonly TOP="$(pwd)"' '. "$TOP/scripts/lib/three.sh"'
 names_three root-backquoted   'TOP=`pwd`' '. "$TOP/scripts/lib/three.sh"'
 names_three root-alias        'TOP="$ROOT"' '. "$TOP/scripts/lib/three.sh"'
+names_three root-alias-early  'early() {' '  TOP="$LATER"' '  . "$TOP/scripts/lib/three.sh"' '}' 'LATER="$(pwd)"' 'early'
 names_three root-concatenated "bash -c '. '\"\$ROOT\"'/scripts/lib/three.sh'"
 # A name this alphabet cannot hold is every tracked file beginning with what it could read.
 d="$(fx non-ascii)" && printf 'x\n' > "$d/scripts/lib/unicodé.sh" && printf '%s\n' 'scripts/lib/unicodé.sh' >> "$d/tracked.txt" \
@@ -686,6 +722,13 @@ d="$(fx entry-declared)" && mkdir -p "$d/bin" \
   && printf '%s\n' 'bin/tool' >> "$d/tracked.txt" \
   && reg_sub "$d" '$1 == "one" { $5 = $5 ",bin/tool,scripts/lib/three.sh" } { print }'
 lint "$d"; yes "$RC_" "an entry point whose named paths are declared passes"
+# …and a DIRECTORY input stands for the entry points under it: broader must not check less.
+d="$(fx entry-under-dir)" && mkdir -p "$d/bin" \
+  && printf '%s\n' '#!/usr/bin/env bash' '_adb_boot_abs="$(cd -- "$_adb_boot_dir/.." && pwd && printf X)"' \
+       'REPO="$_adb_boot_abs"' '. "$REPO/scripts/lib/three.sh"' > "$d/bin/tool" \
+  && printf '%s\n' 'bin/tool' >> "$d/tracked.txt" \
+  && reg_sub "$d" '$1 == "one" { $5 = $5 ",bin" } { print }'
+refuses entry-under-dir "$d" 'one: its input bin/tool names scripts/lib/three.sh, which its declared inputs do not cover'
 # A variable that is NOT assigned from a root is not one, whatever it is called.
 d="$(fx not-a-root)" && printf '%s\n' 'REPO="$work/repo"' 'cat "$REPO/scripts/lib/three.sh"' >> "$d/scripts/check-one.sh"
 lint "$d"; yes "$RC_" "a path under a variable assigned from somewhere else is not a reference"
@@ -707,7 +750,7 @@ d="$(fx static-undeclared)" && reg_sub "$d" '$1 == "lint" { $5 = "-" } { print }
 refuses static-undeclared "$d" 'lint: a static-tier step must declare the whole tree (.), got -'
 # A step the scope can hold that no ubuntu job runs: only the macOS job names it.
 d="$(fx no-ubuntu)" && printf 'mac\tbash scripts/check-mac.sh\tpool\tconcurrent\tscripts/check-mac.sh\tsuite\n' >> "$d/registry.tsv"
-refuses no-ubuntu "$d" 'mac: no ubuntu job of ci.yml is certain to run `bash scripts/check-mac.sh`'
+refuses no-ubuntu "$d" 'mac: no ubuntu job of ci.yml runs `bash scripts/check-mac.sh`'
 # ONE FORM COUNTS: a single-line `run:` that IS the command. Each case below is a form that might
 # run the suite and is refused, because this lint does not decide what it would do.
 # run_as <dir> <line>… — replace the `one` job's step with the given lines.
@@ -721,7 +764,7 @@ uncertain() {   # <label> <line>… — a workflow whose `one` step is spelled s
   local label="$1" d
   shift
   d="$(fx "$label")" && run_as "$d" "$@"
-  refuses "$label" "$d" 'one: no ubuntu job of ci.yml is certain to run `bash scripts/check-one.sh`'
+  refuses "$label" "$d" 'one: no ubuntu job of ci.yml runs `bash scripts/check-one.sh`'
 }
 uncertain ubuntu-prefix      '      - run: bash scripts/check-one.sh.bak'
 uncertain ubuntu-other-arg   '      - run: bash scripts/check-one.sh --self-test'
@@ -738,11 +781,21 @@ uncertain ubuntu-quoted-if   '      - name: one' "        'if': false" '        
 uncertain ubuntu-ignored     '      - name: one' '        continue-on-error: true' '        run: bash scripts/check-one.sh'
 uncertain ubuntu-ignored-exp '      - name: one' '        continue-on-error: ${{ true }}' '        run: bash scripts/check-one.sh'
 uncertain ubuntu-unknown-key '      - name: one' '        novel-key: 1' '        run: bash scripts/check-one.sh'
+uncertain ubuntu-shell       '      - name: one' '        shell: true {0}' '        run: bash scripts/check-one.sh'
+uncertain ubuntu-workdir     '      - name: one' '        working-directory: /tmp' '        run: bash scripts/check-one.sh'
+uncertain ubuntu-continued   '      - run: bash scripts/check-one.sh' '          || true'
+uncertain ubuntu-continued-2 '      - name: one' '        run: bash scripts/check-one.sh' '          || true' '        id: one'
 # …and the same for the JOB: a key this does not list makes every step in it uncertain.
-for _k in 'if: false' "'if': false" 'needs: lint' 'continue-on-error: true' 'strategy: {matrix: {a: [1]}}'; do
+for _k in 'if: false' "'if': false" 'needs: lint' 'continue-on-error: true' 'strategy: {matrix: {a: [1]}}' 'defaults: {run: {shell: sh}}'; do
   d="$(fx "ubuntu-job-key")" && ci_sub "$d" "/^  one:\$/ { print; print \"    $_k\"; next } { print }"
-  refuses "ubuntu-job [$_k]" "$d" 'one: no ubuntu job of ci.yml is certain to run `bash scripts/check-one.sh`'
+  refuses "ubuntu-job [$_k]" "$d" 'one: no ubuntu job of ci.yml runs `bash scripts/check-one.sh`'
 done
+# …wherever in the job the key sits: a job-level `if` written after the steps is still the job's.
+d="$(fx ubuntu-job-if-last)" && ci_sub "$d" '/run: bash scripts\/check-one\.sh/ { print; print "    if: false"; next } { print }'
+refuses ubuntu-job-if-last "$d" 'one: no ubuntu job of ci.yml runs `bash scripts/check-one.sh`'
+# …and a workflow-level `defaults` can change every step, so nothing counts under one.
+d="$(fx ubuntu-wf-defaults)" && ci_sub "$d" '/^jobs:$/ { print "defaults:"; print "  run:"; print "    shell: sh" } { print }'
+lint "$d"; eq "$RC_" 2 "a workflow with top-level defaults is refused: no step under it counts"
 # THE FORMS THAT DO COUNT: the command quoted, and beside the keys a step may carry.
 d="$(fx ubuntu-quoted)" && run_as "$d" "      - run: 'bash scripts/check-one.sh'"
 lint "$d"; yes "$RC_" "a single-line run that is the command in quotes is run"
@@ -752,11 +805,11 @@ lint "$d"; yes "$RC_" "a single-line run beside name, id and env is run"
 d="$(fx fn-job-gone)" && ci_sub "$d" '{ sub(/^  gate-detector:$/, "  renamed:") } { print }'
 lint "$d"; yes "$RC_" "a function step run by name is run, whatever the job is called"
 d="$(fx fn-command-gone)" && ci_sub "$d" '{ sub(/run: bash scripts\/selfcheck\.sh --only detect/, "run: echo \"bash scripts/selfcheck.sh --only detect\"") } { print }'
-refuses fn-command-gone "$d" 'detect: no ubuntu job of ci.yml is certain to run `bash scripts/selfcheck.sh --only detect`'
+refuses fn-command-gone "$d" 'detect: no ubuntu job of ci.yml runs `bash scripts/selfcheck.sh --only detect`'
 d="$(fx fn-runner-undeclared)" && reg_sub "$d" '$1 == "detect" { $5 = "scripts/lib/three.sh" } { print }'
 refuses fn-runner-undeclared "$d" 'detect: a function step runs code in scripts/selfcheck.sh, which its declared inputs do not cover'
 d="$(fx fn-unrun)" && printf 'novel\tstep_novel\tpool\tconcurrent\tscripts/lib/three.sh,scripts/selfcheck.sh\tsuite\n' >> "$d/registry.tsv"
-refuses fn-unrun "$d" 'novel: no ubuntu job of ci.yml is certain to run `bash scripts/selfcheck.sh --only novel`'
+refuses fn-unrun "$d" 'novel: no ubuntu job of ci.yml runs `bash scripts/selfcheck.sh --only novel`'
 
 # THE WAIVER TABLE excuses exactly what it names.
 d="$(fx waived)" && reg_sub "$d" '$1 == "one" { sub(/,base\/docs$/, "", $5) } { print }'
