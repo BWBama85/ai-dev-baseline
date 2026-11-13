@@ -133,8 +133,9 @@ only by a release it upgrades to. These entries are the notes for both.
   declare or when no ubuntu job is certain to run a step the scope can hold; it cannot see a
   path a suite computes or a tree it copies whole. "Is a mutation harness" is now the step's name
   (`*-mutation`), no longer "declares inputs". Against the last full macOS run on `main` (run
-  43328767178), the declarations select 28% to 33% of the step time for a change to one library
-  and its suite and 10% for a docs-only change; `precommit-gate` (791s there) runs on any change
+  43328767178), the declarations select 29% to 34% of the step time for a change to one library
+  and its suite and 11% for a change to three docs (`docs/installation.md`, `CHANGELOG.md`,
+  `.ai-dev-baseline/decisions.md`); `precommit-gate` (791s there) runs on any change
   under `scripts/`, so no macOS run under 15 minutes has been observed yet.
 
 - **A red lint ends a local selfcheck before the suites start, not after the whole run (#630).**

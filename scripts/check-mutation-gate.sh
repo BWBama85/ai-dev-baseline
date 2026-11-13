@@ -1171,7 +1171,9 @@ for _ev in push workflow_dispatch -; do
 done
 grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \
   || bad "ci.yml's selfcheck-macos does not build its --skip from 'bash scripts/mutation-gate.sh steps --csv' (with a failure branch)"
-runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list)' || true)"
+# A `--only <step>` line runs that one step and nothing else, so it has no harness to skip — and
+# the pin above refuses one that names a harness.
+runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list|only)( |$)' || true)"
 [ -n "$runs_all" ] && ok || bad "ci.yml carries no selfcheck.sh invocation that runs the registry (the scan matched nothing)"
 while IFS= read -r line; do
   [ -n "$line" ] || continue

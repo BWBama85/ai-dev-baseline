@@ -912,7 +912,7 @@ inputs implement-lib       scripts/check-implement-lib.sh scripts/check-lib.sh b
 # a FALSE CONVERGED — fix code pushed as reviewed when no review read it — so a failed pass, a moved
 # tree, an edit after a clean pass, a reused reply and an under-carried exhaustion must each refuse.
 add review-loop         bash scripts/check-review-loop.sh
-inputs review-loop         scripts/check-lib.sh scripts/check-review-loop.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md scripts/lib/cleanup-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/implement-lib.sh scripts/lib/pattern-ledger.sh scripts/lib/pr-review.sh scripts/lib/repo-settings.sh scripts/lib/role-dispatch.sh scripts/lib/run-state.sh scripts/shmutant.sh templates/agents.toml
+inputs review-loop         scripts/check-lib.sh scripts/check-review-loop.sh base/workflows/implement-issue.md base/workflows/resolve-pr-threads.md docs/release-goal-convention.md docs/repo-settings.md docs/roadmap-acceptance.md docs/roles-and-agents.md scripts/lib/cleanup-lib.sh scripts/lib/common.sh scripts/lib/docs-lib.sh scripts/lib/implement-lib.sh scripts/lib/pattern-ledger.sh scripts/lib/pr-review.sh scripts/lib/repo-settings.sh scripts/lib/role-dispatch.sh scripts/lib/run-state.sh scripts/shmutant.sh templates/agents.toml
 
 # ...and each of those refusals is injected with its own defect and required RED on its own witness.
 add review-loop-mutation bash scripts/check-review-loop.sh --mutation
@@ -953,7 +953,7 @@ inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/che
 # states, the receipt, the version probe against a stub CLI, the auditor on every prompt source it
 # names, and the real install.sh/uninstall.sh over a fake HOME.
 add permissions         bash scripts/check-permissions.sh
-inputs permissions         scripts/check-lib.sh scripts/check-permissions.sh .claude/scripts/precommit-gate.sh agents base/workflows/adopt.md bin/baseline docs/installation.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh scripts/shmutant.sh templates/agents.toml uninstall.sh scripts/lib/currency-lib.sh templates
+inputs permissions         scripts/check-lib.sh scripts/check-permissions.sh .claude/scripts/precommit-gate.sh agents base/workflows/adopt.md bin/baseline docs/installation.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh scripts/shmutant.sh templates uninstall.sh
 
 # ...and each of those rules broken in a COPY of the library, required RED on its own witness.
 add permissions-mutation bash scripts/check-permissions.sh --mutation
@@ -1104,7 +1104,7 @@ add step-inputs         bash scripts/check-step-inputs.sh --self-test
 inputs step-inputs         .
 
 add install-dry-run     step_install_dry_run
-inputs install-dry-run     .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib templates uninstall.sh scripts/selfcheck.sh
+inputs install-dry-run     .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib scripts/selfcheck.sh templates uninstall.sh
 
 # A tier member that is not registered would be in no tier at all, in silence.
 for _s in "${STATIC_STEPS[@]}"; do
@@ -1334,6 +1334,7 @@ summarize_run() {   # <captured-log>
   else
     printf 'The run emitted no `FAILED:` line — it did not reach its `result` block, so it was\n'
     printf 'cancelled, killed, or died before finishing. Nothing below is a step verdict.\n\n'
+    summarize_gated "$log"   # row-digest-gated-cut
   fi
   # `if cmd; then` and NOT `cmd && … || …`: in the latter, a non-zero from the SUCCESS branch's
   # last command falls through into the failure branch, so the digest would print both stories.
@@ -1397,12 +1398,15 @@ summarize_undispatched() {   # <captured-log>
 
 # summarize_gated <captured-log> — the digest's paragraph for the steps the gate held because the
 # change touched none of their inputs (#629), or nothing. A scoped run's digest that named only
-# what failed would read as "everything else passed". From the result block's own line; every name
-# is re-validated as `FAILED:`'s are.
+# what failed would read as "everything else passed". From the result block's own line when the run
+# reached it, else from the announcement before the dispatch — a run cancelled part-way has only
+# that, as `summarize_overran` has only the live warnings. Every name is re-validated as
+# `FAILED:`'s are.
 summarize_gated() {   # <captured-log>
   local names _n
   local -a _names
   names="$(sed -n 's/^gated (inputs unchanged): //p' "$1" | tail -1)"
+  [ -n "${names// /}" ] || names="$(sed -n 's/^selfcheck: GATED [0-9]* step(s) — inputs unchanged ([^)]*): //p' "$1" | tail -1)"
   [ -n "${names// /}" ] || return 0
   printf '\n**Gated (the change touched none of their inputs, so these did not run):**'
   read -r -a _names <<< "$names"   # an array, never an unquoted expansion — see summarize_run

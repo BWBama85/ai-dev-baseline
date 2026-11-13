@@ -590,6 +590,13 @@ if [ "$MODE" = mutation ]; then
   shmutant_mut "digest-drops-gated-green" \
     '    summarize_gated "$log"   # row-digest-gated-green' ':   # row-digest-gated-green' \
     'the digest of a green scoped run names the steps the gate held'
+  shmutant_mut "digest-drops-gated-cut" \
+    '    summarize_gated "$log"   # row-digest-gated-cut' ':   # row-digest-gated-cut' \
+    'the digest of a cut scoped run still names the steps the gate held'
+  shmutant_mut "digest-gated-no-fallback" \
+    '  [ -n "${names// /}" ] || names="$(sed -n '"'"'s/^selfcheck: GATED [0-9]* step(s) — inputs unchanged ([^)]*): //p'"'"' "$1" | tail -1)"' \
+    '  :' \
+    'the digest of a cut scoped run still names the steps the gate held'
   shmutant_mut "fail-closed-unsaid" \
     '  printf '"'"'selfcheck: NOTE — the gate could not establish the change, so %s plain step(s) run unscoped (fail-closed): %s\n  %s\n'"'"' \' \
     '  : \' \
@@ -1655,6 +1662,14 @@ DOUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$work/scoped-green.log" 2
 has "$DOUT" '**Gated (the change touched none of their inputs, so these did not run):**' \
   "the digest of a green scoped run names the steps the gate held"
 has "$DOUT" '`scoped`' "…by name"
+
+# …and a run cut short before its result block: the digest takes the names from the announcement.
+sed '/^=== result ===$/,$d' "$work/scoped-green.log" > "$work/scoped-cut.log"
+DOUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$work/scoped-cut.log" 2>&1)"
+has "$DOUT" 'it did not reach its `result` block' "the digest of a cut scoped run says the run did not finish"
+has "$DOUT" '**Gated (the change touched none of their inputs, so these did not run):**' \
+  "the digest of a cut scoped run still names the steps the gate held"
+has "$DOUT" '`scoped`' "…by name, from the announcement before the dispatch"
 
 # A touched input — UNCOMMITTED, the local case — runs that step and only that step.
 reset_ctl "$FXG"

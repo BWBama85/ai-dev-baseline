@@ -264,7 +264,9 @@ enumeration that paginates and **proves** itself complete — with every mutatio
 red, because the defect it replaces printed exactly what a clean run prints), and an
 **install→uninstall dry-run** (all three agents) into a throwaway `HOME`.
 
-Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
+Green locally ≈ green in CI **for the suites your change touches** — a plain run is scoped since
+#629, so a suite it held back was not run (`--all` runs every one, and CI's ubuntu jobs always do)
+— and with two more honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
 them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
 its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 31 CI
