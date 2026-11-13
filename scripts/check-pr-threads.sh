@@ -959,3 +959,4 @@ pt list --pr 1 --nope
 eq "$RC" "2" "an unknown option is a usage error"
 
 check_summary "check-pr-threads"
+# (#629 measurement: a comment-only change, so a library-only pull request can be timed.)

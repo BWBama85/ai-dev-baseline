@@ -700,3 +700,4 @@ case "$SUB" in
   -h|--help)  usage; exit 0 ;;
   *) echo "pr-threads: unknown subcommand '$SUB' (expected 'infer-pr', 'list' or 'remaining')" >&2; usage >&2; exit 2 ;;
 esac
+# (#629 measurement: a comment-only change, so a library-only pull request can be timed.)
