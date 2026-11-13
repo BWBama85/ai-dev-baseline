@@ -1609,6 +1609,13 @@ fact pr-watch-mutation-wired 'regex:^[^#]*check-pr-watch\.sh --mutation' -- scri
 # pins the line's whole shape; this pins the one spelling the documents share.
 fact macos-mutations-skipped 'fixed:mutation-gate.sh steps --csv' -- \
   .github/workflows/ci.yml CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
+# THE macOS LEG IS SCOPED ON A PULL REQUEST (#629, D157), which rests on every suite having an
+# ubuntu job. The sentence that said two of them did not is refused wherever it was spelled: a copy
+# that came back would describe coverage the leg no longer gives.
+fact macos-only-suites-retired 'absent:run per PR only on this leg' \
+  'fires:      # and `bootstrap` run per PR only on this leg).' \
+  'fires:not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names are unchanged, so' \
+  -- .github/workflows/ci.yml docs/ci-runners.md CLAUDE.md CONTRIBUTING.md
 # The hand-written lists it replaced, refused wherever they were spelled: the six-name list (#448)
 # and the three-name list it grew from (#339, PR #429). A list that came back would be a copy the
 # registry no longer governs.
@@ -1988,6 +1995,12 @@ done
 # and a weekly job that did the same would report one lint and nothing about the platform.
 fact wsl-smoke-collect-all \
   'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*bash[[:space:]]+scripts/selfcheck\.sh[[:space:]]+--collect-all([[:space:]]|$)' \
+  -- .github/workflows/wsl-smoke.yml
+# …and it is UNSCOPED (#629, D157): a plain run holds every suite the change under test does not
+# touch, and a scheduled run of the default branch touches nothing, so without `--all` this job
+# would run the lints and report green over no suite at all.
+fact wsl-smoke-unscoped \
+  'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*bash[[:space:]]+scripts/selfcheck\.sh[[:space:]][^#]*[[:space:]]--all([[:space:]]|$)' \
   -- .github/workflows/wsl-smoke.yml
 # The distro's `bash --version` log is the fifth `--user adb` line and gets its own pin, because it
 # matches none of the shapes above: no `--cd`, no script name. It is also the line the negative rule

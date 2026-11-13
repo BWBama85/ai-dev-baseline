@@ -32,7 +32,8 @@
 # only), workflow-shell, claims (the committed range only), bash-floor, workflow-map,
 # skill-frontmatter and shmutant-pin. `injection` does NOT run here: it has no changed-file mode and
 # measured well over the rule whole-tree, so a finding of its kind is still learned from
-# `selfcheck.sh`, where it is in the tier that runs first. `check-precommit-gate.sh` requires every
+# `selfcheck.sh`, where it is in the tier that runs first. Nor does `step-inputs` (#629): through
+# the runner it measured 2.9s, over the rule (D157). `check-precommit-gate.sh` requires every
 # static-tier step in the registry to be run here or named as left out, so a lint that joins the
 # tier later cannot be missed for want of anyone measuring it.
 #

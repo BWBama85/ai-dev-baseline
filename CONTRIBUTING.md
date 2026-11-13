@@ -68,6 +68,18 @@ bash scripts/build.sh
 bash scripts/selfcheck.sh
 ```
 
+**A plain run is scoped to your change** (#629, D157). Every step declares the paths its verdict
+depends on (`bash scripts/selfcheck.sh --list`, fifth field), and a plain step runs only when your
+change — working tree and untracked files included, against the merge-base with `origin/main` —
+touches one of them. A step it holds is named before the run and in the `result` block
+(`gated (inputs unchanged): …`) with what it was compared on. Every lint declares the whole tree
+(`.`) and always runs, a step that declares nothing always runs and is named, and a step you name
+in `--only` runs. `bash scripts/selfcheck.sh --all` runs every plain step. So a green plain run
+says the suites your change touches pass; CI's ubuntu jobs run every suite on every pull request.
+If you add a `source`, a `bash "$ROOT/…"` or a fixture read to a suite, declare the file on the
+step's `inputs` line in `scripts/selfcheck.sh` — `scripts/check-step-inputs.sh` is red until you
+do, and its header says what it cannot see for you.
+
 `scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
 `wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
 eight steps at once never interleave. Results therefore arrive in *completion* order, and the final
@@ -148,6 +160,11 @@ names them; `gh workflow run mutation-nightly.yml --ref <branch> -f step=<name>`
 in the PR: the PR's own CI no longer will. Locally, `bash scripts/selfcheck.sh --mutation` runs
 the harnesses your change touches; a plain run holds them all back (#599).
 `check-mutation-gate.sh` pins the wiring, and the nightly's matrix is the registry by construction.
+
+**On a pull request the macOS leg runs only the steps your change touches** (#629, D157) — the
+scoped run above — and on the push to `main` it runs them all (`--all`). A macOS-only failure in a
+suite your change does not touch therefore shows up on `main`, not on your PR; the ubuntu jobs run
+every suite on every PR.
 
 **The whole-suite pool is the vendored [shmutant](https://github.com/BWBama85/shmutant)** (#519,
 D125): `scripts/shmutant.sh`, pinned by digest (`scripts/shmutant.sh.sha256`, checked by

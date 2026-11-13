@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ai-dev-baseline — the mutation-harness gate (#441).
+# ai-dev-baseline — the step gate: does this change give a step anything new to say (#441, #629)?
 #
 # A `--mutation` harness re-runs a whole suite once per injected defect to prove that suite can go
 # red. Its verdict is a function of a KNOWN, SMALL input set — the library it mutates, that
@@ -8,6 +8,10 @@
 # This script decides, from the diff, whether a harness has anything new to say, and SAYS which
 # way it decided: a skip that is indistinguishable from a pass is the failure `self-review.md`
 # names ("make the guard say what it checked").
+#
+# THE DECISION IS STEP-AGNOSTIC, and since #629 a plain step is asked it too: `should-run` takes a
+# step name and its declared inputs and knows nothing else about the step, so `selfcheck.sh` scopes
+# a plain run with the same call. `run`, `rows`, `steps` and `touched` are about harnesses.
 #
 # ONE HOME for the input set: `scripts/selfcheck.sh`'s registry, read through `--list` (field 5).
 # This script never carries a table of its own — a second copy is the drift golden rule 4 forbids.
@@ -94,7 +98,8 @@
 # only ever issued on a diff this script actually computed.
 #
 # Matching: an input names a file, or a directory (with or without a trailing `/`) whose whole
-# subtree counts. A changed path matches when it equals the input or lies under it.
+# subtree counts. A changed path matches when it equals the input or lies under it. The input `.`
+# is the tree's root: every changed path lies under it.
 
 # bash 5.3 runtime floor (#256) — FIRST, before `set -u` and the cd. Same stanza and same reason as
 # every other entry point under scripts/.
@@ -191,7 +196,8 @@ gate_changed() {
 }
 
 # gate_match <input>… — the members of GATE_CHANGED that lie on any input, one per line. An input
-# names a file, or a directory whose subtree counts; `stub.sh.bak` does not lie on `stub.sh`.
+# names a file, or a directory whose subtree counts; `stub.sh.bak` does not lie on `stub.sh`. The
+# input `.` is the tree's root, so every changed path lies on it.
 gate_match() {
   local f p
   for f in "${GATE_CHANGED[@]}"; do
@@ -201,6 +207,7 @@ gate_match() {
       case "$f" in
         "$p"|"$p"/*) printf '%s\n' "$f"; break ;;
       esac
+      if [ "$p" = . ]; then printf '%s\n' "$f"; break; fi   # row-root-input
     done
   done
 }
@@ -212,19 +219,19 @@ gate_decide() {
   shift 2
   inputs="$(printf '%s, ' "$@")"; inputs="${inputs%, }"
   if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-step-override
-    printf 'RUN: %s — ADB_MUTATION_RUN_ALL is set; the gate is overridden and every harness runs\n' "$step"
+    printf 'RUN: %s — ADB_MUTATION_RUN_ALL is set; the gate is overridden and every gated step runs\n' "$step"
     return 12
   fi
   base="$(gate_base "$basearg")"
   # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
   # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
   if ! mb="$(gate_mb "$base" 2>&1)"; then
-    printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the harness runs)\n' \
+    printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
       "$step" "${mb:-merge-base unavailable}"
     return 11   # row-mb-unresolved
   fi
   if ! gate_changed "$mb"; then
-    printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the harness runs)\n' \
+    printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
       "$step" "${GATE_ERR:-diff unavailable}"
     return 11
   fi
