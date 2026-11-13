@@ -1296,9 +1296,10 @@ jobs:
   pattern-ledger:
     name: pattern-ledger
     runs-on: ubuntu-26.04
-    # 10: the suite alone, about 80s on run 38081150119. The ledger's mutation harness, which this job
-    # was created for (D87, D111), runs in `mutation-nightly.yml` since #456 (D126). The job stays:
-    # its name is a required check context.
+    # 10: the suite alone, about 80s on run 38081150119, and since #629 `check-docs-lib.sh` (12s on a
+    # 10-core macOS machine). The ledger's mutation harness, which this job was created for (D87,
+    # D111), runs in `mutation-nightly.yml` since #456 (D126). The job stays: its name is a required
+    # check context.
     timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives

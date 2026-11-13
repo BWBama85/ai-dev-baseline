@@ -630,7 +630,7 @@ add tmp-paths           bash scripts/check-tmp-paths.sh
 inputs tmp-paths           .
 
 add gate-detector       step_gate_detector
-inputs gate-detector       agents.toml scripts/lib/common.sh scripts/lib/project-gates.sh
+inputs gate-detector       agents.toml scripts/lib/common.sh scripts/lib/project-gates.sh scripts/selfcheck.sh
 
 # Full behavior tests for the gate model (detection, open set, N/A, path scope).
 add gates               bash scripts/check-gates.sh
@@ -638,7 +638,7 @@ inputs gates               scripts/check-gates.sh scripts/check-lib.sh scripts/l
 
 # Unit tests for the shared shell primitives (scripts/lib/common.sh), incl. adb_repo_shape (#23).
 add common-lib          bash scripts/check-common-lib.sh
-inputs common-lib          scripts/check-common-lib.sh scripts/check-lib.sh .claude/scripts .github/workflows agents bin docs install.sh scripts/lib scripts/mutation-gate.sh scripts/selfcheck.sh uninstall.sh
+inputs common-lib          scripts/check-common-lib.sh scripts/check-lib.sh .claude/scripts .github/workflows agents bin docs install.sh scripts/lib scripts/mutation-gate.sh scripts/selfcheck.sh templates/agents.toml uninstall.sh
 
 # ...and the install-manifest guards are guards, so each is injected with its own defect and must go
 # red ON ITS OWN NAMED WITNESS (#324). Red for the wrong reason is not evidence, and a mutation whose
@@ -655,7 +655,7 @@ inputs block-rows          scripts/check-block-rows.sh scripts/check-lib.sh scri
 # Integration tests for bin/agent-init's repo-shape tolerance: subdir resolution, bama-style
 # untracked-parent + out-of-repo doc surfacing, nested repos, non-git refusal (#23).
 add agent-init          bash scripts/check-agent-init.sh
-inputs agent-init          scripts/check-agent-init.sh scripts/check-lib.sh agents bin/agent-init scripts/lib/common.sh
+inputs agent-init          scripts/check-agent-init.sh scripts/check-lib.sh agents bin/agent-init docs/roles-and-agents.md scripts/lib/common.sh scripts/lib/role-dispatch.sh templates/agents.toml
 
 # Unit tests for the runtime role-dispatch helper (resolve/bots/invoke + validation, #15).
 add role-dispatch       bash scripts/check-role-dispatch.sh
@@ -712,7 +712,7 @@ inputs state-assert        scripts/check-lib.sh scripts/check-state-assert.sh ag
 
 # The retired composer's refusal contract (scripts/lib/skill-compose.sh, retired by #540).
 add skill-compose       bash scripts/check-skill-compose.sh
-inputs skill-compose       scripts/check-lib.sh scripts/check-skill-compose.sh bin/baseline scripts/lib/common.sh scripts/lib/skill-compose.sh
+inputs skill-compose       scripts/check-lib.sh scripts/check-skill-compose.sh .claude/scripts/precommit-gate.sh agents bin/baseline install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates/agents.toml uninstall.sh
 
 # Unit tests for the pattern ledger (scripts/lib/pattern-ledger.sh, #421): the threshold boundary
 # from both sides, exactly-once keyed on the review thread, and a damaged ledger refused WHOLE by
@@ -761,7 +761,7 @@ inputs docs-lib-mutation        scripts/check-docs-lib.sh scripts/check-lib.sh s
 # for an open PR or an in-flight run), and the terse output contract (#84). Also home of the #38
 # remote-enumeration regression since #372 retired check-cleanup-enum.sh. Offline.
 add cleanup             bash scripts/check-cleanup.sh
-inputs cleanup             scripts/check-cleanup.sh scripts/check-lib.sh base/workflows/cleanup.md base/workflows/implement-issue.md bin/baseline scripts/lib
+inputs cleanup             scripts/check-cleanup.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents base/workflows/cleanup.md base/workflows/implement-issue.md bin/baseline install.sh scripts/lib templates/agents.toml uninstall.sh
 
 # Behavioral tests for the /adopt decision predicates (scripts/lib/adopt-lib.sh, #20): the
 # keep/remove/move/escalate classifier, tested from the side that costs something — a prescribed
@@ -774,7 +774,7 @@ inputs cleanup             scripts/check-cleanup.sh scripts/check-lib.sh base/wo
 # and a byte-level assertion that no read-only subcommand alters the project it scanned. Offline;
 # every fixture is a mktemp -d tree.
 add adopt               bash scripts/check-adopt.sh
-inputs adopt               scripts/check-adopt.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh .claude/skills agents base/practices base/workflows bin/agent-init install.sh scripts/build.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/project-gates.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/shmutant.sh scripts/skill-description.awk templates uninstall.sh
+inputs adopt               scripts/check-adopt.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh .claude/skills agents base/practices base/workflows bin/agent-init bin/baseline docs/roles-and-agents.md install.sh scripts/build.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh scripts/shmutant.sh scripts/skill-description.awk templates uninstall.sh
 
 # ...and that suite is a guard, so it gets what guards get here: every load-bearing decision in
 # adopt-lib.sh is injected with its own defect in a TREE COPY, and the suite must come back red ON
@@ -793,7 +793,7 @@ inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scri
 # filesystem and `tracker` reads a JSON object the caller assembled, which is exactly why the two
 # live reads (`facts`, `observe`) are subcommands of their own, driven here through a stubbed gh.
 add adopt-readiness     bash scripts/check-adopt-readiness.sh
-inputs adopt-readiness     scripts/check-adopt-readiness.sh scripts/check-lib.sh agents/claude/settings.hooks.json agents/claude/settings.permissions.json base/workflows/adopt.md bin/baseline scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/project-gates.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/shmutant.sh scripts/skill-description.awk
+inputs adopt-readiness     scripts/check-adopt-readiness.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents base/workflows/adopt.md bin/baseline install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh scripts/shmutant.sh scripts/skill-description.awk templates/agents.toml uninstall.sh
 
 # ...and the same guards-get-mutated rule, for the same reason: every defect in its table (the count
 # is printed by `--mutation`, never quoted here, because a quoted count goes stale), each injected
@@ -881,7 +881,7 @@ inputs shmutant-pin        .
 # End-to-end tests for bin/baseline's currency classification (safety-critical: it
 # must never fast-forward over dirty/ahead/diverged/detached/non-default state).
 add baseline            bash scripts/check-baseline.sh
-inputs baseline            scripts/check-baseline.sh scripts/check-lib.sh agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
+inputs baseline            scripts/check-baseline.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh templates uninstall.sh
 
 # The SessionStart currency hook (#36) must act ONLY on a genuinely new session, never touch the
 # clone the session is working in, refuse unsafe clone state by name, and always exit 0 — a
@@ -939,7 +939,7 @@ inputs session-context-mutation scripts/check-session-context.sh scripts/check-l
 # dispositions, the version probe against a stub CLI, and the real install.sh/uninstall.sh over a
 # fake HOME.
 add settings-fragment   bash scripts/check-settings-fragment.sh
-inputs settings-fragment   scripts/check-lib.sh scripts/check-settings-fragment.sh agents bin/baseline install.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/selfcheck.sh templates uninstall.sh
+inputs settings-fragment   scripts/check-lib.sh scripts/check-settings-fragment.sh .claude/scripts/precommit-gate.sh agents bin/baseline install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/currency-lib.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh scripts/selfcheck.sh templates uninstall.sh
 
 # ...and every one of those rules is a guard over a file the operator also writes, so the failure
 # mode is a settings.json that looks right and has quietly eaten somebody's own key. Each rule is
@@ -953,7 +953,7 @@ inputs settings-fragment-mutation scripts/check-settings-fragment.sh scripts/che
 # states, the receipt, the version probe against a stub CLI, the auditor on every prompt source it
 # names, and the real install.sh/uninstall.sh over a fake HOME.
 add permissions         bash scripts/check-permissions.sh
-inputs permissions         scripts/check-lib.sh scripts/check-permissions.sh agents/claude/settings.permissions.json agents/claude/skills base/workflows/adopt.md bin/baseline docs/installation.md install.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/project-gates.sh scripts/shmutant.sh uninstall.sh
+inputs permissions         scripts/check-lib.sh scripts/check-permissions.sh .claude/scripts/precommit-gate.sh agents base/workflows/adopt.md bin/baseline docs/installation.md install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/skill-compose.sh scripts/shmutant.sh templates/agents.toml uninstall.sh scripts/lib/currency-lib.sh templates
 
 # ...and each of those rules broken in a COPY of the library, required RED on its own witness.
 add permissions-mutation bash scripts/check-permissions.sh --mutation
@@ -962,12 +962,12 @@ inputs permissions-mutation scripts/check-permissions.sh scripts/check-lib.sh sc
 # A plain `git pull` must never dangle an installed symlink: install the merge-base, simulate
 # a pull to HEAD, and require every installed link to still resolve (#35).
 add install-migration   bash scripts/check-install-migration.sh
-inputs install-migration   scripts/check-install-migration.sh scripts/check-lib.sh agents bin install.sh scripts/lib templates uninstall.sh
+inputs install-migration   scripts/check-install-migration.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib templates uninstall.sh
 
 # adb_link's fail-loud source guard must thread through install.sh: a missing manifest source
 # makes the real installer exit non-zero, never dangling a link or disturbing a real dest (#48).
 add install-guard       bash scripts/check-install-guard.sh
-inputs install-guard       scripts/check-install-guard.sh scripts/check-lib.sh agents bin install.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh templates uninstall.sh
+inputs install-guard       scripts/check-install-guard.sh scripts/check-lib.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh templates uninstall.sh
 
 # Every entry point locates its own clone root BEFORE it can source common.sh, and `$(…)` strips
 # every trailing newline — so an unsentinelled capture shortens a clone named `clone<NL>` onto an
@@ -994,7 +994,7 @@ inputs bootstrap-mutation       scripts/check-bootstrap.sh scripts/check-lib.sh 
 # uninstall that deletes an operator's edits or leaves orphans. Every one is driven red against
 # fixtures under `mktemp -d`; the tracked tree is never mutated.
 add pinned-install      bash scripts/check-pinned-install.sh
-inputs pinned-install      scripts/check-lib.sh scripts/check-pinned-install.sh agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh templates uninstall.sh
+inputs pinned-install      scripts/check-lib.sh scripts/check-pinned-install.sh .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib/adopt-lib.sh scripts/lib/adopt-readiness.sh scripts/lib/common.sh scripts/lib/permissions-lib.sh scripts/lib/pinned-install.sh scripts/lib/project-gates.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh templates uninstall.sh
 
 # Canonical facts (gate axes, cross-agent invocations, codex timeout, resolution order)
 # must stay consistent across their consumer docs.
@@ -1082,7 +1082,7 @@ inputs selfcheck-guard-mutation scripts/check-selfcheck.sh scripts/check-lib.sh 
 # goes through the gate, every `*-mutation` step here declares inputs, and the nightly matrix names
 # every one of them. POOLED and cheap: seconds, in `mktemp -d` fixtures.
 add mutation-gate       bash scripts/check-mutation-gate.sh
-inputs mutation-gate       .github/workflows/ci.yml .github/workflows/mutation-nightly.yml base/practices install.sh scripts uninstall.sh
+inputs mutation-gate       .github/workflows/ci.yml .github/workflows/mutation-nightly.yml base/practices scripts
 
 # ...and the gate's own suite is a guard whose failure mode is SILENCE, so every rule of the gate
 # whose failure is a WRONG SKIP is broken in ONE way in a COPY — always skip, always run, an
@@ -1104,7 +1104,7 @@ add step-inputs         bash scripts/check-step-inputs.sh --self-test
 inputs step-inputs         .
 
 add install-dry-run     step_install_dry_run
-inputs install-dry-run     agents bin install.sh scripts/lib templates uninstall.sh
+inputs install-dry-run     .claude/scripts/precommit-gate.sh agents bin install.sh scripts/lib templates uninstall.sh scripts/selfcheck.sh
 
 # A tier member that is not registered would be in no tier at all, in silence.
 for _s in "${STATIC_STEPS[@]}"; do

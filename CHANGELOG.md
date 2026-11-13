@@ -117,10 +117,11 @@ only by a release it upgrades to. These entries are the notes for both.
   request (#629).** Every registry step now declares the paths its verdict depends on (the fifth
   field of `bash scripts/selfcheck.sh --list`), and a plain step runs only when the change under
   test, working tree and untracked files included, touches one of them against the merge-base
-  with `origin/<default>`. A step the run holds is named before the run and in the `result`
-  block with what it was compared on, and `--summarize` carries the line. Every lint declares the
-  whole tree (`.`) and always runs; a step that declares nothing always runs and is named; a step
-  named in `--only` runs. `--all` runs every plain step. No repository, a base that does not
+  with `origin/<default>`. A step the run holds is named before the run with what it was
+  compared on, and by name in the `result` block and the `--summarize` digest. Every lint
+  declares the whole tree (`.`) and always runs; a step that declares nothing always runs and is
+  named; a plain step named in `--only` runs (a harness named there is still gated on its
+  inputs). `--all` runs every plain step. No repository, a base that does not
   resolve or no merge-base runs every step and says why. So a green plain run now says the
   suites the change touches pass, not that every suite does. In CI, `selfcheck-macos` is scoped
   the same way on a pull request and passes `--all` on every other event, so a macOS-only
@@ -129,8 +130,8 @@ only by a release it upgrades to. These entries are the notes for both.
   macOS (`docs-lib`, `bootstrap`, `implement-lib`, `mutation-gate`) gained a step in an existing
   ubuntu job, and no job was added or renamed. The weekly WSL job passes `--all`. A new lint,
   `scripts/check-step-inputs.sh`, fails when a suite names a tracked file its step does not
-  declare or when a step the scope can hold has no ubuntu job; it cannot see a path a suite
-  computes or a tree it copies whole. "Is a mutation harness" is now the step's name
+  declare or when no ubuntu job is certain to run a step the scope can hold; it cannot see a
+  path a suite computes or a tree it copies whole. "Is a mutation harness" is now the step's name
   (`*-mutation`), no longer "declares inputs". Against the last full macOS run on `main` (run
   43328767178), the declarations select 28% to 33% of the step time for a change to one library
   and its suite and 10% for a docs-only change; `precommit-gate` (791s there) runs on any change

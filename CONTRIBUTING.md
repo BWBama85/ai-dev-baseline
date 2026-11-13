@@ -71,10 +71,10 @@ bash scripts/selfcheck.sh
 **A plain run is scoped to your change** (#629, D157). Every step declares the paths its verdict
 depends on (`bash scripts/selfcheck.sh --list`, fifth field), and a plain step runs only when your
 change — working tree and untracked files included, against the merge-base with `origin/main` —
-touches one of them. A step it holds is named before the run and in the `result` block
-(`gated (inputs unchanged): …`) with what it was compared on. Every lint declares the whole tree
-(`.`) and always runs, a step that declares nothing always runs and is named, and a step you name
-in `--only` runs. `bash scripts/selfcheck.sh --all` runs every plain step. So a green plain run
+touches one of them. A step it holds is named before the run with what it was compared on, and
+by name in the `result` block (`gated (inputs unchanged): …`). Every lint declares the whole tree
+(`.`) and always runs, a step that declares nothing always runs and is named, and a plain step
+you name in `--only` runs (a harness named there is still gated on its inputs). `bash scripts/selfcheck.sh --all` runs every plain step. So a green plain run
 says the suites your change touches pass; CI's ubuntu jobs run every suite on every pull request.
 If you add a `source`, a `bash "$ROOT/…"` or a fixture read to a suite, declare the file on the
 step's `inputs` line in `scripts/selfcheck.sh` — `scripts/check-step-inputs.sh` is red until you
