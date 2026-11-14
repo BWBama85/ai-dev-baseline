@@ -1281,36 +1281,17 @@ Emit a concise summary to the user:
 > Per round (every round this run processed, oldest first):
 > <ROUND_ROWS>
 >
-> <the `local review, whole run:` block, verbatim>
->
 > This PR so far: <pr-hits> findings · <pr-recurring> recurring · <pr-new-classes> classes
 
 **Every round's row, not just the last.** The summary is emitted once at the terminal exit, and a
 run that processed six rounds has six measurements to report — printing only the final one is how
 the trend stays invisible for exactly the multi-round loop it is meant to measure.
 
-**The local review is reported whole, not only per round (#618).** Each round's row ends with that
-round's loop line; the block under the rows covers the run — `/implement-issue`'s passes when its
-record is still in this checkout and its run marker names this PR, then every round's, oldest
-first: total passes, each pass's REQUIRED count, and how each finding ended (fixed, superseded,
-declined with its reason, deferred with its issue, carried, or still open). Render it; never
-assemble it by hand:
-
-```bash
-WHOLE_RUN="$(bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .codex/state)"; WRC=$?
-case "$WRC" in
-  0|11) : ;;   # print "$WHOLE_RUN" in the summary; 11 = no pass was recorded, and its line says so
-  *)    WHOLE_RUN="local review, whole run: not rendered (rc $WRC)" ;;   # 18 a record does not parse · 20 unreadable
-esac
-SUMMARY_EMITTED=1   # step 8 prints the rows and this block itself on any exit that never got here
-```
-
-`fixed`, `superseded` and `open` are derived from the passes — a pass's REQUIRED findings, less
-those declined, deferred or carried, are fixed when any later pass read a changed tree, superseded
-when later passes only re-read the same tree, and open when the pass is the record's latest — and
-they count per pass, so a finding the next pass raised again is counted again. Together with the
-recorded outcomes they add up to the sum of every pass's REQUIRED count. The records are run state
-that `/cleanup` sweeps; this summary is where the figures survive.
+**The local review is reported whole, not only per round (#618) — by step 8, on every exit.** Each
+round's row ends with that round's loop line. The run as a whole — `/implement-issue`'s passes
+when its record is still in this checkout and its run marker names this PR, then every round's,
+oldest first — is printed by step 8, the one step every exit of this skill passes through, so a
+round that stops early reports it as this summary's exit does.
 
 **Each row carries the round's declines beside its findings (#438).** A round that declined
 everything reads `0 findings` with `declined: 6` under it, not as a round with nothing in it. The
@@ -1736,20 +1717,32 @@ exactly what put a later run on a now-merged branch (issue #17). Prefer the bran
 started on; fall back to the PR's **base** branch, then the repo default — never a
 hardcoded `main`.
 
-**Every exit reports the run, not only the one that reaches step 6 (#618).** A stop anywhere after
-a round began — a blocked local review, a failed push, a PR that closed, a read that failed — ends
-here without the closing summary, and the loop records behind it are run state that `/cleanup`
-sweeps. So this step prints what step 6 would have: the rows gathered so far and the local review
-of the whole run. It is the one place every exit already passes through.
+**Every exit reports the local review of the whole run (#618).** This step is the one place every
+exit passes through — the summary's, and a stop anywhere before it: a blocked local review, a
+failed push, a PR that closed, a read that failed — and the loop records are run state that
+`/cleanup` sweeps. So the whole-run block is printed here, always, and nowhere else: total
+passes, each pass's REQUIRED count, and how each finding ended (fixed, superseded, declined with
+its reason, deferred with its issue, carried, or still open). It keeps no "already printed" state
+to go stale between rounds. Render it; never assemble it by hand:
 
 ```bash
-# SUMMARY_EMITTED is set by step 6. Unset means this exit never printed the closing summary.
-if [ -z "${SUMMARY_EMITTED:-}" ] && [ -n "${PR_NUM:-}" ]; then
-  printf 'Per round so far:\n%s' "${ROUND_ROWS:-}"
-  [ -n "${ROUND_ROWS:-}" ] || echo "  no round completed"
+# No PR number means the run stopped before it had one, and there is nothing to summarize.
+if [ -n "${PR_NUM:-}" ]; then
   bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .codex/state; WRC=$?
+  # 11 = no pass was recorded, and the command's own line says so · 18 a record does not parse · 20 unreadable
   case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
 fi
+```
+
+`fixed`, `superseded` and `open` are derived from the passes — a pass's REQUIRED findings, less
+those declined, deferred or carried, are fixed when any later pass read a changed tree, superseded
+when later passes only re-read the same tree, and open when the pass is the record's latest — and
+they count per pass, so a finding the next pass raised again is counted again. Together with the
+recorded outcomes they add up to the sum of every pass's REQUIRED count.
+
+Then restore the branch:
+
+```bash
 # Guard on a clean tree — never switch away over uncommitted work, nor over a tree whose status
 # could not be read.
 if ! _wst="$(git status --porcelain)" || [ -n "$_wst" ]; then

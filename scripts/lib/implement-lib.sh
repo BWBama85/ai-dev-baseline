@@ -5757,9 +5757,12 @@ _il_loop_summary_snapshot() {
   esac
 }
 
-# _il_loop_summary_cleanup — remove the snapshot directory, saying so when it cannot be removed:
-# it can hold a copy of every record the summary read.
+# _il_loop_summary_cleanup — release the loop's lock if this process still holds it (an interrupt
+# can arrive mid-snapshot, and an abandoned lock blocks every loop verb until it is reclaimed as
+# stale), then remove the snapshot directory, saying so when it cannot be removed: it can hold a
+# copy of every record the summary read.
 _il_loop_summary_cleanup() {
+  [ -z "${_IL_LOOP_SNAP_STATE:-}" ] || _il_claim_mutex_drop "$_IL_LOOP_SNAP_STATE" "$_IL_LOOP_MUTEX"
   [ -n "${_IL_LOOP_SNAP_DIR:-}" ] || return 0
   rm -rf -- "$_IL_LOOP_SNAP_DIR" 2>/dev/null \
     || printf 'implement-lib: review-loop summary: NOTE — the snapshot directory %s could not be removed\n' "$_IL_LOOP_SNAP_DIR" >&2
@@ -5785,6 +5788,7 @@ cmd_review_loop_summary() {
   # A directory that cannot be LISTED hides its round records from the glob, and nothing found
   # there would read as nothing recorded.
   [ -r "$dir" ] || { printf 'implement-lib: review-loop summary: %s cannot be listed, so which records it holds is unknown\n' "$dir" >&2; return 20; }
+  _IL_LOOP_SNAP_STATE="$dir"
   _IL_LOOP_SNAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/adb-loop-summary.XXXXXX")" \
     || { echo "implement-lib: review-loop summary: could not create a private directory for the snapshot" >&2; return 20; }
   # The copies are removed however the command ends — an interrupt included. The EXIT trap is the

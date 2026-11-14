@@ -376,6 +376,10 @@ if [ "$MODE" = mutation ]; then
     "  trap '_il_loop_summary_cleanup' EXIT" \
     '  :' \
     'summary removes its private copies however it ends'
+  shmutant_mut summary-interrupt-keeps-lock \
+    '  [ -z "${_IL_LOOP_SNAP_STATE:-}" ] || _il_claim_mutex_drop "$_IL_LOOP_SNAP_STATE" "$_IL_LOOP_MUTEX"' \
+    '  :' \
+    'an interrupted summary releases the loop'
   shmutant_mut summary-follows-links \
     '  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 20' \
     '  :' \
@@ -1512,6 +1516,17 @@ printf '{"prUrl": ' > "$S/implement-issue-active.json"
 RL_OUT="$( cd "$d" && env HOME="$FHOME" TMPDIR="$ST" PATH="$CB:$SB:$PATH" PR_HEAD="$PH" bash "$IL" review-loop summary --pr 7 .claude/state 2>&1 )"; RL_RC=$?
 eq "$RL_RC/$(find "$ST" -mindepth 1 | wc -l | tr -d ' ')" "20/0" "15 …a refusal included"
 marker "$S" "https://github.com/o/r/pull/7"
+# An interrupt during the snapshot releases the loop's lock and removes the copies: a `cp` that
+# signals the summary mid-copy stands in for the operator's Ctrl-C.
+IB="$work/intbin"; mkdir -p "$IB"
+printf '#!/bin/sh\nkill -TERM "$PPID"\nexec %s "$@"\n' "$(command -v cp)" > "$IB/cp"; chmod +x "$IB/cp"
+RL_OUT="$( cd "$d" && env HOME="$FHOME" TMPDIR="$ST" PATH="$IB:$CB:$SB:$PATH" PR_HEAD="$PH" bash "$IL" review-loop summary --pr 7 .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 143 "15 a summary interrupted mid-snapshot ends as interrupted (143)"
+[ ! -e "$S/.review-loop-mutex" ] && ok || bad "15 an interrupted summary releases the loop's lock"
+rm -rf "$S/.review-loop-mutex"
+eq "$(find "$ST" -mindepth 1 | wc -l | tr -d ' ')" 0 "15 …and removes its copies"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 0 "15 …so the next summary runs at once"
 # A record that is not a regular file is never followed.
 mv "$S/review-loop.tsv" "$S/elsewhere.tsv"; ln -s elsewhere.tsv "$S/review-loop.tsv"
 prl "$d" review-loop summary --pr 7 .claude/state
@@ -1618,14 +1633,14 @@ RDEFER="$(code_line_of "$RW" 'review-loop defer --pr "$PR_NUM" --head "$SWEEP_HE
 order "11 4d documents the defer disposition, after its pass" "$RPASS" "$RDEFER"
 order "11 …and before the round's push" "$RDEFER" "$RPUSH"
 [ -n "$(code_line_of "$RW" 'review-loop decline --pr "$PR_NUM" --head "$SWEEP_HEAD" --reason')" ] && ok || bad "11 4d documents the decline disposition"
-[ -n "$(code_line_of "$RW" 'WHOLE_RUN="$({{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}})"')" ] && ok || bad "11 the resolver's closing summary renders the whole run"
-# Every exit of the resolver passes through step 8, so that is where an exit that never reached
-# step 6's summary prints the rows and the whole run — one place, not one call per exit.
+# Every exit of the resolver passes through step 8, so that is the ONE place the whole run is
+# rendered — the summary's exit and an early stop alike, with no "already printed" state between.
 R8="$(line_of "$RW" '### 8. Restore the starting branch')"
 R8SUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?')"
-order "11 …and so does step 8, which every other exit of the skill ends in" "$R8" "$R8SUM"
-order "11 …guarded on the mark step 6 sets when it has printed the summary itself" "$(code_line_of "$RW" 'SUMMARY_EMITTED=1')" "$(code_line_of "$RW" 'if [ -z "${SUMMARY_EMITTED:-}" ] && [ -n "${PR_NUM:-}" ]; then')"
+order "11 the resolver renders the whole run in step 8, which every exit of the skill ends in" "$R8" "$R8SUM"
 order "11 …before the branch is restored" "$R8SUM" "$(code_line_of "$RW" 'echo "Restored working tree to')"
+eq "$(grep -c 'review-loop summary --pr' "$RW")" 1 "11 …and nowhere else, so no exit can print it twice or miss it"
+hasnt "$(cat "$RW")" "SUMMARY_EMITTED" "11 …with no printed-already flag for a later round to inherit"
 grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
 
 check_summary check-review-loop

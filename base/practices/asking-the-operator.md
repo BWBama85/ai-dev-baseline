@@ -34,7 +34,8 @@ treat its absence as a reason to drop the recommendation.
 ## The shape of a structured question
 
 - **The recommended option is first**, its label ends `(Recommended)`, and its description carries
-  the one-line reason.
+  the one-line reason. Where the tool's options have no description field, the reason goes in the
+  question's own text.
 - **One decision per question**, with options that exclude each other. Several independent
   decisions go in one call, up to the tool's own limit, rather than one turn each.
 - **Each question is self-contained**: text you wrote earlier in the turn may not be on screen

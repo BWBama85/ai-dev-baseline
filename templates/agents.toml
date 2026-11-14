@@ -152,8 +152,9 @@ debug        = "claude"     # owns root-cause investigations.
 # `local_passes = "until-clean"`; `ADB_LOCAL_REVIEW_PASSES=until-clean` is the one-run form. THE
 # TRADE: it removes the loop's only overall bound, so a reviewer that never comes back clean keeps
 # it going. Each pass keeps its own dispatch deadline, and a finding does not have to be fixed to
-# end: one that is not this diff's defect is declined with its reason, and one that predates the
-# diff is filed and deferred — a pass whose every REQUIRED finding ended that way is settled.
+# end: one that is not a reachable defect or a regression of this diff is declined with its reason,
+# and a real defect in code the diff neither changed nor made newly reachable is filed and
+# deferred — a pass whose every REQUIRED finding ended that way is settled.
 # local_passes = 3
 
 # Optional: let the loop REPAIR required-check drift, not merely detect it (#333).
