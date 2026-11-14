@@ -99,7 +99,7 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `10` | `review-loop carry` / `defer` / `decline` | this exact row is already recorded — the retry path, nothing written |
 | `27` | `review-loop pass` / `begin` / `report` | the worktree is not clean. A pass reviews the worktree and a push ships HEAD, so the loop reviews and certifies only a committed tree — commit, then pass again |
 | `19` | `review-loop carry` / `defer` / `decline` | a refused field (severity, a `--site` that is not a repository-relative `path[:line]` or `-`, an `--occurrence` that is not 1-9999, an `--issue` that is not an issue number, or a finding or `--reason` past 300 bytes or carrying a control character), a finding that already ended another way, or a row that would take the record past its 1 MiB bound |
-| `11` / `18` | `review-loop summary` | nothing is recorded for the run / a record does not parse — no summary is rendered from a partial run |
+| `11` / `18` / `20` | `review-loop summary` | nothing is recorded for the run / a record does not parse or is past its size bound / something it needs could not be read: a state directory it cannot list, a run marker that does not read as one, more round records than its snapshot's bound. No summary is rendered from a partial run |
 | `39` | `open-pr` | the local convergence loop does not certify the tip (`review-loop report` is not 0/33/35, or no loop was recorded while it is enabled), or the tip moved while that verdict was read. Re-run step 9's loop — never push past it |
 | `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 

@@ -5647,7 +5647,9 @@ _il_loop_stuck() {
 #
 # ROUNDS ARE ORDERED BY ANCESTRY: a round's key is the head it started from, each such head is an
 # ancestor of the next, and an ancestor has strictly fewer commits behind it. A key whose commit
-# count cannot be read here sorts last, by name, and its line says its position is unknown.
+# count cannot be read here sorts last, by name, and its line says its position is unknown. The
+# count is an order only along ONE ancestry chain, which is what a resolver that never rewrites
+# history produces; heads on a rewritten history are not detected and may print out of order.
 _IL_LOOP_SUMMARY_ROUNDS=200
 _IL_LOOP_MARKER_MAX=65536
 

@@ -14,9 +14,10 @@ The tool belongs to the harness, so read what this turn lists rather than assumi
 | Codex CLI | `request_user_input` | the turn's mode does not list it |
 | any other harness | whichever question tool the turn lists | none is listed |
 
-A tool the turn does not list is the answer "no tool this turn": ask in prose. So is a tool that
-is listed but whose own description rules out this use — a mode it may not be called in, a kind
-of question it is not for. Do not call a tool that is not listed or not permitted, and do not
+Look at every question tool the turn lists before falling back: a harness may list more than one,
+and one that is listed but whose own description rules out this use — a mode it may not be called
+in, a kind of question it is not for — does not rule out the others. Ask in prose only when no
+structured question tool is both listed and permitted. Do not call a tool that is not, and do not
 treat its absence as a reason to drop the recommendation.
 
 ## The shape of a structured question
