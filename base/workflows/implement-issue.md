@@ -560,9 +560,11 @@ verdict trailer carries counts, not severities):
 FINDING
 ```
 
-A second finding identical to one already carried (same site, severity and line) is carried with
-`--occurrence 2`, and so on; repeating an identical row is the retry path and records nothing.
-`decline` and `defer` take `--occurrence` the same way.
+A finding is its site, its occurrence and its text, whichever verb ends it. A second finding
+identical to one already recorded (same site, same line of text) is recorded with `--occurrence 2`,
+and so on; repeating an identical row is the retry path and records nothing. Severity is the
+triage a carry adds, not part of what the finding is, so the same finding cannot be carried a
+second time at another severity, nor both carried and declined or deferred.
 
 Then the report, which is the loop's verdict and its one line: the total passes, each pass's
 REQUIRED count, the verdict, and how the findings ended — each declined finding with its reason,

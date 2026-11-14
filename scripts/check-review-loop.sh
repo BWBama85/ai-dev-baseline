@@ -345,13 +345,33 @@ if [ "$MODE" = mutation ]; then
     '    elif true; then' \
     'summary --pr leaves out a run record whose marker names another PR'
   shmutant_mut summary-marker-stream-read \
-    "'if length == 1 and (.[0] | type) == \"object\" then" \
-    "'if (.[0] | type) == \"object\" then" \
+    '    if length == 1 and (.[0] | type) == "object" then .[0] else error("marker") end' \
+    '    if (.[0] | type) == "object" then .[0] else error("marker") end' \
     'a marker that is two objects'
-  shmutant_mut summary-marker-url-unchecked \
-    '  n="$(adb_pr_number "$url")" || return 20' \
-    '  n="$(adb_pr_number "$url")" || n=""' \
-    'a marker whose prUrl is not a pull-request URL'
+  shmutant_mut summary-marker-false-is-absent \
+    '    | if (has("prUrl") | not) then ""' \
+    '    | if (.prUrl // false | not) then ""' \
+    'a marker whose prUrl is false'
+  shmutant_mut summary-marker-url-grammar \
+    '           and (.prUrl | test("^https://[^/]+/[^/]+/[^/]+/pull/[1-9][0-9]{0,10}$"))' \
+    '           and true' \
+    'a marker whose prUrl is a bare number'
+  shmutant_mut summary-marker-url-whitespace \
+    '           and (.prUrl | test("[[:space:][:cntrl:]]") | not)' \
+    '           and true' \
+    'a marker whose prUrl holds whitespace'
+  shmutant_mut summary-snapshot-unbounded \
+    '  [ "$sz" -le "$3" ] || return 18' \
+    '  :' \
+    'a run marker past 64 KiB'
+  shmutant_mut summary-round-count-unbounded \
+    '      if [ "${#SM_SHAS[@]}" -ge "$_IL_LOOP_SUMMARY_ROUNDS" ]; then rc=21; break; fi' \
+    '      :' \
+    'more round records than the snapshot'
+  shmutant_mut summary-follows-links \
+    '  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 20' \
+    '  :' \
+    'summary refuses (20) a record that is a symbolic link'
   shmutant_mut summary-unlistable-dir \
     "  [ -r \"\$dir\" ] || { printf 'implement-lib: review-loop summary: %s cannot be listed, so which records it holds is unknown\\n' \"\$dir\" >&2; return 20; }" \
     '  :' \
@@ -361,8 +381,8 @@ if [ "$MODE" = mutation ]; then
     '      || true' \
     'summary refuses (20) when the rounds cannot be ordered'
   shmutant_mut summary-marker-unread \
-    "\"\$1\" 2>/dev/null)\" || return 20" \
-    "\"\$1\" 2>/dev/null)\" || url=\"\"" \
+    "      else error(\"prUrl\") end' \"\$1\" 2>/dev/null || return 20" \
+    "      else error(\"prUrl\") end' \"\$1\" 2>/dev/null || true" \
     'summary refuses (20) a run marker it cannot read'
   shmutant_mut summary-unlocked \
     "  _il_claim_mutex_take \"\$dir\" \"\$_IL_LOOP_MUTEX\" || { echo \"implement-lib: review-loop summary: could not take the loop's lock\" >&2; return 20; }" \
@@ -373,8 +393,8 @@ if [ "$MODE" = mutation ]; then
     "    sorted=\"\$(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort -r)\" \\" \
     'summary orders the rounds by ancestry, oldest first'
   shmutant_mut summary-partial-accepted \
-    '      _il_loop_summary_one "$sha" "$f" || { rc=$?; break; }' \
-    '      _il_loop_summary_one "$sha" "$f" || true' \
+    '    _il_loop_summary_one "$sha" "$snap/round-$sha.tsv" "$dir/review-loop-pr${pr}-${sha}.tsv" || return $?' \
+    '    _il_loop_summary_one "$sha" "$snap/round-$sha.tsv" "$dir/review-loop-pr${pr}-${sha}.tsv" || true' \
     'summary refuses (18) when a round record does not parse'
   # The byte bound on a finding holds only under `local LC_ALL=C`; the row needs a UTF-8 locale to
   # have a witness, so it is registered only where one exists.
@@ -1426,6 +1446,34 @@ eq "$RL_RC" 20 "15 …and a marker that is two objects: which one names the run 
 marker "$S" "https://example.com/not-a-pull-request"
 prl "$d" review-loop summary --pr 7 .claude/state
 eq "$RL_RC" 20 "15 …and a marker whose prUrl is not a pull-request URL"
+printf '{"prUrl": false}\n' > "$S/implement-issue-active.json"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and a marker whose prUrl is false — a wrong type is not an absent field"
+marker "$S" "7"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and a marker whose prUrl is a bare number, which names no repository"
+marker "$S" "https://git hub.com/o/r/pull/7"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and a marker whose prUrl holds whitespace"
+marker "$S" "$(printf 'https://github.com/o/r/pull/7\nx')"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …a newline included"
+jq -n --arg u "https://github.com/o/r/pull/7" --arg pad "$(printf 'p%.0s' $(seq 70000))" '{prUrl:$u, pad:$pad}' > "$S/implement-issue-active.json"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and a run marker past 64 KiB, which is read under the lock"
+marker "$S" "https://github.com/o/r/pull/7"
+# The snapshot is bounded in count as well: it is taken under a lock that is reclaimed when stale.
+for i in $(seq 1 201); do printf 'x\n' > "$S/review-loop-pr9-$(printf '%012x' "$i").tsv"; done
+prl "$d" review-loop summary --pr 9 .claude/state
+eq "$RL_RC" 20 "15 summary refuses (20) more round records than the snapshot's bound"
+rm -f "$S"/review-loop-pr9-*.tsv
+# A record that is not a regular file is never followed.
+mv "$S/review-loop.tsv" "$S/elsewhere.tsv"; ln -s elsewhere.tsv "$S/review-loop.tsv"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 summary refuses (20) a record that is a symbolic link"
+rm -f "$S/review-loop.tsv"; mv "$S/elsewhere.tsv" "$S/review-loop.tsv"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 0 "15 …and reads the run again once it is the record itself"
 rm -f "$S/implement-issue-active.json"
 prl "$d" review-loop summary --pr 7 .claude/state
 has "$RL_OUT" "not counted — a run record is here with no run marker" "15 a run record with no marker beside it is left out, and the line says why"
@@ -1528,8 +1576,14 @@ order "11 …and before the round's push" "$RDEFER" "$RPUSH"
 [ -n "$(code_line_of "$RW" 'WHOLE_RUN="$({{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}})"')" ] && ok || bad "11 the resolver's closing summary renders the whole run"
 RBLOCK="$(code_line_of "$RW" 'Per round so far')"
 RBSUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?')"
-order "11 …and so does a round that stops blocked, which never reaches that summary" "$RBLOCK" "$RBSUM"
-order "11 …before its exit, not after the push" "$RBSUM" "$RPUSH"
+order "11 …and so does every exit that ends a round, through one helper that prints the rows and the whole run" "$RBLOCK" "$RBSUM"
+order "11 …defined before the push it can stop" "$RBSUM" "$RPUSH"
+for stop in 'STOP: HEAD moved (or could not be read) while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
+            'STOP: PR #$PR_NUM is no longer OPEN at the round'; do
+  has "$(grep -F -- "$stop" "$RW")" 'round_report; exit 1' "11 the 4d exit '$stop' reports the run before it ends the round"
+done
+eq "$(awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } f && /^[[:space:]]*round_report$/ { n++ } END { print n + 0 }' "$RW")" 2 \
+   "11 …and so do the blocked verdict and the failed push"
 grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
 
 check_summary check-review-loop

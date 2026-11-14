@@ -4686,8 +4686,9 @@ cmd_sweep_identity() {
 # summary: prints the whole run — every record in <state-dir> that belongs to it, oldest first: the
 #         run's own (`review-loop.tsv`; with --pr, only when the run marker names that PR) and, with
 #         --pr, each round's. It reports and never decides. 0 · 11 nothing recorded · 18 a record
-#         does not parse · 20 unreadable — a run marker that exists and cannot be read included,
-#         since which run the run record belongs to is then unknown · 2
+#         does not parse or is past its size bound · 20 unreadable — a state directory that
+#         cannot be listed, a run marker that exists and does not read as one, more round records
+#         than the snapshot's bound, or an ordering that failed · 2
 _IL_LOOP_MUTEX=".review-loop-mutex"
 _IL_LOOP_MAX_BYTES=1048576
 _IL_LOOP_DEFAULT=3
@@ -5633,45 +5634,64 @@ _il_loop_stuck() {
 #
 # WHICH RECORDS: `review-loop.tsv` — without --pr always; with --pr only when the run marker beside
 # it names that pull request, since a state directory can hold one PR's run record and another PR's
-# rounds — and, with --pr, every `review-loop-pr<N>-<sha12>.tsv`. A marker that exists and cannot
-# be read is 20, never "names another PR": the run record's owner is then unknown.
+# rounds — and, with --pr, every `review-loop-pr<N>-<sha12>.tsv`. A marker that exists and does not
+# read as ONE marker object with a well-formed `prUrl` is 20, never "names another PR": the run
+# record's owner is then unknown.
 #
-# THE LOCK SPANS MEMBERSHIP AND THE READS: which records exist, the marker, and every parse happen
-# under the loop's lock, so a record a writer adds meanwhile is either wholly in the summary or
-# wholly after it. Only ordering and printing happen outside it.
+# THE LOCK SPANS A SNAPSHOT, AND NOTHING ELSE. Under the loop's lock the command decides which
+# records exist and copies each, and the marker, into a private directory — a bounded amount of
+# work (at most _IL_LOOP_SUMMARY_ROUNDS round records of at most 1 MiB, and a 64 KiB marker), so
+# the lock is held far inside the 60 s after which a stale one is reclaimed. Parsing, ordering and
+# printing read the copies. A record a writer adds meanwhile is wholly after the summary.
 #
 # ROUNDS ARE ORDERED BY ANCESTRY: a round's key is the head it started from, each such head is an
-# ancestor of the next, and an ancestor has strictly fewer commits behind it. A key that no longer
-# resolves to a commit sorts last, by name, and its line says its position is unknown.
+# ancestor of the next, and an ancestor has strictly fewer commits behind it. A key whose commit
+# count cannot be read here sorts last, by name, and its line says its position is unknown.
+_IL_LOOP_SUMMARY_ROUNDS=200
+_IL_LOOP_MARKER_MAX=65536
 
 # A byte no stored field can hold (every one refuses control characters), so replacing it can
 # never touch reviewer-derived text.
 _IL_LOOP_LABEL_MARK=$'\001'
 
-# _il_loop_marker_pr <marker> — the pull-request number a run marker names, or nothing when it
-# names none yet. 0 · 20 (it is not a regular file, is not exactly ONE JSON object, or carries a
-# `prUrl` that is not a pull-request URL).
-_il_loop_marker_pr() {
-  local url n
-  [ -f "$1" ] && [ ! -L "$1" ] || return 20
-  # SLURPED, so a file holding two objects is one array of two and is refused, where a stream
-  # would answer with whichever came last.
-  url="$(jq -ers 'if length == 1 and (.[0] | type) == "object" then (.[0].prUrl // "" | if type == "string" then . else error("prUrl") end) else error("marker") end' "$1" 2>/dev/null)" || return 20
-  [ -n "$url" ] || return 0
-  n="$(adb_pr_number "$url")" || return 20
-  printf '%s' "$n"
+# _il_loop_snap <file> <copy> <max-bytes> — copy one regular, non-link file of at most <max-bytes>.
+# 0 · 18 (larger than the bound) · 20 (not a regular file, unreadable, or the copy failed).
+_il_loop_snap() {
+  local sz
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 20
+  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || return 20
+  sz="${sz//[!0-9]/}"
+  [ -n "$sz" ] || return 20
+  [ "$sz" -le "$3" ] || return 18
+  cp -- "$1" "$2" 2>/dev/null || return 20
 }
 
-# _il_loop_summary_one <slot> <record> — parse one record (the caller holds the lock) and stash
-# what the summary prints for it under <slot>: SM_COUNTS[slot] (its per-pass REQUIRED counts),
-# SM_LINE[slot] (its passes, bare) and SM_ENDS[slot] (one line per finding that ended without a
-# fix, with _IL_LOOP_LABEL_MARK where the record's label goes — the label depends on the order,
-# which is decided after the lock is released), and add its totals. 0 · 18 · 20.
+# _il_loop_marker_pr <marker-copy> — the pull-request number a run marker names, or nothing when it
+# carries no `prUrl` yet. 0 · 20: it is not exactly ONE JSON object, or its `prUrl` is not the URL
+# open-pr writes — a string with no whitespace or control character of the shape
+# `https://<host>/<owner>/<repo>/pull/<number>`. The FIELD is validated, then the number is taken
+# from it: a `false`, a bare number or a URL with a trailing newline is refused rather than read.
+_il_loop_marker_pr() {
+  jq -ers '
+    if length == 1 and (.[0] | type) == "object" then .[0] else error("marker") end
+    | if (has("prUrl") | not) then ""
+      elif (.prUrl | type) == "string"
+           and (.prUrl | test("[[:space:][:cntrl:]]") | not)
+           and (.prUrl | test("^https://[^/]+/[^/]+/[^/]+/pull/[1-9][0-9]{0,10}$"))
+      then (.prUrl | sub("^.*/pull/"; ""))
+      else error("prUrl") end' "$1" 2>/dev/null || return 20
+}
+
+# _il_loop_summary_one <slot> <copy> <name> — parse one record's snapshot and stash what the
+# summary prints for it under <slot>: SM_COUNTS[slot] (its per-pass REQUIRED counts), SM_LINE[slot]
+# (its passes, bare) and SM_ENDS[slot] (one line per finding that ended without a fix, with
+# _IL_LOOP_LABEL_MARK where the record's label goes — the label depends on the order), and add its
+# totals. <name> is the record's own path, for the message. 0 · 18 · 20.
 _il_loop_summary_one() {
-  local slot="$1" f="$2" rc n counts="" ends=""
+  local slot="$1" f="$2" name="$3" rc n counts="" ends=""
   _il_loop_parse "$f"; rc=$?
   if [ "$rc" -ne 0 ]; then
-    printf 'implement-lib: review-loop summary: the record %s does not parse (rc %s) — no summary is rendered from a partial run\n' "$f" "$rc" >&2
+    printf 'implement-lib: review-loop summary: the record %s does not parse (rc %s) — no summary is rendered from a partial run\n' "$name" "$rc" >&2
     return "$rc"
   fi
   SM_RECORDS=$((SM_RECORDS + 1)); SM_PASSES=$((SM_PASSES + RL_PASSES))
@@ -5694,9 +5714,42 @@ _il_loop_summary_one() {
   return 0
 }
 
+# _il_loop_summary_snapshot <state-dir> <pr|""> <snap-dir> — UNDER THE LOOP'S LOCK, copy what the
+# summary will read into <snap-dir>: `run.tsv`, `marker.json` and `round-<sha12>.tsv`, each only
+# when its original exists. Sets SM_SHAS to the rounds found. 0 · 18 · 20, the reason on stderr.
+_il_loop_summary_snapshot() {
+  local dir="$1" pr="$2" snap="$3" f sha rc=0
+  SM_SHAS=()
+  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" || { echo "implement-lib: review-loop summary: could not take the loop's lock" >&2; return 20; }
+  f="$dir/review-loop.tsv"
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    _il_loop_snap "$f" "$snap/run.tsv" "$_IL_LOOP_MAX_BYTES" || rc=$?
+    f="$dir/implement-issue-active.json"
+    if [ "$rc" -eq 0 ] && [ -n "$pr" ] && { [ -e "$f" ] || [ -L "$f" ]; }; then
+      _il_loop_snap "$f" "$snap/marker.json" "$_IL_LOOP_MARKER_MAX" || rc=20
+    fi
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$pr" ]; then
+    for f in "$dir"/review-loop-pr"$pr"-*.tsv; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      sha="${f##*-}"; sha="${sha%.tsv}"
+      [[ "$sha" =~ ^[0-9a-f]{12}$ ]] || continue
+      if [ "${#SM_SHAS[@]}" -ge "$_IL_LOOP_SUMMARY_ROUNDS" ]; then rc=21; break; fi
+      _il_loop_snap "$f" "$snap/round-$sha.tsv" "$_IL_LOOP_MAX_BYTES" || { rc=$?; break; }
+      SM_SHAS+=("$sha")
+    done
+  fi
+  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+  case "$rc" in
+    0)  return 0 ;;
+    21) printf 'implement-lib: review-loop summary: more than %s round records for PR #%s — refused rather than read under the lock without a bound\n' "$_IL_LOOP_SUMMARY_ROUNDS" "$pr" >&2; return 20 ;;
+    *)  printf 'implement-lib: review-loop summary: %s could not be copied for reading (rc %s: not a regular readable file, or past its size bound) — no summary is rendered\n' "$f" "$rc" >&2; return "$rc" ;;
+  esac
+}
+
 cmd_review_loop_summary() {
-  local pr="" dir="" f sha cnt rc=0 notes="" marker marker_pr label slot key all_counts="" c sorted
-  local -a args=() shas=() keyed=() order=()
+  local pr="" dir="" snap rc
+  local -a args=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --pr) [ "$#" -ge 2 ] || { echo "implement-lib: review-loop summary: --pr needs a value" >&2; exit 2; }
@@ -5710,49 +5763,51 @@ cmd_review_loop_summary() {
   [ "${#args[@]}" -eq 1 ] || { echo "implement-lib: review-loop summary needs <state-dir>" >&2; exit 2; }
   dir="${args[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
-  # A directory that cannot be LISTED hides its round records from the glob below, and nothing
-  # found there would read as nothing recorded.
+  # A directory that cannot be LISTED hides its round records from the glob, and nothing found
+  # there would read as nothing recorded.
   [ -r "$dir" ] || { printf 'implement-lib: review-loop summary: %s cannot be listed, so which records it holds is unknown\n' "$dir" >&2; return 20; }
+  snap="$(mktemp -d "${TMPDIR:-/tmp}/adb-loop-summary.XXXXXX")" \
+    || { echo "implement-lib: review-loop summary: could not create a private directory for the snapshot" >&2; return 20; }
+  _il_loop_summary_render "$dir" "$pr" "$snap"; rc=$?
+  rm -rf "$snap"
+  return "$rc"
+}
+
+# _il_loop_summary_render <state-dir> <pr|""> <snap-dir> — snapshot, then read the copies and print.
+_il_loop_summary_render() {
+  local dir="$1" pr="$2" snap="$3" sha cnt rc notes="" marker_pr label slot key all_counts="" c sorted
+  local -a keyed=() order=()
+  local -A SM_COUNTS=() SM_LINE=() SM_ENDS=()
   SM_RECORDS=0; SM_PASSES=0; SM_FIXED=0; SM_SUPERSEDED=0; SM_OPEN=0; SM_UNFINISHED=0
   SM_DECLINED=0; SM_DEFERRED=0; SM_CARRIED=0
-  local -A SM_COUNTS=() SM_LINE=() SM_ENDS=()
-  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" || { echo "implement-lib: review-loop summary: could not take the loop's lock" >&2; return 20; }
-  f="$dir/review-loop.tsv"; marker="$dir/implement-issue-active.json"
-  if [ -e "$f" ] || [ -L "$f" ]; then
+  _il_loop_summary_snapshot "$dir" "$pr" "$snap" || return $?
+  if [ -f "$snap/run.tsv" ]; then
     if [ -z "$pr" ]; then
-      _il_loop_summary_one run "$f" || rc=$?
-    elif [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+      _il_loop_summary_one run "$snap/run.tsv" "$dir/review-loop.tsv" || return $?
+    elif [ ! -f "$snap/marker.json" ]; then
       notes="  /implement-issue: not counted — a run record is here with no run marker to say which PR it belongs to"$'\n'
-    elif ! marker_pr="$(_il_loop_marker_pr "$marker")"; then
-      printf 'implement-lib: review-loop summary: %s exists but could not be read as a run marker, so whether the run record beside it belongs to PR #%s is unknown — no summary is rendered\n' "$marker" "$pr" >&2
-      rc=20
+    elif ! marker_pr="$(_il_loop_marker_pr "$snap/marker.json")"; then
+      printf 'implement-lib: review-loop summary: %s exists but does not read as a run marker, so whether the run record beside it belongs to PR #%s is unknown — no summary is rendered\n' "$dir/implement-issue-active.json" "$pr" >&2
+      return 20
     elif [ "$marker_pr" = "$pr" ]; then
       # The run record is this PR's only when the run marker beside it says so.
-      _il_loop_summary_one run "$f" || rc=$?
+      _il_loop_summary_one run "$snap/run.tsv" "$dir/review-loop.tsv" || return $?
     else
       notes="  /implement-issue: not counted — a run record is here, but its run marker does not name PR #$pr"$'\n'
     fi
   elif [ -n "$pr" ]; then
     notes="  /implement-issue: not counted — no run record is in this state directory"$'\n'
   fi
-  if [ "$rc" -eq 0 ] && [ -n "$pr" ]; then
-    for f in "$dir"/review-loop-pr"$pr"-*.tsv; do
-      [ -e "$f" ] || [ -L "$f" ] || continue
-      sha="${f##*-}"; sha="${sha%.tsv}"
-      [[ "$sha" =~ ^[0-9a-f]{12}$ ]] || continue
-      _il_loop_summary_one "$sha" "$f" || { rc=$?; break; }
-      shas+=("$sha")
-    done
-  fi
-  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-  [ "$rc" -eq 0 ] || return "$rc"
+  for sha in "${SM_SHAS[@]}"; do
+    _il_loop_summary_one "$sha" "$snap/round-$sha.tsv" "$dir/review-loop-pr${pr}-${sha}.tsv" || return $?
+  done
   if [ "$SM_RECORDS" -eq 0 ]; then
     printf 'local review, whole run: nothing recorded\n%s' "$notes"
     return 11
   fi
-  # THE ORDER KEY is how many commits a round's head has behind it; one that no longer resolves
-  # sorts after every one that does.
-  for sha in "${shas[@]}"; do
+  # THE ORDER KEY is how many commits a round's head has behind it; one whose count cannot be read
+  # sorts after every one that can.
+  for sha in "${SM_SHAS[@]}"; do
     if cnt="$(git rev-list --count "$sha" 2>/dev/null)" && [[ "$cnt" =~ ^[0-9]{1,12}$ ]]; then
       keyed+=("$(printf '%013d\t%s' "$cnt" "$sha")")
     else
@@ -5779,7 +5834,7 @@ cmd_review_loop_summary() {
   for key in "${order[@]}"; do
     slot="${key#*$'\t'}"
     if [ "$slot" = run ]; then label="/implement-issue"
-    elif [ "${key%%$'\t'*}" = 9999999999999 ]; then label="round from $slot (position unknown: that commit no longer resolves)"
+    elif [ "${key%%$'\t'*}" = 9999999999999 ]; then label="round from $slot (position unknown: its commit count could not be read here)"
     else label="round from $slot"; fi
     printf '  %s: %s\n' "$label" "${SM_LINE[$slot]}"
   done

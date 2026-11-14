@@ -1130,6 +1130,14 @@ When it corrects a thread's own fix, that thread's step-5 reply names this commi
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
 NOW_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || NOW_HEAD=""
 case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; exit 1 ;; esac
+# EVERY EXIT BELOW THAT ENDS THE ROUND REPORTS THE RUN SO FAR: none of them reaches step 6, the
+# only other place the rows and the whole-run local review are printed, and the records behind
+# them are run state that /cleanup sweeps.
+round_report() {
+  printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
+  bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .gemini/state; WRC=$?
+  case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
+}
 if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   # THE COMMIT PUSHED IS THE COMMIT CERTIFIED: HEAD is read on both sides of the report and pushed
   # BY SHA, so a branch switch or a ref move after the report cannot push something it never read.
@@ -1141,27 +1149,24 @@ if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first
   LOOP_LINE="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .gemini/state)"; LRC=$?
   [ "$(git rev-parse --verify HEAD 2>/dev/null)" = "$PUSH_SHA" ] \
-    || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; exit 1; }   # run step 8 first
+    || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first
   # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live immediately before the push: the
   # loop can take minutes, and a PR that closed or gained a head meanwhile is not this round's to
   # push to. A close landing between this read and the push is the residual, and so is a head that
   # advanced to an ancestor of PUSH_SHA (the push fast-forwards over it); a head that DIVERGED is
   # refused by the push itself, which is not a fast-forward from it.
   LIVE="$(gh pr view "$PR_NUM" --json state,headRefOid --jq '.state + " " + .headRefOid')" \
-    || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
+    || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first
   [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \
-    || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
+    || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first
   case "$LRC" in
     0|33|35) : ;;   # converged or settled · exhausted with MEDIUM/LOW carried · disabled/unavailable
+    # 34 AND 27 DO NOT END THE ROUND: the loop goes on with another pass and comes back here.
     34) echo "the loop is not finished — take another pass. $LOOP_LINE"; exit 1 ;;
     27) echo "the worktree is not clean — commit it, then take another pass. $LOOP_LINE"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
     *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
-        # THE BLOCKED ROUND STILL REPORTS: the rows gathered so far, this round's loop line, and
-        # the local review of the whole run — this exit never reaches step 6, which prints it.
-        printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
-        bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .gemini/state; WRC=$?
-        case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
+        round_report
         # run step 8 (restore the starting branch) FIRST, then:
         exit 1 ;;
   esac
@@ -1171,6 +1176,7 @@ if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}" || {
     echo "STOP: could not push this round's commits — the fixes and ledger records exist only locally. $LOOP_LINE"
     echo "      Resolving now would erase the records from every future run; push by hand, then re-run."
+    round_report
     # run step 8 (restore the starting branch) FIRST, then:
     exit 1
   }
