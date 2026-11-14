@@ -4979,7 +4979,9 @@ _il_loop_fixed() {
   printf '%s' "$fixed"
 }
 
-# _il_loop_span <text> — reviewer-derived text as a code span (see `_il_loop_carried_text`).
+# _il_loop_span <text> — reviewer-derived text as a CODE SPAN. In prose a `Closes #N` in it would
+# register a closing link when the line lands in a PR body, and markup would render; a code span
+# suppresses both. A backtick inside would close the span, so it is rendered as a quote.
 _il_loop_span() { printf '`%s`' "${1//\`/\'}"; }
 
 # _il_loop_disposed_text <kind> — the record's declined or deferred findings, every pass, oldest
@@ -5015,18 +5017,15 @@ _il_loop_ended_text() {
 }
 
 # _il_loop_carried_text — the carried findings of the latest pass, for the line a PR body carries.
-# EVERY carried finding is named — the PR body is the durable copy once run state is swept. Site and
-# text are CODE SPANS: the text is reviewer-derived, and in prose a `Closes #N` in it would register
-# a closing link on merge and markup would render — a code span suppresses both. A backtick inside
-# would close the span, so it is rendered as a quote. A set too large for a PR body is refused by
-# open-pr's own body bound rather than silently shortened here.
+# EVERY carried finding is named — the PR body is the durable copy once run state is swept — with
+# its site and text as code spans. A set too large for a PR body is refused by open-pr's own body
+# bound rather than silently shortened here.
 _il_loop_carried_text() {
-  local i out="" sep="" site txt occ
+  local i out="" sep="" occ
   for i in "${!RL_CN[@]}"; do
     [ "${RL_CN[i]}" = "$RL_PASSES" ] || continue
-    site="${RL_CSITE[i]//\`/\'}"; txt="${RL_CTXT[i]//\`/\'}"; occ=""
-    [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
-    out="${out}${sep}${RL_CSEV[i]} \`${site}\`${occ}: \`${txt}\`"
+    occ=""; [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
+    out="${out}${sep}${RL_CSEV[i]} $(_il_loop_span "${RL_CSITE[i]}")${occ}: $(_il_loop_span "${RL_CTXT[i]}")"
     sep="; "
   done
   printf '%s' "$out"
@@ -5699,7 +5698,7 @@ cmd_review_loop_summary() {
     if [ -z "$pr" ] || [ "${marker_pr##*/pull/}" = "$pr" ]; then
       _il_loop_summary_one "/implement-issue" "$f" || rc=$?
     else
-      notes="  /implement-issue: not counted — a run record is here, but its run marker does not name PR #$pr"$'\n'
+      notes="  /implement-issue: not counted — a run record is here, but no readable run marker names PR #$pr"$'\n'
     fi
   elif [ -n "$pr" ]; then
     notes="  /implement-issue: not counted — no run record is in this state directory"$'\n'

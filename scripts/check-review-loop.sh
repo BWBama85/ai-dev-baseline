@@ -207,10 +207,6 @@ if [ "$MODE" = mutation ]; then
     '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_COCC[i]}" = "$RL_OCC" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     '    if [ "${RL_CSEV[i]}" = "$RL_SEV" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then' \
     'an identical second finding is carried with --occurrence 2'
-  shmutant_mut carried-text-not-spanned \
-    '    out="${out}${sep}${RL_CSEV[i]} \`${site}\`${occ}: \`${txt}\`"' \
-    '    out="${out}${sep}${RL_CSEV[i]} ${site}${occ}: ${RL_CTXT[i]}"' \
-    'a carried closing keyword is rendered inside a code span'
   shmutant_mut off-while-open-appended \
     '    [ -n "$RL_OPEN" ] || { _il_loop_append "$RL_REC" "off"$'"'"'\t'"'"'"$RL_BSRC"; rc=$?; }' \
     '    _il_loop_append "$RL_REC" "off"$'"'"'\t'"'"'"$RL_BSRC"; rc=$?' \
@@ -316,10 +312,10 @@ if [ "$MODE" = mutation ]; then
     "  [ -z \"\$out\" ] || printf '%s%s\\n' \"\$out\" \"\$(_il_loop_ended_text)\"" \
     "  [ -z \"\$out\" ] || printf '%s\\n' \"\$out\"" \
     'the report line names the deferred finding and its issue'
-  shmutant_mut disposed-text-not-spanned \
+  shmutant_mut finding-text-not-spanned \
     "_il_loop_span() { printf '\`%s\`' \"\${1//\\\`/\\'}\"; }" \
     "_il_loop_span() { printf '%s' \"\$1\"; }" \
-    'a deferred closing keyword is rendered inside a code span'
+    'a carried closing keyword is rendered inside a code span'
   shmutant_mut fixed-counts-same-tree \
     '    if [ -n "$next" ] && [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then' \
     '    if [ -n "$next" ]; then' \
@@ -1116,6 +1112,26 @@ rl "$d" pass .claude/state codex
 eq "$RL_RC" 38 "13 a finite budget set after until-clean took four passes refuses the fifth (38)"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "13 …and the record until-clean wrote still reads under it (39, not 18)"
+# What bounds a loop with no budget is the record's own bound: a pass that could not be recorded
+# is refused before anything is dispatched, and the record still reads.
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=until-clean"; script "$d" req:9999 req:0
+rl "$d" pass .claude/state codex
+R="$d/.claude/state/review-loop.tsv"
+# Filled to within 30 bytes of the bound with deferred findings (a row is 15 bytes plus its text,
+# 31 to 315), which is less room than any `start` row needs.
+pad="$(printf 'x%.0s' $(seq 300))"
+awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" 'BEGIN {
+  room = 1048576 - cur
+  while (room >= 31) {
+    if (room > 345) len = 315; else if (room > 315) len = room - 31; else len = room
+    i++; printf "defer\t1\t7\t-\t1\t%05d%s\n", i, substr(pad, 1, len - 20); room -= len
+  } }' >> "$R"
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 20 "13 a pass the record has no room for is refused (20)"
+has "$RL_OUT" "is at its 1048576-byte bound" "13 …naming the bound"
+eq "$(count "$d")" 1 "13 …before anything is dispatched"
+rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
+eq "$RL_RC" 17 "13 …and the full record still reads (17, not 18)"
 RL_ENV=""
 d="$(fixture)"; printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$d/agents.toml"
 git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1
@@ -1294,6 +1310,13 @@ marker "$S" "https://github.com/o/r/pull/8"
 prl "$d" review-loop summary --pr 7 .claude/state
 has "$RL_OUT" "2 pass(es) in 2 record(s)" "15 summary --pr leaves out a run record whose marker names another PR"
 has "$RL_OUT" "/implement-issue: not counted" "15 …and says it left it out"
+# A record with no pass in it is still a record: its line says why, and the counts stay empty.
+e="$(fixture)"
+( cd "$e" && env HOME="$FHOME" bash "$IL" review-loop pass --unavailable none .claude/state ) >/dev/null 2>&1
+RL_OUT="$( cd "$e" && env HOME="$FHOME" bash "$IL" review-loop summary .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 0 "15 summary reads a record that holds no pass"
+has "$RL_OUT" "0 pass(es) in 1 record(s) — REQUIRED per pass: none" "15 …with no count invented for it"
+has "$RL_OUT" "/implement-issue: no usable reviewer, no pass" "15 …and its line says why there was none"
 cp "$S/review-loop-pr7-${H2:0:12}.tsv" "$S/review-loop-pr7-aaaaaaaaaaaa.tsv"
 prl "$d" review-loop summary --pr 7 .claude/state
 has "$RL_OUT" "round from aaaaaaaaaaaa (position unknown" "15 a round whose head no longer resolves is listed last, and says so"

@@ -22,7 +22,8 @@
 #   role-dispatch.sh bots                    # print the configured async external-bot reviewer logins
 #   role-dispatch.sh bots --declared         # the same key as a TRI-STATE, no default (0/2/3)
 #   role-dispatch.sh bots --comparable       # the declared set normalized for matching (0/17/18)
-#   role-dispatch.sh local-passes [--with-source]  # the local review loop's pass budget (#491; 0 = off)
+#   role-dispatch.sh local-passes [--with-source]  # the local review loop's pass budget (#491; 0 = off,
+#                                                  # `until-clean` = none, #618)
 #   role-dispatch.sh untrusted <source>      # stdin = third-party text → a containment-safe JSON envelope
 # `untrusted` belongs to THIS helper rather than a new one, and the charter question is fair enough
 # to answer rather than wave at (raised in review of #214): serialization on its own has nothing to
