@@ -247,6 +247,10 @@ if [ "$MODE" = mutation ]; then
     '|| { printf '"'"'the registry filter failed — refusing a list it may have cut short\n'"'"' >&2; return 1; }   # row-filter' \
     '|| true   # row-filter' \
     'a registry filter that fails part-way'
+  shmutant_mut root-input-unmatched \
+    "      if [ \"\$p\" = . ]; then printf '%s\\n' \"\$f\"; break; fi   # row-root-input" \
+    '      :   # row-root-input' \
+    'the root input (.): any change past the base is a hit'
   shmutant_mut steps-empty-only-widens \
     '--only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage;' \
     '--only) [ "$#" -ge 2 ] || usage;' \
@@ -268,8 +272,8 @@ if [ "$MODE" = mutation ]; then
     '        run: bash scripts/check-common-lib.sh --mutation' \
     'invokes a mutation harness directly'
   shmutant_mut ci-macos-hand-listed-skip \
-    '          bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
-    '          bash scripts/selfcheck.sh --skip adopt-mutation --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
+    '            bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
+    '            bash scripts/selfcheck.sh --skip adopt-mutation --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"' \
     'without skipping the registry'
   shmutant_mut ci-macos-skip-overwritten \
     'echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"' \
@@ -303,6 +307,23 @@ if [ "$MODE" = mutation ]; then
     'bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1' \
     'bash scripts/selfcheck.sh --skip "$skip" 2>&1' \
     'runs selfcheck with --collect-all'
+  # The scope (#629): a pull request that runs everything, a push that is scoped, and the two swapped.
+  shmutant_mut ci-macos-pr-unscoped \
+    'bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1' \
+    'bash scripts/selfcheck.sh --skip "$skip" --collect-all --all 2>&1' \
+    'a pull request is scoped'
+  shmutant_mut ci-macos-push-scoped \
+    'bash scripts/selfcheck.sh --skip "$skip" --collect-all --all 2>&1' \
+    'bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1' \
+    'under [push] the macOS suite step passes --all'
+  shmutant_mut ci-macos-scope-inverted \
+    'if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then' \
+    'if [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then' \
+    'a pull request is scoped'
+  shmutant_mut ci-macos-scope-on-push-only \
+    'if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then' \
+    'if [ "${GITHUB_EVENT_NAME:-}" != push ]; then' \
+    'under [workflow_dispatch] the macOS suite step passes --all'
   check_shmutant_pool "check-mutation-gate (ci.yml)" "$work/ci" mut_prepare mut_run 4
 
   shmutant_reset
@@ -503,6 +524,14 @@ has "$OUT" "base/practices/brand-new.md" "…naming the untracked file"
 gate "$R" should-run stub-mutation -- scripts/check-stub.sh base/practices/
 eq "$RC_" "0" "a directory input written WITH a trailing slash matches the same subtree"
 rm -f "$R/base/practices/brand-new.md"
+
+# THE TREE'S ROOT as an input (#629): `.` is the directory every path lies under, so any change is
+# a hit — and with nothing changed against the base it is a skip, like any other input.
+gate "$R" should-run stub-mutation -- .
+eq "$RC_" "0" "the root input (.): any change past the base is a hit"
+has "$OUT" "scripts/lib/other.sh" "…naming the changed file"
+gate "$R" should-run stub-mutation --base HEAD -- .
+eq "$RC_" "10" "the root input (.) with nothing changed against the base: skip"
 
 # A change ELSEWHERE is not a hit — and a sibling sharing a file input's PREFIX is not either.
 printf 'more\n' >> "$R/README.md"
@@ -990,6 +1019,9 @@ LIST="$(bash "$ROOT/scripts/selfcheck.sh" --list)" || bad "the shipped registry 
 _rowsteps=0
 while IFS="$(printf '\t')" read -r _s _cmd _ _ _in _; do   # field 5 alone: the last name takes the rest of the row
   [ -n "$_s" ] || continue
+  # A HARNESS's inputs: a plain step declares inputs too since #629, and its verdict does not depend
+  # on the gate or on the pool (`check-step-inputs.sh` judges what a plain step declares).
+  case "$_s" in *-mutation) : ;; *) continue ;; esac
   [ "$_in" != "-" ] || continue
   _suite="$(printf '%s' "$_cmd" | awk '{print $2}')"
   [ -f "$ROOT/$_suite" ] || continue
@@ -1009,6 +1041,9 @@ done <<< "$LIST"
 _shmsteps=0
 while IFS="$(printf '\t')" read -r _s _cmd _ _ _in _; do   # field 5 alone: the last name takes the rest of the row
   [ -n "$_s" ] || continue
+  # A HARNESS's inputs: a plain step declares inputs too since #629, and its verdict does not depend
+  # on the gate or on the pool (`check-step-inputs.sh` judges what a plain step declares).
+  case "$_s" in *-mutation) : ;; *) continue ;; esac
   [ "$_in" != "-" ] || continue
   _suite="$(printf '%s' "$_cmd" | awk '{print $2}')"
   [ -f "$ROOT/$_suite" ] || continue
@@ -1105,7 +1140,16 @@ wf_run_body() {  # stdin: one step's text — prints its `run: |` body, de-inden
 }
 macos_body="$(wf_step_text "$CI" selfcheck-macos '^[[:space:]]*- name: The offline suite on Homebrew bash' | wf_run_body)"
 [ -n "$macos_body" ] && ok || bad "could not extract the macOS suite step's run block from ci.yml (the scan matched nothing)"
-recv="$(cd "$ROOT" && RUNNER_TEMP="$work" bash -c "$(printf '%s\n' "$macos_body" | sed 's#bash scripts/selfcheck\.sh#printf "SELFCHECK-ARG:%s\\n"#')" 2>/dev/null | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}')"
+# macos_args <event-name|-> — the arguments the step hands selfcheck under that event, one per
+# line (`-` runs it with the variable unset).
+macos_args() {
+  local body
+  body="$(printf '%s\n' "$macos_body" | sed 's#bash scripts/selfcheck\.sh#printf "SELFCHECK-ARG:%s\\n"#')"
+  ( cd "$ROOT" || exit 1
+    if [ "$1" = - ]; then unset GITHUB_EVENT_NAME; else export GITHUB_EVENT_NAME="$1"; fi
+    RUNNER_TEMP="$work" bash -c "$body" 2>/dev/null ) | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}'
+}
+recv="$(macos_args pull_request)"
 eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls selfcheck with --skip"
 eq "$(printf '%s\n' "$recv" | sed -n 2p | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
    "$(printf '%s\n' "$MUT_STEPS" | LC_ALL=C sort | tr '\n' ' ')" \
@@ -1114,9 +1158,22 @@ eq "$(printf '%s\n' "$recv" | sed -n 2p | tr ',' '\n' | LC_ALL=C sort | tr '\n' 
 # it selected.
 eq "$(printf '%s\n' "$recv" | sed -n 3p)" "--collect-all" \
    "the macOS suite step runs selfcheck with --collect-all, so a red lint does not hide the suites"
+# THE SCOPE (#629, D157). A pull request's run is scoped — it hands selfcheck no `--all` — and
+# EVERY other event runs the whole registry: the push to the default branch, an event nobody
+# anticipated, and no event name at all. Asked by running the step's own script under each.
+eq "$(printf '%s\n' "$recv" | grep -c .)" "3" "on a pull request the macOS suite step hands selfcheck exactly three arguments"
+eq "$(printf '%s\n' "$recv" | grep -cx -- '--all')" "0" "a pull request is scoped: the macOS suite step does not pass --all"
+for _ev in push workflow_dispatch -; do
+  _recv="$(macos_args "$_ev")"
+  eq "$(printf '%s\n' "$_recv" | sed -n 4p)" "--all" "every other event runs the whole registry: under [$_ev] the macOS suite step passes --all"
+  eq "$(printf '%s\n' "$_recv" | sed -n 2p)" "$(printf '%s\n' "$recv" | sed -n 2p)" "…and still skips the registry's *-mutation steps under [$_ev]"
+  eq "$(printf '%s\n' "$_recv" | sed -n 3p)" "--collect-all" "…and still runs to completion under [$_ev] (--collect-all)"
+done
 grep -qE '^[[:space:]]*skip="\$\(bash scripts/mutation-gate\.sh steps --csv\)" \|\| ' "$CI" && ok \
   || bad "ci.yml's selfcheck-macos does not build its --skip from 'bash scripts/mutation-gate.sh steps --csv' (with a failure branch)"
-runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list)' || true)"
+# A `--only <step>` line runs that one step and nothing else, so it has no harness to skip — and
+# the pin above refuses one that names a harness.
+runs_all="$(grep -nE '^[^#]*bash scripts/selfcheck\.sh( |$)' "$CI" | grep -vE 'selfcheck\.sh --(summarize|list|only)( |$)' || true)"
 [ -n "$runs_all" ] && ok || bad "ci.yml carries no selfcheck.sh invocation that runs the registry (the scan matched nothing)"
 while IFS= read -r line; do
   [ -n "$line" ] || continue

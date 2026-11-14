@@ -801,8 +801,9 @@ if fx_setup; then
   # out because nobody looked. Asked of the fixture's registry, so this list cannot go stale quietly.
   #   the shell lint (`shellcheck`) runs only when a shell file changed, and this clean fixture has
   #   none; 17o-17p observe it. `injection` measured well over the rule and has no changed-file
-  #   mode, so it is left out by decision.
-  gate_static_elsewhere=" shellcheck injection "
+  #   mode, so it is left out by decision. So is `step-inputs` (#629): 4.8s in its registry form, over
+  #   the rule (D157).
+  gate_static_elsewhere=" shellcheck injection step-inputs "
   # gate_static_unaccounted <runner> <gate-output> — print each static-tier step the output does not
   # show the gate running and that is not named above. Returns 1 when the registry could not be read
   # WHOLE: the runner's status is taken before anything is compared, since a listing cut short

@@ -272,7 +272,7 @@ if [ "$MODE" = mutation ]; then
     '    summarize_undispatched "$log"' ':' \
     'the digest names the steps a red static tier kept from running'
   shmutant_mut "tier-emptied" \
-    'STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index)' \
+    'STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index step-inputs)' \
     'STATIC_STEPS=()' \
     'the static tier is exactly the steps that lint the tracked tree'
   # `--list` still says static; the dispatcher puts the step in the suite pool.
@@ -554,8 +554,53 @@ if [ "$MODE" = mutation ]; then
     '      exec nice -n 15 "$BASH" "$SELF" "${ORIG_ARGS[@]}"' '      :' \
     "priority: a step runs at the caller's niceness plus 15"
   shmutant_mut "holdback-dropped" \
-    '    if [ -n "${STEP_INPUTS[$_s]+x}" ] && { [ "$ONLY_GIVEN" -eq 0 ] || [ -z "${_want[$_s]+x}" ]; }; then' '    if false; then' \
+    '    if is_harness "$_s" && { [ "$ONLY_GIVEN" -eq 0 ] || [ -z "${_want[$_s]+x}" ]; }; then   # row-holdback' \
+    '    if false; then   # row-holdback' \
     'hold-back: a plain run never EXECUTES a mutation harness'
+  # "Is a harness" read off "declares inputs" again (#629): every plain step that declares any is
+  # held back, and locked out with the harnesses.
+  shmutant_mut "harness-by-inputs" \
+    '  case "$1" in *-mutation) return 0 ;; esac' \
+    '  [ -z "${STEP_INPUTS[$1]+x}" ] || return 0' \
+    'hold-back: a plain step that declares inputs is never held back'
+  shmutant_mut "lock-plain-step" \
+    '    if is_harness "$_s"; then LOCKED_OUT+=("$_s"); else _free+=("$_s"); fi   # row-lock-harness-only' \
+    '    if [ -n "${STEP_INPUTS[$_s]+x}" ]; then LOCKED_OUT+=("$_s"); else _free+=("$_s"); fi   # row-lock-harness-only' \
+    'lock: a plain step that declares inputs is never locked out'
+  # The scope (#629), each of its rules broken on its own witness.
+  shmutant_mut "whole-tree-gated" \
+    '  [ "${STEP_INPUTS[$1]}" != . ] || return 1   # row-whole-tree' ':   # row-whole-tree' \
+    'scope: a step that declares the whole tree runs on an untouched tree'
+  shmutant_mut "all-ignored" \
+    '  [ "$SCOPE_ALL" -eq 0 ] || return 1   # row-scope-all' ':   # row-scope-all' \
+    'scope: --all runs a plain step whose inputs are untouched'
+  shmutant_mut "only-still-scoped" \
+    '  [ "$ONLY_GIVEN" -eq 0 ] || [ -z "${_want[$1]+x}" ] || return 1   # row-only-named' ':   # row-only-named' \
+    'scope: a plain step named in --only runs on an untouched tree'
+  shmutant_mut "undeclared-unnamed" \
+    '    [ -n "${STEP_INPUTS[$_s]+x}" ] || is_harness "$_s" || UNDECLARED+=("$_s")   # row-undeclared' \
+    '    :   # row-undeclared' \
+    'scope: a plain step that declares nothing is named before the run'
+  shmutant_mut "gated-unnamed-in-result" \
+    '   # row-gated-named' '>/dev/null   # row-gated-named' \
+    'scope: …and again in the result block'
+  shmutant_mut "digest-drops-gated" \
+    '    summarize_gated "$log"   # row-digest-gated-red' ':   # row-digest-gated-red' \
+    'the digest of a red scoped run names the steps the gate held'
+  shmutant_mut "digest-drops-gated-green" \
+    '    summarize_gated "$log"   # row-digest-gated-green' ':   # row-digest-gated-green' \
+    'the digest of a green scoped run names the steps the gate held'
+  shmutant_mut "digest-drops-gated-cut" \
+    '    summarize_gated "$log"   # row-digest-gated-cut' ':   # row-digest-gated-cut' \
+    'the digest of a cut scoped run still names the steps the gate held'
+  shmutant_mut "digest-gated-no-fallback" \
+    '  [ -n "${names// /}" ] || names="$(sed -n '"'"'s/^selfcheck: GATED [0-9]* step(s) — inputs unchanged ([^)]*): //p'"'"' "$1" | tail -1)"' \
+    '  :' \
+    'the digest of a cut scoped run still names the steps the gate held'
+  shmutant_mut "fail-closed-unsaid" \
+    '  printf '"'"'selfcheck: NOTE — the gate could not establish the change, so %s plain step(s) run unscoped (fail-closed): %s\n  %s\n'"'"' \' \
+    '  : \' \
+    'scope: a run that could not be scoped says so'
   shmutant_mut "lock-held-taken" \
     "    0) printf 'pid %s" "    0|1) printf 'pid %s" \
     'lock: a second run never EXECUTES a harness while another run holds the lock'
@@ -1140,7 +1185,7 @@ hasnt "$OUT" "STOPPED" "…and announces no stop, since nothing was left to disp
 # THE SHIPPED TIER, asked of the runner. Membership is policy, as a lane is: emptying the array
 # changes nothing any other assertion watches on a green tree, so it is pinned by name.
 eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$6 == "static" {print $1}' | tr '\n' ' ')" \
-  "shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index " \
+  "shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index step-inputs " \
   "the static tier is exactly the steps that lint the tracked tree, in declaration order"
 # A tier member that is not registered is in no tier at all, so it is refused at load.
 sed 's/^STATIC_STEPS=(shellcheck /STATIC_STEPS=(nosuchstep shellcheck /' "$FX/scripts/selfcheck.sh" > "$FX/scripts/badtier.sh"
@@ -1210,6 +1255,12 @@ eq "$?" "2" "add rejects a duplicate step name"
 mkreg 'add meta                 bash scripts/check-gates.sh?'
 eq "$?" "2" "add rejects a command carrying a shell metacharacter inside an argument"
 
+# `.` is the whole tracked tree and stands alone (#629): the runner reads the field as exactly `.`.
+mkreg 'inputs gates             . scripts/check-gates.sh'
+eq "$?" "2" "inputs rejects the whole tree (.) declared beside other paths"
+mkreg 'inputs nosuchstep        scripts/check-gates.sh'
+eq "$?" "2" "inputs rejects a step that is not registered"
+
 # ============================== 7d. automatic job sizing ======================================
 # `--jobs` is passed explicitly everywhere above, so the DEFAULT — the probe chain, the whitespace
 # trim and the cap at 8 — was entirely untested, and a probe that silently answered 1 would undo
@@ -1264,7 +1315,7 @@ eq "$RC_" "2" "an unknown flag is rejected rather than ignored"
 # serial prologue — so a consumer asking `$3 == "serial"` still gets the right answer across both
 # lanes; the reason went into a new field rather than widening field 3 into three values, which
 # would have made every existing correct query silently wrong instead of erroring. The fifth is
-# the step's declared input set, comma-joined, or `-`; appended for the same reason. The sixth is
+# the step's declared input set, comma-joined, `.` for the whole tree, or `-`; appended for the same reason. The sixth is
 # the tier, `static` or `suite`, appended for the same reason again.
 sc --list
 yes "$RC_" "--list exits 0"
@@ -1276,8 +1327,10 @@ eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$5 != "-" && $5 !~ /^[A-Za-z0-9_.\/-]+(
   "--list's fifth field is '-' or a comma-joined list of [A-Za-z0-9_./-] paths on every row"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 ~ /-mutation$/ && $5 == "-" {n++} END {print n + 0}')" "0" \
   "every *-mutation step in the shipped registry declares inputs (none shows '-')"
-eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 !~ /-mutation$/ && $5 != "-" {n++} END {print n + 0}')" "0" \
-  "…and no other step does (the gate is scoped to the mutation harnesses, #441)"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$6 == "static" && $5 != "." {n++} END {print n + 0}')" "0" \
+  "…and every static step declares the whole tree, so a scoped run never holds a lint (#629)"
+eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$1 ~ /-mutation$/ && $5 == "." {n++} END {print n + 0}')" "0" \
+  "…and no harness does: a harness is gated on the paths its verdict depends on"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' '$3 != "pool" && $3 != "serial" {n++} END {print n + 0}')" "0" \
   "--list's third field is always pool or serial"
 eq "$(printf '%s\n' "$OUT" | awk -F'\t' \
@@ -1338,7 +1391,7 @@ eq "$(grep -c '^+gates$' "$FX/ctl/events")" "1" "with no --skip, every selected 
 hasnt "$OUT" "SKIPPED" "...and nothing is announced as skipped"
 
 # ============================== 8d. the mutation gate (#441) ====================================
-# A step that declares inputs is dispatched only when the change under test touches one of them.
+# A harness that declares inputs is dispatched only when the change under test touches one of them.
 # The proof is the one section 8b makes for --skip, with the same three parts: the gated step must
 # NOT EXECUTE (asked of the event log), the run must still pass, and the skip must be VISIBLE BY
 # NAME with what it compared. Then the three ways it must run: a touched input, the override, and a
@@ -1349,23 +1402,36 @@ hasnt "$OUT" "SKIPPED" "...and nothing is announced as skipped"
 # merge-base, and every other case here runs in a tree that is deliberately not one.
 FXG="$work/fxg"
 mkfx "$FXG" || bad "fixture setup: could not build the gated fixture"
-printf '%s' "$STUB_SRC" > "$FXG/scripts/check-gatedstep.sh" && chmod +x "$FXG/scripts/check-gatedstep.sh"
+# THREE fixture steps. `gatedstep-mutation` is a HARNESS — by its name, which is what makes a step
+# one (#629) — over the stub `check-gatedstep.sh`, so its events are `gatedstep`. `scoped` is a
+# PLAIN step that declares an input, and `bare` a plain step that declares none; section 8f is
+# theirs.
+for _g in gatedstep scoped bare; do
+  printf '%s' "$STUB_SRC" > "$FXG/scripts/check-$_g.sh" && chmod +x "$FXG/scripts/check-$_g.sh"
+done
 printf 'input v1\n' > "$FXG/scripts/gated-input.txt"
+printf 'input v1\n' > "$FXG/scripts/scoped-input.txt"
 { printf '\n'
-  printf 'add gatedstep           bash scripts/check-gatedstep.sh\n'
-  printf 'inputs gatedstep        scripts/gated-input.txt\n'; } > "$work/gated.frag"
+  printf 'add gatedstep-mutation  bash scripts/check-gatedstep.sh\n'
+  printf 'inputs gatedstep-mutation scripts/gated-input.txt\n'
+  printf 'add scoped              bash scripts/check-scoped.sh\n'
+  printf 'inputs scoped           scripts/scoped-input.txt\n'
+  printf 'add bare                bash scripts/check-bare.sh\n'; } > "$work/gated.frag"
 awk -v frag="$work/gated.frag" '
   /^add install-dry-run/ { while ((getline l < frag) > 0) print l }
   { print }
   ' "$FXG/scripts/selfcheck.sh" > "$work/gated.tmp" && mv "$work/gated.tmp" "$FXG/scripts/selfcheck.sh"
-grep -q '^inputs gatedstep ' "$FXG/scripts/selfcheck.sh" && ok \
+grep -q '^inputs gatedstep-mutation ' "$FXG/scripts/selfcheck.sh" && ok \
   || bad "fixture setup: could not register the gated step in the copied runner"
-printf 'ctl/\n' > "$FXG/.gitignore"
+# The run record is ignored here as it is in the real checkout. Left untracked, every run of this
+# fixture would itself be a change, and no tree would ever be UNTOUCHED for the gate — which is the
+# state 8f's whole-tree case has to be in.
+printf 'ctl/\n.selfcheck-run*\n' > "$FXG/.gitignore"
 check_git "$FXG" init -q -b main >/dev/null 2>&1 && check_git "$FXG" add -A >/dev/null 2>&1 \
   && check_git "$FXG" commit -q -m base >/dev/null 2>&1 \
   && check_git "$FXG" update-ref refs/remotes/origin/main HEAD >/dev/null 2>&1 \
   || bad "fixture setup: could not initialise the gated fixture's repository"
-eq "$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' '$1 == "gatedstep" {print $5}')" "scripts/gated-input.txt" \
+eq "$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' '$1 == "gatedstep-mutation" {print $5}')" "scripts/gated-input.txt" \
   "--list carries the fixture step's declared input in field 5"
 
 # scg <args...> — the gated fixture's selfcheck, same capture contract as sc.
@@ -1374,32 +1440,32 @@ scg() {
   return 0
 }
 reset_ctl "$FXG"
-scg --only "$ONLY,gatedstep" --jobs 4
+scg --only "$ONLY,gatedstep-mutation" --jobs 4
 yes "$RC_" "gate: a run whose gated step has untouched inputs still passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "gate: the gated step never EXECUTED (not merely unprinted)"
 eq "$(grep -c '^+claims$' "$FXG/ctl/events")" "1" "gate: …while the ungated steps around it did"
-has "$OUT" "GATED 1 step(s) — inputs unchanged (ADB_MUTATION_RUN_ALL=1 runs them): gatedstep" \
+has "$OUT" "GATED 1 step(s) — inputs unchanged (--all runs the plain ones, ADB_MUTATION_RUN_ALL=1 every one): gatedstep-mutation" \
   "gate: the skip is announced by name before the run, with the override that lifts it"
-has "$OUT" "SKIP: gatedstep — inputs unchanged against origin/main (merge-base " \
+has "$OUT" "SKIP: gatedstep-mutation — inputs unchanged against origin/main (merge-base " \
   "gate: …and the gate's own line says what it compared against"
 has "$OUT" "inputs: scripts/gated-input.txt)" "gate: …and which inputs it checked"
-has "$OUT" "gated (inputs unchanged): gatedstep" "gate: …and again in the result block, where a CI reader looks"
-hasnt "$OUT" "=== gatedstep ===" "gate: the gated step emits no block"
+has "$OUT" "gated (inputs unchanged): gatedstep-mutation" "gate: …and again in the result block, where a CI reader looks"
+hasnt "$OUT" "=== gatedstep-mutation ===" "gate: the gated step emits no block"
 has "$OUT" "selfcheck: 8 step(s)," "gate: the dispatch header counts what actually runs (8, not 9)"
 
 # A touched input — UNCOMMITTED, which is the local case that matters — and the step runs.
 reset_ctl "$FXG"
 printf 'input v2\n' > "$FXG/scripts/gated-input.txt"
-scg --only "$ONLY,gatedstep" --jobs 4
+scg --only "$ONLY,gatedstep-mutation" --jobs 4
 yes "$RC_" "gate: with its input touched the run passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: a step whose input changed (uncommitted) EXECUTES"
 hasnt "$OUT" "GATED" "gate: …and nothing is announced as gated"
-has "$OUT" "=== gatedstep ===" "gate: …and its block is emitted"
+has "$OUT" "=== gatedstep-mutation ===" "gate: …and its block is emitted"
 check_git "$FXG" checkout -q -- scripts/gated-input.txt
 
 # The override: every step runs, untouched or not.
 reset_ctl "$FXG"
-OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY,gatedstep" --jobs 4 2>&1)"; RC_=$?
+OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY,gatedstep-mutation" --jobs 4 2>&1)"; RC_=$?
 yes "$RC_" "gate: ADB_MUTATION_RUN_ALL=1 passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: ADB_MUTATION_RUN_ALL=1 runs the gated step on an untouched tree"
 hasnt "$OUT" "GATED" "gate: …and announces no gating"
@@ -1409,31 +1475,31 @@ has "$OUT" "ADB_MUTATION_RUN_ALL is set — the mutation gate is overridden; 1 g
 # Fail-closed: a base the gate cannot resolve means the step RUNS, and the run says nothing about
 # gating — a skip is only ever issued on a diff that was actually computed.
 reset_ctl "$FXG"
-OUT="$(ADB_MUTATION_BASE=no-such-ref ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY,gatedstep" --jobs 4 2>&1)"; RC_=$?
+OUT="$(ADB_MUTATION_BASE=no-such-ref ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY,gatedstep-mutation" --jobs 4 2>&1)"; RC_=$?
 yes "$RC_" "gate: an unresolvable base still passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: an unresolvable base RUNS the gated step (fail-closed)"
 hasnt "$OUT" "GATED" "gate: …and announces no gating"
-has "$OUT" "selfcheck: NOTE — RUN: gatedstep — base no-such-ref does not resolve to a commit (fail-closed" \
+has "$OUT" "selfcheck: NOTE — RUN: gatedstep-mutation — base no-such-ref does not resolve to a commit (fail-closed" \
   "gate: …and relays the gate's fail-closed line, so a run-because-undecidable is never mistaken for a run-because-changed"
 
 # `--only` naming ONLY a gated step on an untouched tree: nothing runs, and the run says so rather
 # than reporting a clean pass over silence.
 reset_ctl "$FXG"
-scg --only gatedstep --jobs 4
+scg --only gatedstep-mutation --jobs 4
 yes "$RC_" "gate: --only <gated step> on an untouched tree exits 0"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "gate: …and did not execute it"
 has "$OUT" "selfcheck: 0 step(s)," "gate: …and the header says 0 step(s) ran"
-has "$OUT" "gated (inputs unchanged): gatedstep" "gate: …and the result block names it"
+has "$OUT" "gated (inputs unchanged): gatedstep-mutation" "gate: …and the result block names it"
 
 # A PRESENT gate that returns a status outside its contract is neither a skip nor a clean run:
 # the step runs and a WARN names the code. This is the "error folded into skip" direction, and a
 # regression mapping an unknown code to a skip would pass every case above (reviewer finding).
 printf '#!/usr/bin/env bash\necho "gate-broken"; exit 9\n' > "$FXG/scripts/mutation-gate.sh"
 reset_ctl "$FXG"
-scg --only "$ONLY,gatedstep" --jobs 4
+scg --only "$ONLY,gatedstep-mutation" --jobs 4
 yes "$RC_" "gate: a gate returning an unknown status still lets the run pass"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: …and the gated step RUNS (an undecidable gate never skips)"
-has "$OUT" "WARN — the mutation gate failed for gatedstep (rc 9); running it: gate-broken" \
+has "$OUT" "WARN — the mutation gate failed for gatedstep-mutation (rc 9); running it: gate-broken" \
   "gate: …and the run says the gate broke, with its code and output"
 hasnt "$OUT" "GATED" "gate: …and announces no gating"
 
@@ -1441,38 +1507,41 @@ hasnt "$OUT" "GATED" "gate: …and announces no gating"
 # step runs and a WARN says why.
 rm -f "$FXG/scripts/mutation-gate.sh"
 reset_ctl "$FXG"
-scg --only "$ONLY,gatedstep" --jobs 4
+scg --only "$ONLY,gatedstep-mutation" --jobs 4
 yes "$RC_" "gate: with mutation-gate.sh absent the run still passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "gate: …and the gated step runs"
 has "$OUT" "WARN — scripts/mutation-gate.sh is missing; every gated step runs" "gate: …and the run says the gate was missing"
 
 # ===================== 8e. the hold-back, the priority and the machine lock (#599) ===============
-# A plain local run holds back every step that declares inputs unless --mutation, the override or
-# --only asks for it; every run lowers its priority; and one machine runs one run's harnesses at a
+# A plain local run holds back every mutation harness unless --mutation, the override or --only
+# asks for it — and never a plain step, whatever it declares (#629); every run lowers its priority; and one machine runs one run's harnesses at a
 # time. Each claim is asked of the event log or of `ps`, never of the output alone.
 cp "$ROOT/scripts/mutation-gate.sh" "$FXG/scripts/mutation-gate.sh"
 printf 'input v2\n' > "$FXG/scripts/gated-input.txt"   # touched, so the gate itself would run it
 # A plain run here is "everything but the steps this fixture has no stub for", so the selection is
-# the stubs plus gatedstep without naming gatedstep in --only.
-HB_SKIP="$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' -v keep=",$ONLY,gatedstep," 'index(keep, "," $1 ",")==0 {printf "%s%s", sep, $1; sep=","}')"
+# the stubs, the harness and the plain step `scoped`, without naming any of them in --only. `--all`
+# keeps these cases about the hold-back and the lock: the scope (8f) would otherwise hold every
+# plain step whose inputs this fixture never touches.
+HB_SKIP="$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' -v keep=",$ONLY,gatedstep-mutation,scoped," 'index(keep, "," $1 ",")==0 {printf "%s%s", sep, $1; sep=","}')"
 reset_ctl "$FXG"
-scg --skip "$HB_SKIP" --jobs 4
+scg --skip "$HB_SKIP" --all --jobs 4
 yes "$RC_" "hold-back: a plain run with a touched harness input passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "0" "hold-back: a plain run never EXECUTES a mutation harness"
 eq "$(grep -c '^+claims$' "$FXG/ctl/events")" "1" "hold-back: …while the other steps run"
-has "$OUT" "selfcheck: HELD 1 mutation harness(es) — not requested (--mutation runs the ones this change touches, ADB_MUTATION_RUN_ALL=1 all): gatedstep" \
+eq "$(grep -c '^+scoped$' "$FXG/ctl/events")" "1" "hold-back: a plain step that declares inputs is never held back"
+has "$OUT" "selfcheck: HELD 1 mutation harness(es) — not requested (--mutation runs the ones this change touches, ADB_MUTATION_RUN_ALL=1 all): gatedstep-mutation" \
   "hold-back: the held harness is named before the run, with what lifts it"
-has "$OUT" "held (not requested; --mutation runs them): gatedstep" "hold-back: …and again in the result block"
+has "$OUT" "held (not requested; --mutation runs them): gatedstep-mutation" "hold-back: …and again in the result block"
 reset_ctl "$FXG"
-scg --skip "$HB_SKIP" --mutation --jobs 4
+scg --skip "$HB_SKIP" --all --mutation --jobs 4
 yes "$RC_" "hold-back: --mutation passes"
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "hold-back: --mutation runs a harness whose input changed"
 hasnt "$OUT" "HELD" "hold-back: …and holds nothing back"
 reset_ctl "$FXG"
-OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --jobs 4 2>&1)"; RC_=$?
+OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --jobs 4 2>&1)"; RC_=$?
 eq "$(grep -c '^+gatedstep$' "$FXG/ctl/events")" "1" "hold-back: ADB_MUTATION_RUN_ALL=1 runs the harness without --mutation"
 reset_ctl "$FXG"
-scg --skip "$ONLY,$HB_SKIP" --jobs 4
+scg --skip "$ONLY,scoped,$HB_SKIP" --all --jobs 4
 eq "$RC_" "2" "hold-back: a run left with nothing but held harnesses refuses rather than passing on nothing"
 has "$OUT" "every selected step is a mutation harness held back — add --mutation" "hold-back: …and says how to run them"
 
@@ -1511,13 +1580,14 @@ lock_free() {
 wait_event() { local _w; for _w in $(seq 200); do grep -q "^+$2\$" "$1/ctl/events" 2>/dev/null && return 0; sleep 0.1; done; return 1; }
 FXH="$work/fxh"; rm -rf "$FXH"; cp -R "$FXG" "$FXH"
 reset_ctl "$FXG"; : > "$FXG/ctl/gatedstep.hold"
-ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
+ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
 wait_event "$FXG" gatedstep || bad "lock: the holder's harness never started"
 reset_ctl "$FXH"
-OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 2>&1)"; RC_=$?
 yes "$RC_" "lock: a run locked out of its harnesses still passes"
 eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a second run never EXECUTES a harness while another run holds the lock"
 eq "$(grep -c '^+claims$' "$FXH/ctl/events")" "1" "lock: …and still runs its other steps"
+eq "$(grep -c '^+scoped$' "$FXH/ctl/events")" "1" "lock: a plain step that declares inputs is never locked out"
 has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is held by pid $holder_run in " "lock: the locked-out run names the holder"
 has "$OUT" "locked out (machine lock held by pid $holder_run in " "lock: …and names it again in the result block"
 : > "$FXG/ctl/gatedstep.release"
@@ -1526,18 +1596,18 @@ lock_free; yes "$?" "lock: the holder's clean exit releases the lock"
 
 # KILLed mid-harness: the runner is gone, its worker is not, and the lock stays with the worker.
 reset_ctl "$FXG"; : > "$FXG/ctl/gatedstep.hold"
-ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
+ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 > "$work/holder.out" 2>&1 & holder_run=$!
 wait_event "$FXG" gatedstep || bad "lock: the killed holder's harness never started"
 kill -KILL "$holder_run" 2>/dev/null; wait "$holder_run" 2>/dev/null
 reset_ctl "$FXH"
-OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 2>&1)"; RC_=$?
 eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: a KILLed holder whose harness still runs keeps the lock"
 has "$OUT" "held by processes the exited run pid $holder_run started in " "lock: …and the run says the holder exited and where to sweep"
 : > "$FXG/ctl/gatedstep.release"
 for _ in $(seq 100); do lock_free && break; sleep 0.1; done
 lock_free; yes "$?" "lock: the lock is free once the last of a dead holder's workers has gone"
 reset_ctl "$FXH"
-OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+OUT="$(ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 2>&1)"; RC_=$?
 eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "1" "lock: a dead holder that left nothing running does not block the next run"
 rm -f "$MLOCK"
 # A lock that cannot be used at all locks the harness out AND fails the run: never an overlap, and
@@ -1546,7 +1616,7 @@ nl_path="$work/nl/x
 ALL CHECKS PASSED
 y"
 reset_ctl "$FXH"; mkdir -p "$work/nl"; : > "$nl_path"
-OUT="$(XDG_STATE_HOME="$nl_path" ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+OUT="$(XDG_STATE_HOME="$nl_path" ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 2>&1)"; RC_=$?
 eq "$RC_" "1" "lock: an unusable lock fails the run"
 eq "$(grep -c '^+gatedstep$' "$FXH/ctl/events")" "0" "lock: …and runs no harness without it"
 eq "$(grep -c '^+gates$' "$FXH/ctl/events")" "1" "lock: an unusable lock never ends the run early, as a red static step does"
@@ -1554,12 +1624,137 @@ has "$OUT" "LOCKED OUT 1 mutation harness(es) — the machine lock is unavailabl
 eq "$(printf '%s\n' "$OUT" | grep -c '^ALL CHECKS PASSED$')" "0" "lock: a newline in the lock's path never forges a line of the log"
 # A relative state home is ignored, as the basedir spec says, never resolved inside each checkout.
 reset_ctl "$FXH"
-OUT="$(HOME="$work/relhome" XDG_STATE_HOME=state ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --mutation --jobs 4 2>&1)"; RC_=$?
+OUT="$(HOME="$work/relhome" XDG_STATE_HOME=state ADB_STUB_CTL="$FXH/ctl" bash "$FXH/scripts/selfcheck.sh" --skip "$HB_SKIP" --all --mutation --jobs 4 2>&1)"; RC_=$?
 if [ -e "$work/relhome/.local/state/ai-dev-baseline/selfcheck-mutation.lock" ] && [ ! -e "$FXH/state" ]; then ok
 else bad "lock: a relative XDG_STATE_HOME is ignored for the home's .local/state, never resolved in the checkout"; fi
 OUT="$(ADB_SELFCHECK_PRIORITY='' ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --only "$ONLY" 2>&1)"; RC_=$?
 eq "$RC_" "2" "priority: an empty ADB_SELFCHECK_PRIORITY is an error, never the default"
 check_git "$FXG" checkout -q -- scripts/gated-input.txt
+
+# ============================== 8f. the scope (#629) ============================================
+# A plain step that declares input paths runs only when the change under test touches one of them.
+# The same three-part proof as 8d — the held step does NOT EXECUTE (asked of the event log), the
+# run still passes, and the hold is VISIBLE BY NAME — and then everything that must run regardless:
+# a step that declares the whole tree, one that declares nothing (and is named), `--all`, a step
+# `--only` names, the override, and every way the gate can fail to decide.
+SC_SKIP="$(bash "$FXG/scripts/selfcheck.sh" --list | awk -F'\t' -v keep=",$ONLY,scoped,bare," 'index(keep, "," $1 ",")==0 {printf "%s%s", sep, $1; sep=","}')"
+# ran <fixture> <step> — how many times the step's stub started, per the event log.
+ran() { grep -c "^+$2\$" "$1/ctl/events"; }
+
+reset_ctl "$FXG"
+scg --skip "$SC_SKIP" --jobs 4
+yes "$RC_" "scope: a scoped run over an untouched tree passes"
+eq "$(ran "$FXG" scoped)" "0" "scope: a plain step whose inputs are untouched never EXECUTES (not merely unprinted)"
+eq "$(ran "$FXG" gates)" "0" "scope: …nor does a shipped suite step whose inputs are untouched"
+eq "$(ran "$FXG" claims)" "1" "scope: a step that declares the whole tree runs on an untouched tree"
+eq "$(ran "$FXG" bare)" "1" "scope: a plain step that declares nothing always runs"
+has "$OUT" " step(s) — inputs unchanged (--all runs the plain ones, ADB_MUTATION_RUN_ALL=1 every one): " \
+  "scope: the held steps are announced before the run, with what lifts the hold"
+has "$OUT" "SKIP: scoped — inputs unchanged against origin/main (merge-base " "scope: …each with the gate's own line, which says what it compared against"
+has "$OUT" "inputs: scripts/scoped-input.txt)" "scope: …and which inputs it checked"
+case " $(printf '%s\n' "$OUT" | sed -n 's/^gated (inputs unchanged): //p') " in
+  *" scoped "*) ok ;; *) bad "scope: …and again in the result block" ;;
+esac
+has "$OUT" "selfcheck: UNDECLARED 1 step(s) — no inputs declared, so each always runs: bare" \
+  "scope: a plain step that declares nothing is named before the run"
+has "$OUT" "undeclared (no inputs, so always run): bare" "scope: …and in the result block"
+hasnt "$OUT" "=== scoped ===" "scope: a held step emits no block"
+hasnt "$OUT" "HELD" "scope: a plain step is never reported as a held harness"
+printf '%s\n' "$OUT" > "$work/scoped-green.log"
+DOUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$work/scoped-green.log" 2>&1)"
+has "$DOUT" '**Gated (the change touched none of their inputs, so these did not run):**' \
+  "the digest of a green scoped run names the steps the gate held"
+has "$DOUT" '`scoped`' "…by name"
+
+# …and a run cut short before its result block: the digest takes the names from the announcement.
+sed '/^=== result ===$/,$d' "$work/scoped-green.log" > "$work/scoped-cut.log"
+DOUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$work/scoped-cut.log" 2>&1)"
+has "$DOUT" 'it did not reach its `result` block' "the digest of a cut scoped run says the run did not finish"
+has "$DOUT" '**Gated (the change touched none of their inputs, so these did not run):**' \
+  "the digest of a cut scoped run still names the steps the gate held"
+has "$DOUT" '`scoped`' "…by name, from the announcement before the dispatch"
+
+# A touched input — UNCOMMITTED, the local case — runs that step and only that step.
+reset_ctl "$FXG"
+printf 'input v2\n' > "$FXG/scripts/scoped-input.txt"
+scg --skip "$SC_SKIP" --jobs 4
+yes "$RC_" "scope: with one input touched the run passes"
+eq "$(ran "$FXG" scoped)" "1" "scope: a plain step whose input changed (uncommitted) EXECUTES"
+eq "$(ran "$FXG" gates)" "0" "scope: …and a step whose inputs are still untouched does not"
+has "$OUT" "=== scoped ===" "scope: …and its block is emitted"
+# …and a red step in a scoped run: the digest names what failed AND what the gate held.
+reset_ctl "$FXG"; printf '3' > "$FXG/ctl/scoped.rc"
+scg --skip "$SC_SKIP" --jobs 4
+eq "$RC_" "1" "scope: a step that runs and fails still fails the run"
+printf '%s\n' "$OUT" > "$work/scoped-red.log"
+DOUT="$(bash "$ROOT/scripts/selfcheck.sh" --summarize "$work/scoped-red.log" 2>&1)"
+has "$DOUT" '**Failed step(s):** `scoped`' "the digest of a red scoped run names the failed step"
+has "$DOUT" '**Gated (the change touched none of their inputs, so these did not run):**' \
+  "the digest of a red scoped run names the steps the gate held"
+check_git "$FXG" checkout -q -- scripts/scoped-input.txt
+
+# --all: every selected plain step runs, and the run says it is unscoped.
+reset_ctl "$FXG"
+scg --skip "$SC_SKIP" --all --jobs 4
+yes "$RC_" "scope: --all passes"
+eq "$(ran "$FXG" scoped)" "1" "scope: --all runs a plain step whose inputs are untouched"
+eq "$(ran "$FXG" gates)" "1" "scope: …and every other one"
+hasnt "$OUT" "GATED" "scope: …and holds nothing"
+has "$OUT" "selfcheck: --all — every selected plain step runs, whatever the change touches" "scope: …and says the run is unscoped"
+
+# A plain step NAMED in --only runs: naming it is asking for it.
+reset_ctl "$FXG"
+scg --only scoped --jobs 4
+yes "$RC_" "scope: --only <plain step> on an untouched tree passes"
+eq "$(ran "$FXG" scoped)" "1" "scope: a plain step named in --only runs on an untouched tree"
+hasnt "$OUT" "GATED" "scope: …and nothing is announced as gated"
+
+# The override runs every step.
+reset_ctl "$FXG"
+OUT="$(ADB_MUTATION_RUN_ALL=1 ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$SC_SKIP" --jobs 4 2>&1)"; RC_=$?
+eq "$(ran "$FXG" scoped)" "1" "scope: ADB_MUTATION_RUN_ALL=1 runs a plain step on an untouched tree"
+has "$OUT" "ADB_MUTATION_RUN_ALL is set — the mutation gate is overridden; " "scope: …and says, once, that the override fired"
+
+# FAIL CLOSED, three ways: a base that does not resolve, no merge-base, and no repository at all.
+# Every plain step runs, and the run says why ONCE — the steps share one diff, so one line carries
+# the reason for all of them.
+reset_ctl "$FXG"
+OUT="$(ADB_MUTATION_BASE=no-such-ref ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$SC_SKIP" --jobs 4 2>&1)"; RC_=$?
+yes "$RC_" "scope: an unresolvable base still passes"
+eq "$(ran "$FXG" scoped)" "1" "scope: an unresolvable base RUNS a plain step (fail-closed)"
+eq "$(ran "$FXG" gates)" "1" "scope: …and every other one"
+hasnt "$OUT" "GATED" "scope: …and holds nothing"
+has "$OUT" "selfcheck: NOTE — the gate could not establish the change, so " "scope: a run that could not be scoped says so"
+has "$OUT" " plain step(s) run unscoped (fail-closed): " "scope: …naming the steps"
+has "$OUT" "base no-such-ref does not resolve to a commit (fail-closed" "scope: …and the reason"
+eq "$(printf '%s\n' "$OUT" | grep -c '^selfcheck: NOTE — the gate could not establish the change')" "1" \
+  "scope: …once, not once per step"
+orphan="$(check_git "$FXG" commit-tree -m orphan "$(check_git "$FXG" hash-object -t tree /dev/null)" 2>/dev/null)"
+[ -n "$orphan" ] && ok || bad "fixture setup: could not create a commit with no shared history"
+reset_ctl "$FXG"
+OUT="$(ADB_MUTATION_BASE="$orphan" ADB_STUB_CTL="$FXG/ctl" bash "$FXG/scripts/selfcheck.sh" --skip "$SC_SKIP" --jobs 4 2>&1)"; RC_=$?
+eq "$(ran "$FXG" scoped)" "1" "scope: a base with no merge-base RUNS a plain step (fail-closed)"
+has "$OUT" "no merge-base between $orphan and HEAD" "scope: …and the run says there was no merge-base"
+# The primary fixture is deliberately not a repository.
+NR_SKIP="$(bash "$FX/scripts/selfcheck.sh" --list | awk -F'\t' -v keep=",$ONLY," 'index(keep, "," $1 ",")==0 {printf "%s%s", sep, $1; sep=","}')"
+reset_ctl
+sc --skip "$NR_SKIP" --jobs 4
+yes "$RC_" "scope: outside a git repository the run still passes"
+eq "$(ran "$FX" gates)" "1" "scope: outside a git repository every plain step runs (fail-closed)"
+has "$OUT" "not a git repository (fail-closed" "scope: …and the run says why"
+
+# A gate that answers outside its contract, and a gate that is missing: the step runs, loudly.
+printf '#!/usr/bin/env bash\necho "gate-broken"; exit 9\n' > "$FXG/scripts/mutation-gate.sh"
+reset_ctl "$FXG"
+scg --skip "$SC_SKIP" --jobs 4
+eq "$(ran "$FXG" scoped)" "1" "scope: a gate returning an unknown status RUNS the plain step"
+has "$OUT" "WARN — the mutation gate failed for scoped (rc 9); running it: gate-broken" "scope: …and the run says the gate broke"
+rm -f "$FXG/scripts/mutation-gate.sh"
+reset_ctl "$FXG"
+scg --skip "$SC_SKIP" --jobs 4
+eq "$(ran "$FXG" scoped)" "1" "scope: with mutation-gate.sh absent the plain step runs"
+has "$OUT" "WARN — scripts/mutation-gate.sh is missing; every gated step runs" "scope: …and the run says the gate was missing"
+cp "$ROOT/scripts/mutation-gate.sh" "$FXG/scripts/mutation-gate.sh"
 
 # ============================== 8c. --summarize ===============================================
 # The CI job-summary digest (#423 item 5). A digest's failure mode is silence — one that extracted

@@ -284,7 +284,8 @@ token.
 
 So the Linux jobs stay statically named, and macOS is **one aggregate job** —
 `selfcheck-macos`, running `scripts/selfcheck.sh`, which *is* the full offline suite by
-construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). Mirroring the jobs
+construction (CLAUDE.md golden rule 3 keeps it in lockstep with the jobs). On a pull request it
+runs the part of that suite the change touches (below); on the push to the default branch, all of it. Mirroring the jobs
 individually would need another hand-added job every time a `check-*.sh` lands, and the forgotten
 one would be invisible.
 
@@ -300,9 +301,33 @@ its whole life. On #452's branch it was 34 runs and 18h54m of CI wall time in th
 list it reads from the registry at run time — `skip="$(bash scripts/mutation-gate.sh steps --csv)"`,
 then `selfcheck.sh --skip "$skip"` — never a hand-copied list, so a new harness cannot land
 unskipped, and an unreadable registry fails the step rather than skipping nothing. The plain suites
-behind every harness still run here, as every plain suite does; most also have an ubuntu job, but
-not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names are unchanged, so
-the required contexts are too.
+behind every harness still run here when the change touches them, and every one has an ubuntu job.
+The job names are unchanged, so the required contexts are too.
+
+**On a pull request this job runs only the steps the change touches** (#629, D157, amending D29).
+Every registry step declares the paths its verdict depends on (`scripts/selfcheck.sh --list`,
+field 5), and a plain `selfcheck.sh` run is scoped: a step runs when the change — against the
+merge-base with the pull request's base branch, `ADB_MUTATION_BASE` — touches one of them, and is
+named in the log with what it was compared on when it touches none. Every lint declares the whole
+tree and always runs. On any other event the step passes `--all` and runs the whole registry: the
+branch is on the event name and only `pull_request` is scoped, so an event nobody anticipated runs
+everything, and a gate that cannot establish the change (a shallow clone, an unresolvable base)
+runs everything and says why. The leg had grown from 22 minutes (run 38171915284, 2026-10-11) to
+50.4 (run 43056592366, 2026-11-11) while every ubuntu job finished inside 5.3, and it was the
+whole per-PR critical path.
+
+**The trade, said plainly:** a macOS-only failure in a suite the change does not touch surfaces on
+the push to the default branch, not on the pull request. What bounds it is the ubuntu leg, which
+runs every suite on every pull request — and that had to be made true first: `docs-lib`,
+`bootstrap`, `implement-lib` and `mutation-gate` ran per pull request only here, so each gained a
+step in an existing ubuntu job (no job was added, so no required context changed).
+`scripts/check-step-inputs.sh` holds both halves: a step the scope can hold must be run by an
+ubuntu job, and a suite's step must declare every tracked path the suite names. Its header states
+what that scan cannot see. `check-mutation-gate.sh` pins this step's arguments by running its
+script under each event.
+
+**The weekly WSL smoke job passes `--all`** for the reason this job does on a push: it runs the
+default branch, where a scoped run would find nothing changed and hold every suite.
 
 **This job, and the WSL smoke job, pass `--collect-all`** (#630, D156). A local run takes the static
 tier first — the steps that lint the tracked tree — and ends at a red one, before any suite
@@ -358,7 +383,8 @@ no longer matches its target — surfaces at the next successful scheduled or on
 something new to say, dispatches each against the PR head and links the runs, as evidence rather
 than a merge gate.
 
-**Locally, the harnesses run on request** (#599, D147). A plain `bash scripts/selfcheck.sh` holds
+**Locally, the harnesses run on request** (#599, D147), and since #629 a plain run is scoped as
+this job's pull-request run is (`--all` runs every plain step). A plain `bash scripts/selfcheck.sh` holds
 every harness back and names it; `--mutation` runs the ones a change touches, gated on their inputs
 (#441), and per row (#470, D108): a row runs
 only when the change touches the file it mutates or a declared input no row targets, an

@@ -113,6 +113,32 @@ only by a release it upgrades to. These entries are the notes for both.
   and `/adopt` no longer advises writing one. The docs now state Claude's precedence correctly: a
   personal skill runs over a same-named project one (#540).
 
+- **A plain selfcheck runs the steps your change touches, and so does the macOS leg of a pull
+  request (#629).** Every registry step now declares the paths its verdict depends on (the fifth
+  field of `bash scripts/selfcheck.sh --list`), and a plain step runs only when the change under
+  test, working tree and untracked files included, touches one of them against the merge-base
+  with `origin/<default>`. A step the run holds is named before the run with what it was
+  compared on, and by name in the `result` block and the `--summarize` digest. Every lint
+  declares the whole tree (`.`) and always runs; a step that declares nothing always runs and is
+  named; a plain step named in `--only` runs (a harness named there is still gated on its
+  inputs). `--all` runs every plain step. No repository, a base that does not
+  resolve or no merge-base runs every step and says why. So a green plain run now says the
+  suites the change touches pass, not that every suite does. In CI, `selfcheck-macos` is scoped
+  the same way on a pull request and passes `--all` on every other event, so a macOS-only
+  failure in a suite the change does not touch surfaces on the default branch. The ubuntu jobs
+  still run every suite on every pull request; four suites that ran per pull request only on
+  macOS (`docs-lib`, `bootstrap`, `implement-lib`, `mutation-gate`) gained a step in an existing
+  ubuntu job, and no job was added or renamed. The weekly WSL job passes `--all`. A new lint,
+  `scripts/check-step-inputs.sh`, fails when a suite names a tracked file its step does not
+  declare or when a step the scope can hold is not wired into an ubuntu job as a single-line
+  `run:` of its own; it cannot see a path a suite computes or a tree it copies whole, and it
+  pins that wiring without proving what a runner executes. "Is a mutation harness" is now the step's name
+  (`*-mutation`), no longer "declares inputs". Against the last full macOS run on `main` (run
+  43328767178), the declarations select 29% to 34% of the step time for a change to one library
+  and its suite and 11% for a change to three docs (`docs/installation.md`, `CHANGELOG.md`,
+  `.ai-dev-baseline/decisions.md`); `precommit-gate` (791s there) runs on any change
+  under `scripts/`, so no macOS run under 15 minutes has been observed yet.
+
 - **A red lint ends a local selfcheck before the suites start, not after the whole run (#630).**
   `bash scripts/selfcheck.sh` now runs a static tier first: the steps that lint the tracked tree
   (`shellcheck`, `build-drift`, `tmp-paths`, `fact-drift` and eight more, `static` in the new sixth

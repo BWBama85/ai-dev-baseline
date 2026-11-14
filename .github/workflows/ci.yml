@@ -34,8 +34,10 @@ permissions:
   contents: read
 
 env:
-  # THE BASE A PER-PR REPORT DIFFS AGAINST — read by the `render-size` job's delta report (#432).
-  # (It was the per-PR mutation gate's base until #456 took the harnesses off this file, D126.)
+  # THE BASE A PER-PR REPORT DIFFS AGAINST — read by the `render-size` job's delta report (#432),
+  # and by `selfcheck-macos`, whose pull-request run is scoped to the steps the change touches
+  # (#629, D157). (It was the per-PR mutation gate's base until #456 took the harnesses off this
+  # file, D126.)
   #   pull_request → the PR's base branch, as `origin/<base>`;
   #   push (main)  → the previous tip, `github.event.before`. Forty zeros on a branch's first push
   #                  and a vanished sha after a force-push; the reader says so rather than guessing.
@@ -394,10 +396,18 @@ jobs:
       - name: Full gate-model behavior tests (detection, open set, N/A, path scope)
         run: bash scripts/check-gates.sh
 
+      # THE REGISTRY'S OWN STEP, BY NAME (#629, D157). The first two steps above mirror the
+      # `gate-detector` function by hand. `selfcheck-macos` can hold that step back on a pull
+      # request, and `check-step-inputs.sh` counts a step as run on ubuntu only when a job runs the
+      # registry's command for it, so this job runs the function itself as well.
+      - name: The registry's gate-detector step, through the runner (#629)
+        run: bash scripts/selfcheck.sh --only gate-detector
+
   common-lib:
     name: common-lib
     runs-on: ubuntu-26.04
-    # The Linux jobs' 10: two suites, about 133s on run 38081150119. Its mutation harness runs in
+    # The Linux jobs' 10: two suites, about 133s on run 38081150119, and since #629 the gate's suite
+    # and the declared-inputs lint, well under a minute together. Its mutation harness runs in
     # `mutation-nightly.yml` since #456 (D126).
     timeout-minutes: 10
     # `actions: read` for the last-nightly line below, which lists this repository's workflow runs.
@@ -423,6 +433,16 @@ jobs:
 
       - name: Test the mutation harness's blocks and per-test rows (#468)
         run: bash scripts/check-block-rows.sh
+
+      # THE GATE'S OWN SUITE AND THE DECLARED-INPUTS LINT (#629, D157). `selfcheck-macos` runs only
+      # the steps a pull request touches, so every suite it can hold back must run here, on ubuntu,
+      # on every pull request. The gate's suite had no ubuntu job until then. Both ride this job
+      # rather than adding one, because a new job is a new status context for branch protection.
+      - name: The step gate — its decisions, its registry reads and the workflow wiring (#441, #629)
+        run: bash scripts/check-mutation-gate.sh
+
+      - name: Declared inputs cover what each suite names, and every scoped suite runs on ubuntu (#629)
+        run: bash scripts/check-step-inputs.sh --self-test
 
       # THE MUTATION HARNESSES' LAST VERDICT, on every PR (#456, D126). No `--mutation` harness runs
       # per pull request any more — `mutation-nightly.yml` runs them all on a schedule, by dispatch
@@ -964,6 +984,11 @@ jobs:
       - name: End-to-end test bin/baseline currency classification
         run: bash scripts/check-baseline.sh
 
+      # Every entry point resolves its own tree (#404). Seconds; it rides this job because it ran
+      # per pull request only on `selfcheck-macos` until that leg was scoped (#629, D157).
+      - name: Entry points resolve their own tree — site set and open-world scan (#404)
+        run: bash scripts/check-bootstrap.sh
+
   session-currency:
     name: session-currency
     runs-on: ubuntu-26.04
@@ -1025,7 +1050,7 @@ jobs:
     runs-on: ubuntu-26.04
     # 15 since #456: the 75 it had was for its two mutation harnesses (session-context, review-loop),
     # which no longer run per PR — 906s of a 989s job on run 38081150119. The three suites left took
-    # about 90s there.
+    # about 90s there; `check-implement-lib.sh` joined them in #629 (163s on a 10-core macOS machine).
     timeout-minutes: 15
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1057,6 +1082,12 @@ jobs:
       # /implement-issue run this job's hooks enforce, so it rides this job rather than adding one.
       - name: Local convergence loop — budget, tree binding, carry and block (#491)
         run: bash scripts/check-review-loop.sh
+
+      # The run's own library (#202): admission, snapshots, dispatch, open-pr. It ran per pull
+      # request only on `selfcheck-macos` until that leg was scoped (#629, D157), so it rides the
+      # job that already tests the hooks reading the same run state. About three minutes.
+      - name: /implement-issue's library — admission, snapshots, dispatch, open-pr (#202)
+        run: bash scripts/check-implement-lib.sh
 
   install-migration:
     name: install-migration
@@ -1272,9 +1303,10 @@ jobs:
   pattern-ledger:
     name: pattern-ledger
     runs-on: ubuntu-26.04
-    # 10: the suite alone, about 80s on run 38081150119. The ledger's mutation harness, which this job
-    # was created for (D87, D111), runs in `mutation-nightly.yml` since #456 (D126). The job stays:
-    # its name is a required check context.
+    # 10: the suite alone, about 80s on run 38081150119, and since #629 `check-docs-lib.sh` (12s on a
+    # 10-core macOS machine). The ledger's mutation harness, which this job was created for (D87,
+    # D111), runs in `mutation-nightly.yml` since #456 (D126). The job stays: its name is a required
+    # check context.
     timeout-minutes: 10
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1291,6 +1323,12 @@ jobs:
 
       - name: Pattern-ledger predicates — grammar, readers, promotion, lock, prompt budget (#421)
         run: bash scripts/check-pattern-ledger.sh
+
+      # The vendor-documentation duty's auditable half (#422). Like the ledger it is read at both
+      # ends of an /implement-issue run, so it rides this job; it ran per pull request only on
+      # `selfcheck-macos` until that leg was scoped (#629, D157). Seconds.
+      - name: Docs-duty predicates — required servers, probe records, report (#422)
+        run: bash scripts/check-docs-lib.sh
 
   practice-index:
     name: practice-index
@@ -1422,6 +1460,13 @@ jobs:
             fi
           done
 
+      # THE REGISTRY'S OWN STEP, BY NAME (#629, D157), for the reason the `gate-detector` job gives:
+      # the steps above mirror the `install-dry-run` function by hand, and the step
+      # `selfcheck-macos` can hold back must be wired to run here. It installs into a throwaway
+      # home of its own, after the real one above has been uninstalled.
+      - name: The registry's install-dry-run step, through the runner (#629)
+        run: bash scripts/selfcheck.sh --only install-dry-run
+
   # The second platform, and the whole reason #257 exists. macOS is where the 5.3 floor is hardest
   # to reach: macOS ships /bin/bash 3.2.57 (confirmed in the runner inventory), so 5.3 is reachable ONLY through
   # PATH — exactly the surface base/practices/shell.md warns is absent in the
@@ -1460,8 +1505,9 @@ jobs:
     # taken 38m50s (D122). 65 since #519: run 37525965580 took 47m41s with every harness forced, and
     # the five ported `*-mutation` steps this leg runs measured 7-22% slower through shmutant (D125).
     # Since #456 this leg runs NO mutation harness. The first run without them took 1351s (run
-    # 38171915284, D126), so 65 is now headroom over ~23 minutes on a loaded 3-core runner; it is
-    # re-sized with the leg itself in #529, not trimmed ahead of that.
+    # 38171915284, D126), and by run 43056592366 the same leg took 50.4 minutes. Since #629 a pull
+    # request runs only the steps its change touches (D157); the push to the default branch still
+    # runs the whole registry, which is what 65 stays sized for.
     timeout-minutes: 65
     steps:
       # FIRST, before checkout or any bootstrap: whatever bash this runner image gives
@@ -1520,12 +1566,21 @@ jobs:
       # selfcheck SKIPs that step when the binary is absent, so without it "the suite on macOS" would
       # be false in precisely the silent way this repo keeps writing guards against.
       #
+      # ON A PULL REQUEST THE RUN IS SCOPED (#629, D157): a plain step runs when the change touches
+      # one of its declared inputs, against the merge-base with the base branch (`ADB_MUTATION_BASE`
+      # above), and is named in the log when it touches none. Every lint still runs. On any other
+      # event — the push to the default branch — `--all` runs the whole registry. The branch is on
+      # the event name and ONLY a pull request is scoped, so an event nobody anticipated runs
+      # everything. THE TRADE: a macOS-only failure in a suite the change does not touch surfaces
+      # on the default branch, not on the pull request; the ubuntu jobs run every suite on both.
+      # A gate that cannot establish the change runs every step and says why.
+      #
       # NO MUTATION HARNESS RUNS PER PULL REQUEST (#456, D126). They answer LOGIC questions, not
       # platform ones, and each costs `rows × suite`; they run in `mutation-nightly.yml` — on a
       # schedule against the default branch, by dispatch, or on a PR labelled `run-mutations` — and
-      # the `common-lib` job states the last nightly's verdict on every PR. Their plain suites still
-      # run here, as every plain suite does; most also have an ubuntu job, but not all (`docs-lib`
-      # and `bootstrap` run per PR only on this leg).
+      # the `common-lib` job states the last nightly's verdict on every PR. Their plain suites run
+      # here when the change touches them, and every one has an ubuntu job
+      # (`check-step-inputs.sh` requires it).
       #
       # THE SKIP LIST IS READ FROM THE REGISTRY, never hand-copied (`mutation-gate.sh steps --csv`),
       # so a new harness cannot land unskipped; an unreadable registry fails the step rather than
@@ -1533,7 +1588,7 @@ jobs:
       #
       # `--collect-all` (#630, D156): a local run ends at a red static step, before the suites
       # start. CI does not — a push costs a whole job, so its log reports every step it selected in one run.
-      # It follows `--skip "$skip"`, whose position `check-mutation-gate.sh` pins.
+      # It follows `--skip "$skip"`, whose position `check-mutation-gate.sh` pins; `--all` follows it.
       #
       # `pipefail` is load-bearing: without it this step reports tee's cheerful 0.
       - name: The offline suite on Homebrew bash, less the mutation harnesses (they run nightly)
@@ -1541,7 +1596,12 @@ jobs:
           set -uo pipefail
           skip="$(bash scripts/mutation-gate.sh steps --csv)" || { echo "::error::could not read the *-mutation steps from the registry"; exit 1; }
           echo "skipping the mutation harnesses (they run in mutation-nightly.yml): $skip"
-          bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+            echo "pull request: running the steps this change touches (the push to the default branch runs them all)"
+            bash scripts/selfcheck.sh --skip "$skip" --collect-all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          else
+            bash scripts/selfcheck.sh --skip "$skip" --collect-all --all 2>&1 | tee "$RUNNER_TEMP/selfcheck.log"
+          fi
         env:
           # A plain suite that runs a pool (`check-roadmap.sh`'s, for one) leaves a failed pool's
           # verdict stream and every row's output here (#519). The upload step at the end publishes it.

@@ -807,4 +807,6 @@ One line per resolved review thread, newest last.
 - `path-divergence` `scripts/lib/adopt-lib.sh:3607` `ffdb30f` `PRRT_kwDOTfywrM616eHD` PR #622 2026-11-11 — an exemption lookup read a surface excluded by agent selection as nonexistent
 - `path-divergence` `scripts/lib/adopt-lib.sh:3439` `ffdb30f` `PRRT_kwDOTfywrM616eHO` PR #622 2026-11-11 — unknowns filtered by native agent only, unlike the surface report
 - `status-swallowed` `bin/baseline:962` `a176e2b` `PRRT_kwDOTfywrM62anOl` PR #628 2026-11-12 — A heal that left the command allowlist refused exited 0, and the session-start wrapper reads only the exit code, so the refusal reached nobody
+- `status-swallowed` `scripts/check-step-inputs.sh:577` `07233ec` `PRRT_kwDOTfywrM63QeK7` PR #645 2026-11-14 — si_shipped recorded no failure for a verdict that exited non-zero without output
+- `declared-inputs-incomplete` `scripts/selfcheck.sh` `07233ec` `PRRT_kwDOTfywrM63QeLE` PR #645 2026-11-14 — release-skill omitted the libraries its release driver runs through $LIB
 <!-- adb:hits:end -->

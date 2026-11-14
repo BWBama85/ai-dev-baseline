@@ -68,6 +68,18 @@ bash scripts/build.sh
 bash scripts/selfcheck.sh
 ```
 
+**A plain run is scoped to your change** (#629, D157). Every step declares the paths its verdict
+depends on (`bash scripts/selfcheck.sh --list`, fifth field), and a plain step runs only when your
+change — working tree and untracked files included, against the merge-base with `origin/main` —
+touches one of them. A step it holds is named before the run with what it was compared on, and
+by name in the `result` block (`gated (inputs unchanged): …`). Every lint declares the whole tree
+(`.`) and always runs, a step that declares nothing always runs and is named, and a plain step
+you name in `--only` runs (a harness named there is still gated on its inputs). `bash scripts/selfcheck.sh --all` runs every plain step. So a green plain run
+says the suites your change touches pass; CI's ubuntu jobs run every suite on every pull request.
+If you add a `source`, a `bash "$ROOT/…"` or a fixture read to a suite, declare the file on the
+step's `inputs` line in `scripts/selfcheck.sh` — `scripts/check-step-inputs.sh` is red until you
+do, and its header says what it cannot see for you.
+
 `scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
 `wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
 eight steps at once never interleave. Results therefore arrive in *completion* order, and the final
@@ -148,6 +160,11 @@ names them; `gh workflow run mutation-nightly.yml --ref <branch> -f step=<name>`
 in the PR: the PR's own CI no longer will. Locally, `bash scripts/selfcheck.sh --mutation` runs
 the harnesses your change touches; a plain run holds them all back (#599).
 `check-mutation-gate.sh` pins the wiring, and the nightly's matrix is the registry by construction.
+
+**On a pull request the macOS leg runs only the steps your change touches** (#629, D157) — the
+scoped run above — and on the push to `main` it runs them all (`--all`). A macOS-only failure in a
+suite your change does not touch therefore shows up on `main`, not on your PR; the ubuntu jobs run
+every suite on every PR.
 
 **The whole-suite pool is the vendored [shmutant](https://github.com/BWBama85/shmutant)** (#519,
 D125): `scripts/shmutant.sh`, pinned by digest (`scripts/shmutant.sh.sha256`, checked by
@@ -247,7 +264,9 @@ enumeration that paginates and **proves** itself complete — with every mutatio
 red, because the defect it replaces printed exactly what a clean run prints), and an
 **install→uninstall dry-run** (all three agents) into a throwaway `HOME`.
 
-Green locally ≈ green in CI, with two honest qualifications since #257. CI runs this offline suite
+Green locally ≈ green in CI **for the suites your change touches** — a plain run is scoped since
+#629, so a suite it held back was not run (`--all` runs every one, and CI's ubuntu jobs always do)
+— and with two more honest qualifications since #257. CI runs this offline suite
 on **two** hosted platforms — `ubuntu-26.04` and `macos-latest` — and your workstation is one of
 them, so a local green speaks for the OS you are sitting at, not for the other runner's image or
 its Homebrew bootstrap. And `check-bash-floor.sh --runtime` — offline, and running in all 31 CI

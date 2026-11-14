@@ -1609,6 +1609,13 @@ fact pr-watch-mutation-wired 'regex:^[^#]*check-pr-watch\.sh --mutation' -- scri
 # pins the line's whole shape; this pins the one spelling the documents share.
 fact macos-mutations-skipped 'fixed:mutation-gate.sh steps --csv' -- \
   .github/workflows/ci.yml CLAUDE.md CONTRIBUTING.md docs/ci-runners.md
+# THE macOS LEG IS SCOPED ON A PULL REQUEST (#629, D157), which rests on every suite having an
+# ubuntu job. The sentence that said two of them did not is refused wherever it was spelled: a copy
+# that came back would describe coverage the leg no longer gives.
+fact macos-only-suites-retired 'absent:run per PR only on this leg' \
+  'fires:      # and `bootstrap` run per PR only on this leg).' \
+  'fires:not all (`docs-lib` and `bootstrap` run per PR only on this leg). The job names are unchanged, so' \
+  -- .github/workflows/ci.yml docs/ci-runners.md CLAUDE.md CONTRIBUTING.md
 # The hand-written lists it replaced, refused wherever they were spelled: the six-name list (#448)
 # and the three-name list it grew from (#339, PR #429). A list that came back would be a copy the
 # registry no longer governs.
@@ -1989,6 +1996,12 @@ done
 fact wsl-smoke-collect-all \
   'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*bash[[:space:]]+scripts/selfcheck\.sh[[:space:]]+--collect-all([[:space:]]|$)' \
   -- .github/workflows/wsl-smoke.yml
+# …and it is UNSCOPED (#629, D157): a plain run holds every suite the change under test does not
+# touch, and a scheduled run of the default branch touches nothing, so without `--all` this job
+# would run the lints and report green over no suite at all.
+fact wsl-smoke-unscoped \
+  'regex:^[[:space:]]*run:[[:space:]]*wsl([[:space:]]|\.exe[[:space:]])[^#]*bash[[:space:]]+scripts/selfcheck\.sh[[:space:]][^#]*[[:space:]]--all([[:space:]]|$)' \
+  -- .github/workflows/wsl-smoke.yml
 # The distro's `bash --version` log is the fifth `--user adb` line and gets its own pin, because it
 # matches none of the shapes above: no `--cd`, no script name. It is also the line the negative rule
 # missed until review found it.
@@ -2335,10 +2348,21 @@ if [ "$MODE" = mutation ]; then
     #      `callsite-invariant` stray-caller case in --self-test.
     #   2. drop comment lines — suites legitimately discuss the helper in prose.
     #   3. drop lines carrying the sanctioned marker.
-    _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
+    # The FILE READ is its own capture, so its status is the assignment's: grep's 1 is "no match",
+    # the ordinary answer, and anything above it is a read that failed, which must not pass as
+    # "no caller here". The two filters after it read only that capture.
+    _hit="$(grep -n "$_ra" "$_sf")"; _grc=$?
+    if [ "$_grc" -gt 1 ]; then
+      check_note "the call-site scan could not read $_sf (grep exited $_grc)"; check_fail; continue
+    fi
+    [ -n "$_hit" ] || continue
+    _hit="$(printf '%s\n' "$_hit" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
     [ -n "$_hit" ] || continue
     _stray="${_stray}${ printf '%s\n' "$_hit" | sed "s@^@$_sf:@"; }${_FACT_NL}"
   done < <(find . -type f ! -path './.git/*' -print0)
+  # A find that failed part-way has enumerated some of the tree, and the zero-files guard below
+  # cannot see that: its own status is read.
+  wait "$!" || { check_note "the call-site scan's file enumeration failed — the scan covered part of the tree"; check_fail; }
   # Zero files scanned means the enumeration broke, not that the tree is clean.
   if [ "$_nscanned" -eq 0 ]; then
     check_note "the call-site scan found no shell files at all — the enumeration is broken"  # adb-allow: req_absent
