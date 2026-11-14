@@ -2348,10 +2348,21 @@ if [ "$MODE" = mutation ]; then
     #      `callsite-invariant` stray-caller case in --self-test.
     #   2. drop comment lines — suites legitimately discuss the helper in prose.
     #   3. drop lines carrying the sanctioned marker.
-    _hit="$(grep -n "$_ra" "$_sf" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
+    # The FILE READ is its own capture, so its status is the assignment's: grep's 1 is "no match",
+    # the ordinary answer, and anything above it is a read that failed, which must not pass as
+    # "no caller here". The two filters after it read only that capture.
+    _hit="$(grep -n "$_ra" "$_sf")"; _grc=$?
+    if [ "$_grc" -gt 1 ]; then
+      check_note "the call-site scan could not read $_sf (grep exited $_grc)"; check_fail; continue
+    fi
+    [ -n "$_hit" ] || continue
+    _hit="$(printf '%s\n' "$_hit" | grep -Ev '^[0-9]+:[[:space:]]*#' | grep -Fv "$_allow")" || continue
     [ -n "$_hit" ] || continue
     _stray="${_stray}${ printf '%s\n' "$_hit" | sed "s@^@$_sf:@"; }${_FACT_NL}"
   done < <(find . -type f ! -path './.git/*' -print0)
+  # A find that failed part-way has enumerated some of the tree, and the zero-files guard below
+  # cannot see that: its own status is read.
+  wait "$!" || { check_note "the call-site scan's file enumeration failed — the scan covered part of the tree"; check_fail; }
   # Zero files scanned means the enumeration broke, not that the tree is clean.
   if [ "$_nscanned" -eq 0 ]; then
     check_note "the call-site scan found no shell files at all — the enumeration is broken"  # adb-allow: req_absent

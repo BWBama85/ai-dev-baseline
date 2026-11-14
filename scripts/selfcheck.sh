@@ -447,10 +447,12 @@ step_gate_detector() {
   # isn't repeated here. This step asserts only what is specific to THIS repo: repo-root
   # detection surfaces the committed agents.toml [gates] override (#7), so CI keeps exercising
   # the dogfooded manifest. Records are TAB-delimited "<label>\t<command>".
-  local gd=0 want_gate got_gate
+  local gd=0 want_gate got_gate grc
   want_gate="$(printf 'test\tbash scripts/selfcheck.sh')"
-  got_gate="$(bash scripts/lib/project-gates.sh detect . 2>/dev/null)"   # compare stdout only
-  if [ "$got_gate" = "$want_gate" ]; then
+  got_gate="$(bash scripts/lib/project-gates.sh detect . 2>/dev/null)"; grc=$?   # compare stdout only
+  if [ "$grc" -ne 0 ]; then
+    echo "  repo-root detect exited $grc"; gd=1
+  elif [ "$got_gate" = "$want_gate" ]; then
     echo "  repo-root detect emits the committed test gate"
   else
     echo "  repo-root detect: got '$got_gate' want '$want_gate'"; gd=1
