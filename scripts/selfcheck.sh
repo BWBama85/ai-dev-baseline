@@ -1058,7 +1058,7 @@ inputs practice-index      .
 # release predicate in the installed scripts/lib, and the skill still delegating to the tested
 # predicates rather than re-deriving them (D14). Nothing else here reads .claude/skills/.
 add release-skill       bash scripts/check-release-skill.sh
-inputs release-skill       scripts/check-lib.sh scripts/check-release-skill.sh .claude/skills scripts/build.sh scripts/lib/common.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh
+inputs release-skill       scripts/check-lib.sh scripts/check-release-skill.sh .claude/skills scripts/build.sh scripts/lib/common.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/role-dispatch.sh scripts/lib/pr-watch.sh
 
 # ...and THIS runner is now a guard too (#260), so it gets the treatment guards get here. The job
 # pool's failure mode is the silent one: a dispatcher that loses a step's exit status, or reaps a
