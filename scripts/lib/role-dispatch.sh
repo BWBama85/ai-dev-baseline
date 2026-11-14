@@ -693,7 +693,7 @@ adb_dispatch_max_rounds() {
 # `ADB_LOCAL_REVIEW_PASSES` (one run), else `[reviewers] local_passes` layered repo → global.
 #
 #   0 + <n>  usable: 0 (the loop is disabled) through 10, or the word `until-clean` (#618): no pass
-#            budget, the loop ends only on a clean pass. `--with-source` prints
+#            budget, the loop ends only on a clean or settled pass. `--with-source` prints
 #            `<n|until-clean> <env|repo|global>`
 #   3        declared nowhere — the CALLER applies its built-in default and names it as such
 #   2        declared but unusable — a HARD ERROR, never the default. Each shape has its own message:

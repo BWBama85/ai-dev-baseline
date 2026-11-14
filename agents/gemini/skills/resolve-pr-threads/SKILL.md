@@ -1128,25 +1128,25 @@ When it corrects a thread's own fix, that thread's step-5 reply names this commi
 
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
-NOW_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || NOW_HEAD=""
-case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; exit 1 ;; esac
-# EVERY EXIT BELOW THAT ENDS THE ROUND REPORTS THE RUN SO FAR: none of them reaches step 6, the
-# only other place the rows and the whole-run local review are printed, and the records behind
-# them are run state that /cleanup sweeps.
+# EVERY EXIT IN THIS BLOCK THAT ENDS THE ROUND REPORTS THE RUN SO FAR: none of them reaches
+# step 6, the only other place the rows and the whole-run local review are printed, and the
+# records behind them are run state that /cleanup sweeps.
 round_report() {
   printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
   bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .gemini/state; WRC=$?
   case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
 }
+NOW_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || NOW_HEAD=""
+case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; round_report; exit 1 ;; esac
 if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   # THE COMMIT PUSHED IS THE COMMIT CERTIFIED: HEAD is read on both sides of the report and pushed
   # BY SHA, so a branch switch or a ref move after the report cannot push something it never read.
   [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "$PR_BRANCH" ] \
-    || { echo "STOP: the checkout is not on $PR_BRANCH — nothing was pushed"; exit 1; }   # run step 8 first
+    || { echo "STOP: the checkout is not on $PR_BRANCH — nothing was pushed"; round_report; exit 1; }   # run step 8 first
   # 40 HEX OR NOTHING IS PUSHED: an empty PUSH_SHA makes the refspec `:refs/heads/<branch>`, which
   # git reads as a DELETION of the remote PR branch.
   PUSH_SHA="$NOW_HEAD"
-  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first
+  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; round_report; exit 1; }   # run step 8 first
   LOOP_LINE="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" .gemini/state)"; LRC=$?
   [ "$(git rev-parse --verify HEAD 2>/dev/null)" = "$PUSH_SHA" ] \
     || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first

@@ -341,8 +341,8 @@ if [ "$MODE" = mutation ]; then
     '"$RL_TOKEN"; rc=$?' \
     'a pass whose result would not fit is refused before it is dispatched'
   shmutant_mut summary-counts-foreign-run \
-    '    elif [ "$marker_pr" = "$pr" ]; then' \
-    '    elif true; then' \
+    '      elif [ "$marker_pr" != "$pr" ]; then SM_RUN=other-pr' \
+    '      elif false; then SM_RUN=other-pr' \
     'summary --pr leaves out a run record whose marker names another PR'
   shmutant_mut summary-marker-stream-read \
     '    if length == 1 and (.[0] | type) == "object" then .[0] else error("marker") end' \
@@ -368,6 +368,14 @@ if [ "$MODE" = mutation ]; then
     '      if [ "${#SM_SHAS[@]}" -ge "$_IL_LOOP_SUMMARY_ROUNDS" ]; then rc=21; break; fi' \
     '      :' \
     'more round records than the snapshot'
+  shmutant_mut summary-reads-foreign-run \
+    '    if [ "$rc" -eq 0 ] && [ "$SM_RUN" = yes ]; then' \
+    '    if [ "$rc" -eq 0 ]; then' \
+    'a run record that belongs to another PR is never required to be readable'
+  shmutant_mut summary-leaves-copies \
+    "  trap '_il_loop_summary_cleanup' EXIT" \
+    '  :' \
+    'summary removes its private copies however it ends'
   shmutant_mut summary-follows-links \
     '  [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 20' \
     '  :' \
@@ -434,7 +442,7 @@ if [ "$MODE" = mutation ]; then
   shmutant_reset
   shmutant_target base/workflows/resolve-pr-threads.md
   shmutant_mut empty-push-sha-accepted \
-    '  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first' \
+    '  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; round_report; exit 1; }   # run step 8 first' \
     '  :' \
     'refuses a push SHA that is not 40 hex'
   shmutant_mut live-pr-check-dropped \
@@ -1467,6 +1475,22 @@ for i in $(seq 1 201); do printf 'x\n' > "$S/review-loop-pr9-$(printf '%012x' "$
 prl "$d" review-loop summary --pr 9 .claude/state
 eq "$RL_RC" 20 "15 summary refuses (20) more round records than the snapshot's bound"
 rm -f "$S"/review-loop-pr9-*.tsv
+# Membership first: a run record that belongs to another PR is not this summary's to read at all.
+marker "$S" "https://github.com/o/r/pull/8"
+mv "$S/review-loop.tsv" "$S/kept.tsv"; printf 'not a record\n' > "$S/kept-not.tsv"; ln -s kept-not.tsv "$S/review-loop.tsv"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 0 "15 a run record that belongs to another PR is never required to be readable"
+has "$RL_OUT" "2 pass(es) in 2 record(s)" "15 …and this PR's rounds are still summarized"
+rm -f "$S/review-loop.tsv" "$S/kept-not.tsv"; mv "$S/kept.tsv" "$S/review-loop.tsv"
+marker "$S" "https://github.com/o/r/pull/7"
+# No snapshot is left behind, on success or on refusal: a private TMPDIR is empty afterwards.
+ST="$work/snaptmp"; mkdir -p "$ST"
+RL_OUT="$( cd "$d" && env HOME="$FHOME" TMPDIR="$ST" PATH="$CB:$SB:$PATH" PR_HEAD="$PH" bash "$IL" review-loop summary --pr 7 .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC/$(find "$ST" -mindepth 1 | wc -l | tr -d ' ')" "0/0" "15 summary removes its private copies however it ends"
+printf '{"prUrl": ' > "$S/implement-issue-active.json"
+RL_OUT="$( cd "$d" && env HOME="$FHOME" TMPDIR="$ST" PATH="$CB:$SB:$PATH" PR_HEAD="$PH" bash "$IL" review-loop summary --pr 7 .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC/$(find "$ST" -mindepth 1 | wc -l | tr -d ' ')" "20/0" "15 …a refusal included"
+marker "$S" "https://github.com/o/r/pull/7"
 # A record that is not a regular file is never followed.
 mv "$S/review-loop.tsv" "$S/elsewhere.tsv"; ln -s elsewhere.tsv "$S/review-loop.tsv"
 prl "$d" review-loop summary --pr 7 .claude/state
@@ -1579,9 +1603,11 @@ RBSUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM
 order "11 …and so does every exit that ends a round, through one helper that prints the rows and the whole run" "$RBLOCK" "$RBSUM"
 order "11 …defined before the push it can stop" "$RBSUM" "$RPUSH"
 for stop in 'STOP: HEAD moved (or could not be read) while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
-            'STOP: PR #$PR_NUM is no longer OPEN at the round'; do
+            'STOP: PR #$PR_NUM is no longer OPEN at the round' 'STOP: the checkout is not on $PR_BRANCH' \
+            'STOP: HEAD is not a full commit id'; do
   has "$(grep -F -- "$stop" "$RW")" 'round_report; exit 1' "11 the 4d exit '$stop' reports the run before it ends the round"
 done
+order "11 …the helper being defined before the first exit that calls it" "$(code_line_of "$RW" 'round_report() {')" "$(code_line_of "$RW" 'round_report; exit 1')"
 eq "$(awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } f && /^[[:space:]]*round_report$/ { n++ } END { print n + 0 }' "$RW")" 2 \
    "11 …and so do the blocked verdict and the failed push"
 grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
