@@ -703,12 +703,17 @@ adb_dispatch_max_rounds() {
 # non-empty value is validated exactly like the key. `0` is matched as the exact string before the
 # leading-zero rule, so `00` is refused rather than read as the sentinel.
 #
-# `until-clean` HAS ONE SPELLING PER SURFACE: the TOML string `"until-clean"` in a manifest (the
-# reader hands a string over with its quotes) and the bare word in the env var. A bare word in a
-# manifest is not TOML and a quoted one in the env var is not the word, so each is refused.
+# `until-clean` HAS ONE SPELLING PER SURFACE: the TOML string `"until-clean"` in a manifest and the
+# bare word in the env var. A manifest's is judged on the key's OWN LINE, never on the value the
+# shared reader hands over, which may be its repair: a bare word, an unterminated quote, or
+# anything but a comment after the closing quote is refused. A quoted word in the env var is not
+# the word, and is refused too.
 _ADB_RD_LOCAL_PASSES_MAX=10
+# The whole line of a manifest's `local_passes = "until-clean"`: TOML whitespace is space or tab
+# only, and nothing but a comment may follow the closing quote.
+_ADB_RD_UNTIL_CLEAN_LINE='^[ '$'\t'']*local_passes[ '$'\t'']*=[ '$'\t'']*"until-clean"[ '$'\t'']*(#([^[:cntrl:]]|'$'\t'')*)?$'
 adb_dispatch_local_passes() {
-  local raw layer="" with_source=0 _rc what
+  local raw layer="" with_source=0 _rc what file line
   [ "${1:-}" = "--with-source" ] && with_source=1
   if [ -n "${ADB_LOCAL_REVIEW_PASSES:-}" ]; then
     raw="$ADB_LOCAL_REVIEW_PASSES"; layer="env"; what="ADB_LOCAL_REVIEW_PASSES"
@@ -717,9 +722,32 @@ adb_dispatch_local_passes() {
     case "$_rc" in 0) ;; 1) return 3 ;; *) _adb_rd_read_failed "$_rc"; return 2 ;; esac
     layer="${raw%% *}"; raw="${raw#* }"; what="[reviewers].local_passes"
   fi
-  if { [ "$layer" = env ] && [ "$raw" = until-clean ]; } || { [ "$layer" != env ] && [ "$raw" = '"until-clean"' ]; }; then
-    if [ "$with_source" -eq 1 ]; then printf 'until-clean %s\n' "$layer"; else printf 'until-clean\n'; fi
-    return 0
+  if [ "$layer" = env ]; then
+    if [ "$raw" = until-clean ]; then
+      if [ "$with_source" -eq 1 ]; then printf 'until-clean env\n'; else printf 'until-clean\n'; fi
+      return 0
+    fi
+  else
+    case "$raw" in
+      *until-clean*)
+        # THE KEY'S OWN LINE, against the whole grammar, is the one test of a manifest's
+        # until-clean. The shared reader re-closes an unterminated quote and drops whatever follows
+        # the closing one, so the value it hands over may be its repair of a malformed line — and
+        # this is the one value that removes the loop's bound.
+        case "$layer" in repo) file="$_ADB_RD_REPO_TOML" ;; *) file="$_ADB_RD_GLOBAL_TOML" ;; esac
+        line="$(adb_toml_get "$file" reviewers local_passes --raw)"; _rc=$?
+        case "$_rc" in
+          0) ;;
+          2|3) _adb_rd_read_failed "$_rc"; return 2 ;;
+          *) printf 'role-dispatch: %s could not be read back from %s\n' "$what" "$file" >&2; return 2 ;;
+        esac
+        [[ $line =~ $_ADB_RD_UNTIL_CLEAN_LINE ]] || {
+          printf 'role-dispatch: %s is malformed — write exactly local_passes = "until-clean", with nothing but a comment after it (the line is %s)\n' \
+            "$what" "$(adb_display_value "$line")" >&2
+          return 2; }
+        if [ "$with_source" -eq 1 ]; then printf 'until-clean %s\n' "$layer"; else printf 'until-clean\n'; fi
+        return 0 ;;
+    esac
   fi
   case "$raw" in
     ''|'""'|"''")

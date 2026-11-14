@@ -32,7 +32,8 @@ only by a release it upgrades to. These entries are the notes for both.
   outcomes add up to the sum of the passes' REQUIRED counts. Carried findings are now named on
   every line that follows them, a blocked or later converged one included. One finding (site,
   occurrence, text) ends one way: a second carry of it at another severity is refused, where it
-  used to count twice. A pass is reserved only when the record has room for its result as well.
+  used to count twice. (A record written before this change that carries one finding at two
+  severities no longer reads, 18: delete the second row, or let `/cleanup` sweep the run.) A pass is reserved only when the record has room for its result as well.
   Under `"until-clean"` a reviewer that becomes unusable after a pass blocks the run (39).
 - **A question to the operator carries a recommendation and uses the structured question tool
   (#617).** A new practice, `asking-the-operator.md`: every question names the option the agent

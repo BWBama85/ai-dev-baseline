@@ -1126,45 +1126,37 @@ When it corrects a thread's own fix, that thread's step-5 reply names this commi
 
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
-# EVERY EXIT IN THIS BLOCK THAT ENDS THE ROUND REPORTS THE RUN SO FAR: none of them reaches
-# step 6, the only other place the rows and the whole-run local review are printed, and the
-# records behind them are run state that /cleanup sweeps.
-round_report() {
-  printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
-  {{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?
-  case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
-}
 NOW_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || NOW_HEAD=""
-case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; round_report; exit 1 ;; esac
+case "$NOW_HEAD" in *[!0-9a-f]*|'') echo "STOP: could not read HEAD as a commit id — nothing was pushed"; exit 1 ;; esac
 if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   # THE COMMIT PUSHED IS THE COMMIT CERTIFIED: HEAD is read on both sides of the report and pushed
   # BY SHA, so a branch switch or a ref move after the report cannot push something it never read.
   [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "$PR_BRANCH" ] \
-    || { echo "STOP: the checkout is not on $PR_BRANCH — nothing was pushed"; round_report; exit 1; }   # run step 8 first
+    || { echo "STOP: the checkout is not on $PR_BRANCH — nothing was pushed"; exit 1; }   # run step 8 first
   # 40 HEX OR NOTHING IS PUSHED: an empty PUSH_SHA makes the refspec `:refs/heads/<branch>`, which
   # git reads as a DELETION of the remote PR branch.
   PUSH_SHA="$NOW_HEAD"
-  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; round_report; exit 1; }   # run step 8 first
+  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first
   LOOP_LINE="$({{IMPLEMENT_LIB}} review-loop report --pr "$PR_NUM" --head "$SWEEP_HEAD" {{STATE_DIR}})"; LRC=$?
   [ "$(git rev-parse --verify HEAD 2>/dev/null)" = "$PUSH_SHA" ] \
-    || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first
+    || { echo "STOP: HEAD moved (or could not be read) while the report ran — nothing was pushed; take another pass. $LOOP_LINE"; exit 1; }   # run step 8 first
   # …AND THE PR IS STILL THE ONE THE ROUND STARTED FROM, read live immediately before the push: the
   # loop can take minutes, and a PR that closed or gained a head meanwhile is not this round's to
   # push to. A close landing between this read and the push is the residual, and so is a head that
   # advanced to an ancestor of PUSH_SHA (the push fast-forwards over it); a head that DIVERGED is
   # refused by the push itself, which is not a fast-forward from it.
   LIVE="$(gh pr view "$PR_NUM" --json state,headRefOid --jq '.state + " " + .headRefOid')" \
-    || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first
+    || { echo "STOP: could not re-read PR #$PR_NUM before pushing — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
   [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \
-    || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed. $LOOP_LINE"; round_report; exit 1; }   # run step 8 first
+    || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
   case "$LRC" in
     0|33|35) : ;;   # converged or settled · exhausted with MEDIUM/LOW carried · disabled/unavailable
-    # 34 AND 27 DO NOT END THE ROUND: the loop goes on with another pass and comes back here.
     34) echo "the loop is not finished — take another pass. $LOOP_LINE"; exit 1 ;;
     27) echo "the worktree is not clean — commit it, then take another pass. $LOOP_LINE"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
     *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
-        round_report
+        # THE BLOCKED ROUND STILL REPORTS: the rows gathered so far, and this round's loop line.
+        printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
         # run step 8 (restore the starting branch) FIRST, then:
         exit 1 ;;
   esac
@@ -1174,7 +1166,6 @@ if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   git push origin "${PUSH_SHA}:refs/heads/${PR_BRANCH}" || {
     echo "STOP: could not push this round's commits — the fixes and ledger records exist only locally. $LOOP_LINE"
     echo "      Resolving now would erase the records from every future run; push by hand, then re-run."
-    round_report
     # run step 8 (restore the starting branch) FIRST, then:
     exit 1
   }
@@ -1309,6 +1300,7 @@ case "$WRC" in
   0|11) : ;;   # print "$WHOLE_RUN" in the summary; 11 = no pass was recorded, and its line says so
   *)    WHOLE_RUN="local review, whole run: not rendered (rc $WRC)" ;;   # 18 a record does not parse · 20 unreadable
 esac
+SUMMARY_EMITTED=1   # step 8 prints the rows and this block itself on any exit that never got here
 ```
 
 `fixed`, `superseded` and `open` are derived from the passes — a pass's REQUIRED findings, less
@@ -1742,7 +1734,20 @@ exactly what put a later run on a now-merged branch (issue #17). Prefer the bran
 started on; fall back to the PR's **base** branch, then the repo default — never a
 hardcoded `main`.
 
+**Every exit reports the run, not only the one that reaches step 6 (#618).** A stop anywhere after
+a round began — a blocked local review, a failed push, a PR that closed, a read that failed — ends
+here without the closing summary, and the loop records behind it are run state that `/cleanup`
+sweeps. So this step prints what step 6 would have: the rows gathered so far and the local review
+of the whole run. It is the one place every exit already passes through.
+
 ```bash
+# SUMMARY_EMITTED is set by step 6. Unset means this exit never printed the closing summary.
+if [ -z "${SUMMARY_EMITTED:-}" ] && [ -n "${PR_NUM:-}" ]; then
+  printf 'Per round so far:\n%s' "${ROUND_ROWS:-}"
+  [ -n "${ROUND_ROWS:-}" ] || echo "  no round completed"
+  {{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?
+  case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
+fi
 # Guard on a clean tree — never switch away over uncommitted work, nor over a tree whose status
 # could not be read.
 if ! _wst="$(git status --porcelain)" || [ -n "$_wst" ]; then

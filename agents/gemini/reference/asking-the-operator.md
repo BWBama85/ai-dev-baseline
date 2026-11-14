@@ -10,7 +10,7 @@ The tool belongs to the harness, so read what this turn lists rather than assumi
 
 | Harness | Structured question tool | Not offered when |
 |---|---|---|
-| Claude Code — the CLI, the desktop app, or a host such as T3 Code | `AskUserQuestion` | you are a subagent; or the run is non-interactive and nothing is attached to receive the prompt |
+| Claude Code — the CLI, the desktop app, or a host such as T3 Code | `AskUserQuestion` | you are a subagent that was not given it (most are not); or the run is non-interactive and nothing is attached to receive the prompt |
 | Codex CLI | `request_user_input` | the turn's mode does not list it |
 | any other harness | whichever question tool the turn lists | none is listed |
 

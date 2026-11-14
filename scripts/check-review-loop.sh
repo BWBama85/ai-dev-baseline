@@ -431,10 +431,18 @@ if [ "$MODE" = mutation ]; then
     "    ''|'\"\"'|\"''\")" \
     "    '__never__')" \
     'an empty value names itself as empty'
-  shmutant_mut until-clean-one-spelling \
-    '  if { [ "$layer" = env ] && [ "$raw" = until-clean ]; } || { [ "$layer" != env ] && [ "$raw" = '"'"'"until-clean"'"'"' ]; }; then' \
-    '  if [ "$raw" = until-clean ] || [ "$raw" = '"'"'"until-clean"'"'"' ]; then' \
-    'a bare until-clean in a manifest is refused'
+  shmutant_mut until-clean-env-quoted-accepted \
+    '    if [ "$raw" = until-clean ]; then' \
+    '    if [ "$raw" = until-clean ] || [ "$raw" = '"'"'"until-clean"'"'"' ]; then' \
+    'a quoted until-clean in the env var is refused'
+  shmutant_mut until-clean-repaired-line-accepted \
+    '        [[ $line =~ $_ADB_RD_UNTIL_CLEAN_LINE ]] || {' \
+    '        true || {' \
+    'an unterminated until-clean is refused'
+  shmutant_mut until-clean-global-line-unread \
+    '        case "$layer" in repo) file="$_ADB_RD_REPO_TOML" ;; *) file="$_ADB_RD_GLOBAL_TOML" ;; esac' \
+    '        file="$_ADB_RD_REPO_TOML"' \
+    'a well-formed one there is read from that file'
   check_shmutant_pool check-review-loop-rd "$work/pool-rd" prep runner 6
 
   # The resolver's pre-push live check is prose the resolver executes, so its row runs against the
@@ -442,7 +450,7 @@ if [ "$MODE" = mutation ]; then
   shmutant_reset
   shmutant_target base/workflows/resolve-pr-threads.md
   shmutant_mut empty-push-sha-accepted \
-    '  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; round_report; exit 1; }   # run step 8 first' \
+    '  [ "${#PUSH_SHA}" -eq 40 ] || { echo "STOP: HEAD is not a full commit id — nothing was pushed"; exit 1; }   # run step 8 first' \
     '  :' \
     'refuses a push SHA that is not 40 hex'
   shmutant_mut live-pr-check-dropped \
@@ -1029,11 +1037,24 @@ rm -f "$FHOME/.config/ai-dev-baseline/agents.toml"
 # word in the env var.
 set_lp "$d" '"until-clean"'; BO="$(bud "$d")"; eq "$?/$BO" "0/until-clean repo" "8 \"until-clean\" in a manifest is the no-budget value, with its layer"
 set_lp "$d" until-clean;     BO="$(bud "$d")"; eq "$?" 2 "8 a bare until-clean in a manifest is refused — a bare word is not TOML"
-has "$BO" 'written "until-clean" in a manifest' "8 …and the message says how to spell it"
+has "$BO" 'write exactly local_passes = "until-clean"' "8 …and the message says how to spell it"
 set_lp "$d" '"Until-Clean"'; BO="$(bud "$d")"; eq "$?" 2 "8 any other string is still malformed"
 set_lp "$d" 5
 BO="$(bud "$d" until-clean)"; eq "$?/$BO" "0/until-clean env" "8 ADB_LOCAL_REVIEW_PASSES=until-clean overrides the manifest"
 BO="$(bud "$d" '"until-clean"')"; eq "$?" 2 "8 a quoted until-clean in the env var is refused — it is not the word"
+# The shared reader repairs a malformed line into the valid value, so the line itself is checked:
+# this is the one value that removes the loop's bound.
+set_lp "$d" '"until-clean';          BO="$(bud "$d")"; eq "$?" 2 "8 an unterminated until-clean is refused, though the reader would re-close its quote"
+has "$BO" "is malformed" "8 …and the message says the line is malformed"
+set_lp "$d" '"until-clean" garbage'; BO="$(bud "$d")"; eq "$?" 2 "8 until-clean followed by anything but a comment is refused"
+set_lp "$d" '"until-clean"x';        BO="$(bud "$d")"; eq "$?" 2 "8 …with no space before it either"
+set_lp "$d" '"until-clean"   # the loop runs until clean'
+BO="$(bud "$d")"; eq "$?/$BO" "0/until-clean repo" "8 a comment after the value is still TOML"
+printf '[reviewers]\nlocal_passes = "until-clean\n' > "$FHOME/.config/ai-dev-baseline/agents.toml"
+rm -f "$d/agents.toml"; BO="$(bud "$d")"; eq "$?" 2 "8 the GLOBAL manifest's line is checked the same way"
+printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$FHOME/.config/ai-dev-baseline/agents.toml"
+BO="$(bud "$d")"; eq "$?/$BO" "0/until-clean global" "8 …and a well-formed one there is read from that file's own line"
+rm -f "$FHOME/.config/ai-dev-baseline/agents.toml"
 set_lp "$d" x
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 18 "8 review-loop refuses to run on an unusable budget (18) rather than use the default"
@@ -1598,18 +1619,13 @@ order "11 4d documents the defer disposition, after its pass" "$RPASS" "$RDEFER"
 order "11 …and before the round's push" "$RDEFER" "$RPUSH"
 [ -n "$(code_line_of "$RW" 'review-loop decline --pr "$PR_NUM" --head "$SWEEP_HEAD" --reason')" ] && ok || bad "11 4d documents the decline disposition"
 [ -n "$(code_line_of "$RW" 'WHOLE_RUN="$({{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}})"')" ] && ok || bad "11 the resolver's closing summary renders the whole run"
-RBLOCK="$(code_line_of "$RW" 'Per round so far')"
-RBSUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?')"
-order "11 …and so does every exit that ends a round, through one helper that prints the rows and the whole run" "$RBLOCK" "$RBSUM"
-order "11 …defined before the push it can stop" "$RBSUM" "$RPUSH"
-for stop in 'STOP: HEAD moved (or could not be read) while the report ran' 'STOP: could not re-read PR #$PR_NUM before pushing' \
-            'STOP: PR #$PR_NUM is no longer OPEN at the round' 'STOP: the checkout is not on $PR_BRANCH' \
-            'STOP: HEAD is not a full commit id'; do
-  has "$(grep -F -- "$stop" "$RW")" 'round_report; exit 1' "11 the 4d exit '$stop' reports the run before it ends the round"
-done
-order "11 …the helper being defined before the first exit that calls it" "$(code_line_of "$RW" 'round_report() {')" "$(code_line_of "$RW" 'round_report; exit 1')"
-eq "$(awk '/^[[:space:]]*(```|~~~)/ { f = !f; next } f && /^[[:space:]]*round_report$/ { n++ } END { print n + 0 }' "$RW")" 2 \
-   "11 …and so do the blocked verdict and the failed push"
+# Every exit of the resolver passes through step 8, so that is where an exit that never reached
+# step 6's summary prints the rows and the whole run — one place, not one call per exit.
+R8="$(line_of "$RW" '### 8. Restore the starting branch')"
+R8SUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?')"
+order "11 …and so does step 8, which every other exit of the skill ends in" "$R8" "$R8SUM"
+order "11 …guarded on the mark step 6 sets when it has printed the summary itself" "$(code_line_of "$RW" 'SUMMARY_EMITTED=1')" "$(code_line_of "$RW" 'if [ -z "${SUMMARY_EMITTED:-}" ] && [ -n "${PR_NUM:-}" ]; then')"
+order "11 …before the branch is restored" "$R8SUM" "$(code_line_of "$RW" 'echo "Restored working tree to')"
 grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
 
 check_summary check-review-loop
