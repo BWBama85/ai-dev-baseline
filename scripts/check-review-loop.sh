@@ -1209,9 +1209,11 @@ awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" 'BEGIN {
     i++; printf "defer\t1\t7\t-\t1\t%05d%s\n", i, substr(pad, 1, len - 20); room -= len
   } }' >> "$R"
 rl "$d" pass .claude/state codex
-eq "$RL_RC" 20 "13 a pass whose result would not fit is refused before it is dispatched"
-eq "$(count "$d")" 1 "13 …with no dispatch and no reservation left open"
-eq "$(grep -c '^start' "$R")" 1 "13 …and no second start row written"
+eq "$RL_RC" 20 "13 a record with room for a reservation but not for its result refuses the pass (20)"
+# THE DISPATCH COUNT is what tells the refusal apart: a pass reserved there fails with the same 20,
+# after the reviewer has run.
+eq "$(count "$d")" 1 "13 a pass whose result would not fit is refused before it is dispatched"
+eq "$(grep -c '^start' "$R")" 1 "13 …and no second start row is written"
 RL_ENV=""
 d="$(fixture)"; printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$d/agents.toml"
 git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1
