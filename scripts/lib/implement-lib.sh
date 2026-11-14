@@ -5649,12 +5649,17 @@ _il_loop_stuck() {
 _IL_LOOP_LABEL_MARK=$'\001'
 
 # _il_loop_marker_pr <marker> — the pull-request number a run marker names, or nothing when it
-# names none yet. 0 · 20 (it is not a regular file, or does not read as a marker object).
+# names none yet. 0 · 20 (it is not a regular file, is not exactly ONE JSON object, or carries a
+# `prUrl` that is not a pull-request URL).
 _il_loop_marker_pr() {
-  local url
+  local url n
   [ -f "$1" ] && [ ! -L "$1" ] || return 20
-  url="$(jq -er 'if type == "object" then (.prUrl // "" | if type == "string" then . else error("prUrl") end) else error("marker") end' "$1" 2>/dev/null)" || return 20
-  printf '%s' "${url##*/pull/}"
+  # SLURPED, so a file holding two objects is one array of two and is refused, where a stream
+  # would answer with whichever came last.
+  url="$(jq -ers 'if length == 1 and (.[0] | type) == "object" then (.[0].prUrl // "" | if type == "string" then . else error("prUrl") end) else error("marker") end' "$1" 2>/dev/null)" || return 20
+  [ -n "$url" ] || return 0
+  n="$(adb_pr_number "$url")" || return 20
+  printf '%s' "$n"
 }
 
 # _il_loop_summary_one <slot> <record> — parse one record (the caller holds the lock) and stash
@@ -5690,7 +5695,7 @@ _il_loop_summary_one() {
 }
 
 cmd_review_loop_summary() {
-  local pr="" dir="" f sha cnt rc=0 notes="" marker marker_pr label slot key all_counts="" c
+  local pr="" dir="" f sha cnt rc=0 notes="" marker marker_pr label slot key all_counts="" c sorted
   local -a args=() shas=() keyed=() order=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -5705,6 +5710,9 @@ cmd_review_loop_summary() {
   [ "${#args[@]}" -eq 1 ] || { echo "implement-lib: review-loop summary needs <state-dir>" >&2; exit 2; }
   dir="${args[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
+  # A directory that cannot be LISTED hides its round records from the glob below, and nothing
+  # found there would read as nothing recorded.
+  [ -r "$dir" ] || { printf 'implement-lib: review-loop summary: %s cannot be listed, so which records it holds is unknown\n' "$dir" >&2; return 20; }
   SM_RECORDS=0; SM_PASSES=0; SM_FIXED=0; SM_SUPERSEDED=0; SM_OPEN=0; SM_UNFINISHED=0
   SM_DECLINED=0; SM_DEFERRED=0; SM_CARRIED=0
   local -A SM_COUNTS=() SM_LINE=() SM_ENDS=()
@@ -5752,7 +5760,11 @@ cmd_review_loop_summary() {
     fi
   done
   if [ "${#keyed[@]}" -gt 0 ]; then
-    mapfile -t order < <(printf '%s\n' "${keyed[@]}" | LC_ALL=C sort)
+    # CAPTURED, with its status: a process substitution would lose a failed sort and print a
+    # summary with the rounds missing.
+    sorted="$(printf '%s\n' "${keyed[@]}" | LC_ALL=C sort)" \
+      || { echo "implement-lib: review-loop summary: could not order the round records — no summary is rendered" >&2; return 20; }
+    mapfile -t order <<< "$sorted"
   fi
   if [ -n "${SM_LINE[run]+x}" ]; then order=("run" "${order[@]}"); fi
   for key in "${order[@]}"; do

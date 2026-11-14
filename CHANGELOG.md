@@ -13,7 +13,7 @@ only by a release it upgrades to. These entries are the notes for both.
 
 - **The local review loop can run until clean, and a finding can end without a fix (#618).**
   `[reviewers] local_passes = "until-clean"` (one run: `ADB_LOCAL_REVIEW_PASSES=until-clean`) sets
-  no pass budget: the loop ends only on a pass with no REQUIRED finding, no pass is refused as
+  no pass budget: the loop ends only on a clean or settled pass, no pass is refused as
   spent, a failed pass is taken again, and the spent-budget codes 33, 37 and 38 cannot occur. The
   default stays 3 and `0` still disables. Under any budget, `review-loop decline --reason` ends a
   REQUIRED finding that is not a reachable defect or a regression of the diff, and

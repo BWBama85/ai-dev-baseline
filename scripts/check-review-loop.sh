@@ -344,6 +344,22 @@ if [ "$MODE" = mutation ]; then
     '    elif [ "$marker_pr" = "$pr" ]; then' \
     '    elif true; then' \
     'summary --pr leaves out a run record whose marker names another PR'
+  shmutant_mut summary-marker-stream-read \
+    "'if length == 1 and (.[0] | type) == \"object\" then" \
+    "'if (.[0] | type) == \"object\" then" \
+    'a marker that is two objects'
+  shmutant_mut summary-marker-url-unchecked \
+    '  n="$(adb_pr_number "$url")" || return 20' \
+    '  n="$(adb_pr_number "$url")" || n=""' \
+    'a marker whose prUrl is not a pull-request URL'
+  shmutant_mut summary-unlistable-dir \
+    "  [ -r \"\$dir\" ] || { printf 'implement-lib: review-loop summary: %s cannot be listed, so which records it holds is unknown\\n' \"\$dir\" >&2; return 20; }" \
+    '  :' \
+    'summary refuses (20) a state directory it cannot list'
+  shmutant_mut summary-sort-status-lost \
+    '      || { echo "implement-lib: review-loop summary: could not order the round records — no summary is rendered" >&2; return 20; }' \
+    '      || true' \
+    'summary refuses (20) when the rounds cannot be ordered'
   shmutant_mut summary-marker-unread \
     "\"\$1\" 2>/dev/null)\" || return 20" \
     "\"\$1\" 2>/dev/null)\" || url=\"\"" \
@@ -353,8 +369,8 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     'summary reads under the loop'"'"'s lock, and refuses (20) when it cannot take it'
   shmutant_mut summary-order-reversed \
-    "    mapfile -t order < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort)" \
-    "    mapfile -t order < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort -r)" \
+    "    sorted=\"\$(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort)\" \\" \
+    "    sorted=\"\$(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort -r)\" \\" \
     'summary orders the rounds by ancestry, oldest first'
   shmutant_mut summary-partial-accepted \
     '      _il_loop_summary_one "$sha" "$f" || { rc=$?; break; }' \
@@ -1402,10 +1418,30 @@ eq "$RL_RC" 20 "15 summary refuses (20) a run marker it cannot read — never a 
 printf '[]\n' > "$S/implement-issue-active.json"
 prl "$d" review-loop summary --pr 7 .claude/state
 eq "$RL_RC" 20 "15 …and one that is not a marker object"
+printf '{"prUrl":"https://github.com/o/r/pull/7"}\n{"prUrl":"https://github.com/o/r/pull/8"}\n' > "$S/implement-issue-active.json"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and a marker that is two objects: which one names the run cannot be decided"
+marker "$S" "https://example.com/not-a-pull-request"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and a marker whose prUrl is not a pull-request URL"
 rm -f "$S/implement-issue-active.json"
 prl "$d" review-loop summary --pr 7 .claude/state
 has "$RL_OUT" "not counted — a run record is here with no run marker" "15 a run record with no marker beside it is left out, and the line says why"
 marker "$S" "https://github.com/o/r/pull/7"
+# A directory that cannot be listed hides its round records: that is unknown, never "nothing".
+if [ "$(id -u)" != 0 ]; then
+  chmod 0333 "$S"
+  prl "$d" review-loop summary --pr 7 .claude/state
+  chmod 0755 "$S"
+  eq "$RL_RC" 20 "15 summary refuses (20) a state directory it cannot list"
+else
+  check_note "running as root — the unlistable-directory case needs a permission that binds"
+fi
+# The order is the summary's: a sort that fails must not print one with the rounds missing.
+NB="$work/nosort"; mkdir -p "$NB"; printf '#!/bin/sh\nexit 1\n' > "$NB/sort"; chmod +x "$NB/sort"
+RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$NB:$CB:$SB:$PATH" PR_HEAD="$PH" bash "$IL" review-loop summary --pr 7 .claude/state 2>&1 )"; RL_RC=$?
+eq "$RL_RC" 20 "15 summary refuses (20) when the rounds cannot be ordered"
+hasnt "$RL_OUT" "local review, whole run:" "15 …and prints no summary line"
 # Membership and the reads happen under the loop's lock.
 mkdir "$S/.review-loop-mutex"
 prl "$d" review-loop summary --pr 7 .claude/state
@@ -1487,7 +1523,11 @@ RDEFER="$(code_line_of "$RW" 'review-loop defer --pr "$PR_NUM" --head "$SWEEP_HE
 order "11 4d documents the defer disposition, after its pass" "$RPASS" "$RDEFER"
 order "11 …and before the round's push" "$RDEFER" "$RPUSH"
 [ -n "$(code_line_of "$RW" 'review-loop decline --pr "$PR_NUM" --head "$SWEEP_HEAD" --reason')" ] && ok || bad "11 4d documents the decline disposition"
-[ -n "$(code_line_of "$RW" 'review-loop summary --pr "$PR_NUM" {{STATE_DIR}}')" ] && ok || bad "11 the resolver's closing summary renders the whole run"
+[ -n "$(code_line_of "$RW" 'WHOLE_RUN="$({{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}})"')" ] && ok || bad "11 the resolver's closing summary renders the whole run"
+RBLOCK="$(code_line_of "$RW" 'Per round so far')"
+RBSUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?')"
+order "11 …and so does a round that stops blocked, which never reaches that summary" "$RBLOCK" "$RBSUM"
+order "11 …before its exit, not after the push" "$RBSUM" "$RPUSH"
 grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
 
 check_summary check-review-loop

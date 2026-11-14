@@ -1155,8 +1155,11 @@ if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
     27) echo "the worktree is not clean — commit it, then take another pass. $LOOP_LINE"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
     *)  echo "STOP: ${LOOP_LINE:-no loop verdict (rc $LRC)} — nothing was pushed; the threads stay unresolved"
-        # THE BLOCKED ROUND STILL REPORTS: the rows gathered so far, and this round's loop line.
+        # THE BLOCKED ROUND STILL REPORTS: the rows gathered so far, this round's loop line, and
+        # the local review of the whole run — this exit never reaches step 6, which prints it.
         printf 'Per round so far:\n%s  %s\n' "${ROUND_ROWS:-}" "${LOOP_LINE:-local review: not reported}"
+        {{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?
+        case "$WRC" in 0|11) : ;; *) echo "local review, whole run: not rendered (rc $WRC)" ;; esac
         # run step 8 (restore the starting branch) FIRST, then:
         exit 1 ;;
   esac

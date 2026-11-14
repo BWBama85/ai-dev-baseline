@@ -336,8 +336,8 @@ never the built-in **3**.
 variable means "not overridden"; the key layers repo → global. `role-dispatch.sh local-passes` reads it.
 
 **`"until-clean"` sets no budget (#618).** Written `local_passes = "until-clean"` in a manifest
-and `ADB_LOCAL_REVIEW_PASSES=until-clean` for one run, it makes the loop run until a pass returns
-zero REQUIRED findings: no pass is refused as spent and none is the last, so nothing is carried
+and `ADB_LOCAL_REVIEW_PASSES=until-clean` for one run, it makes the loop run until a pass is clean
+(zero REQUIRED findings) or settled (below): no pass is refused as spent and none is the last, so nothing is carried
 because a count ran out, and a failed pass is simply taken again. It removes the loop's only
 overall bound; each pass keeps its dispatch deadline, and a reviewer that becomes unusable after a
 pass blocks the run rather than ending the loop.
