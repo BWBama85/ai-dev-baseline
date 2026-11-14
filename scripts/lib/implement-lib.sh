@@ -4634,13 +4634,18 @@ cmd_sweep_identity() {
 # REQUIRED findings; the reader enforces both. Like a carry, a disposition is the driver's
 # attestation: nothing proves the row names a finding the review actually made.
 #
-# FIXED IS DERIVED, never recorded: a `done` pass followed by a later `done` pass over a DIFFERENT
-# tree counts its REQUIRED findings as fixed, less those declined, deferred or carried. It counts
-# per pass, so a finding the next pass raises again is counted by both.
+# EVERY REQUIRED FINDING IS ACCOUNTED FOR, and what no row records is DERIVED from the passes. A
+# `done` pass's REQUIRED findings, less those declined, deferred or carried, are FIXED when any
+# later `done` pass read a different tree; SUPERSEDED when later `done` passes exist and every one
+# read the same tree (that pass's count no longer stands: the findings were raised again, or not);
+# and OPEN when it is the latest `done` pass. So fixed + superseded + open + declined + deferred +
+# carried is the sum of every pass's REQUIRED count. The counts are per pass: a finding the next
+# pass raises again is counted by both.
 #
-# A CARRIED FINDING IS (site, severity, occurrence, text): two REQUIRED findings may share their
-# wording, and even their site, and still be two findings — the second is carried with
-# `--occurrence 2` — while an identical row is the idempotent retry (10).
+# A FINDING IS (site, occurrence, text), whatever verb ends it: two REQUIRED findings may share
+# their wording, and even their site, and still be two findings — the second is recorded with
+# `--occurrence 2` — while an identical row is the idempotent retry (10). A carry's severity is not
+# part of the identity: the same finding carried at a second severity would count twice.
 #
 # A CARRY IS THE DRIVER'S ATTESTATION: the count is checked against the final pass's verdict, but
 # nothing can prove the rows name that review's actual findings — the trailer carries counts only.
@@ -4649,6 +4654,10 @@ cmd_sweep_identity() {
 # stores the CRITICAL/HIGH/MEDIUM/LOW judgement step 9 already makes, and `report` applies the rule
 # mechanically: a carried CRITICAL or HIGH blocks, and every REQUIRED finding the final pass declared
 # must be carried — fewer carries than its count blocks.
+#
+# A PASS IS RESERVED ONLY WITH ROOM FOR ITS RESULT: the reservation is refused (20) unless the
+# record can still take the `start`/`begin` row AND the longest row that can complete it, so a pass
+# is never dispatched whose result — or whose `interrupted` mark — could not be recorded.
 #
 # pass:   0 converged · 34 findings, budget remains: fix, commit, pass again · 33 exhausted: the last
 #         budgeted pass found REQUIRED findings — carry each, then report · 35 disabled, or no usable
@@ -4660,8 +4669,8 @@ cmd_sweep_identity() {
 # begin:  0 reserved · 35 · 38 · 27 · 16 · 18 · 20 · 2, as pass
 # carry:  0 · 10 this exact row is already recorded · 17 nothing to carry (the loop is not exhausted,
 #         or every REQUIRED finding of the final pass already has a disposition) · 19 a refused field,
-#         a finding already declined or deferred, or a row that would take the record past its bound
-#         · 18 · 20 · 2
+#         a finding that already ended another way (a carry at another severity included), or a row
+#         that would take the record past its bound · 18 · 20 · 2
 # defer, decline: 0 · 10 this exact row is already recorded · 17 nothing to disposition (the latest
 #         pass is not a finished one with REQUIRED findings, or every one it declared already has a
 #         disposition) · 19 a refused field, a finding that already ended another way, or a row
@@ -4677,11 +4686,16 @@ cmd_sweep_identity() {
 # summary: prints the whole run — every record in <state-dir> that belongs to it, oldest first: the
 #         run's own (`review-loop.tsv`; with --pr, only when the run marker names that PR) and, with
 #         --pr, each round's. It reports and never decides. 0 · 11 nothing recorded · 18 a record
-#         does not parse · 20 · 2
+#         does not parse · 20 unreadable — a run marker that exists and cannot be read included,
+#         since which run the run record belongs to is then unknown · 2
 _IL_LOOP_MUTEX=".review-loop-mutex"
 _IL_LOOP_MAX_BYTES=1048576
 _IL_LOOP_DEFAULT=3
 _IL_LOOP_FINDING_MAX=300
+# No shorter than the longest row that can complete a reserved pass: `done`, a pass number of up to
+# six digits (more than a 1 MiB record can hold), two 64-hex digests, two 4-digit counts, five TABs
+# and the newline come to 152 bytes.
+_IL_LOOP_RESULT_MAX=160
 
 # _il_loop_budget — `<n> <source>`, the default named as such. 0 · 18 (declared but unusable) · 20.
 _il_loop_budget() {
@@ -4716,9 +4730,9 @@ _il_loop_issue_ok() { [[ "$1" =~ ^[1-9][0-9]{0,9}$ ]]; }
 # Absent is the caller's question, not this function's.
 _il_loop_parse() {
   local f="$1" line n want k k2 site occ txt arg
-  # `taken` maps a finding — (pass, site, occurrence, text) — to how it ended, so one finding cannot
-  # be both carried and declined or deferred.
-  local -A seen=() taken=()
+  # `taken` maps a finding — (pass, site, occurrence, text) — to how it ended, so one finding ends
+  # one way: never carried twice, and never both carried and declined or deferred.
+  local -A taken=()
   _il_loop_reset
   adb_bytes_whole "$f" "$_IL_LOOP_MAX_BYTES" || return $?
   while IFS= read -r line; do
@@ -4774,12 +4788,9 @@ _il_loop_parse() {
         _il_loop_site_ok "${ADB_SWEEP_F[3]}" || return 18
         [[ "${ADB_SWEEP_F[4]}" =~ ^[1-9][0-9]{0,3}$ ]] || return 18
         _il_loop_finding_ok "${ADB_SWEEP_F[5]}" || return 18
-        k="$n"$'\t'"${ADB_SWEEP_F[2]}"$'\t'"${ADB_SWEEP_F[3]}"$'\t'"${ADB_SWEEP_F[4]}"$'\t'"${ADB_SWEEP_F[5]}"
-        [ -z "${seen[$k]:-}" ] || return 18
-        seen[$k]=1
-        k2="$n"$'\t'"${ADB_SWEEP_F[3]}"$'\t'"${ADB_SWEEP_F[4]}"$'\t'"${ADB_SWEEP_F[5]}"
-        [ "${taken[$k2]:-carry}" = carry ] || return 18
-        taken[$k2]=carry
+        k="$n"$'\t'"${ADB_SWEEP_F[3]}"$'\t'"${ADB_SWEEP_F[4]}"$'\t'"${ADB_SWEEP_F[5]}"
+        [ "${taken[$k]:-}" = "" ] || return 18
+        taken[$k]=carry
         RL_USED[n]=$(( ${RL_USED[n]:-0} + 1 ))
         [ "${RL_USED[n]}" -le "${RL_REQ[n]}" ] || return 18
         RL_CN+=("$n"); RL_CSEV+=("${ADB_SWEEP_F[2]}"); RL_CSITE+=("${ADB_SWEEP_F[3]}"); RL_COCC+=("${ADB_SWEEP_F[4]}"); RL_CTXT+=("${ADB_SWEEP_F[5]}") ;;
@@ -4843,15 +4854,16 @@ _il_loop_site_ok() {
   return 0
 }
 
-# _il_loop_append <record> <row> — one whole line, appended, never past the reader's bound.
-# 0 · 19 (the row would take the record past it) · 20.
+# _il_loop_append <record> <row> [<headroom>] — one whole line, appended, never past the reader's
+# bound; with <headroom>, only when that many bytes would still be free after it.
+# 0 · 19 (the row, or the room it must leave, would take the record past the bound) · 20.
 _il_loop_append() {
-  local LC_ALL=C sz=0
+  local LC_ALL=C sz=0 head="${3:-0}"
   if [ -e "$1" ]; then
     sz="$(wc -c < "$1" 2>/dev/null | tr -d ' ')" || return 20
     case "$sz" in ''|*[!0-9]*) return 20 ;; esac
   fi
-  [ $(( sz + ${#2} + 1 )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19
+  [ $(( sz + ${#2} + 1 + head )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19
   printf '%s\n' "$2" >> "$1" 2>/dev/null || return 20
 }
 
@@ -4965,70 +4977,84 @@ _il_loop_passes_text() {
   printf '%s%s' "$lead" "$out"
 }
 
-# _il_loop_fixed — the DERIVED count of fixed findings in the loaded record: for each `done` pass
-# that a later `done` pass over a different tree follows, its REQUIRED count less its dispositions.
-_il_loop_fixed() {
-  local n next="" fixed=0
+# _il_loop_tally — the DERIVED outcomes of the loaded record's REQUIRED findings, into RL_T_FIXED,
+# RL_T_SUPERSEDED and RL_T_OPEN (see the header: each `done` pass's count less its dispositions),
+# and RL_T_UNFINISHED: 1 when the record's latest pass is not a `done` one.
+_il_loop_tally() {
+  local n next="" differs=0 rem
+  RL_T_FIXED=0; RL_T_SUPERSEDED=0; RL_T_OPEN=0; RL_T_UNFINISHED=0
+  if [ "$RL_PASSES" -gt 0 ] && [ "${RL_OUT[RL_PASSES]:-}" != "done" ]; then RL_T_UNFINISHED=1; fi
   for (( n = RL_PASSES; n >= 1; n-- )); do
     [ "${RL_OUT[n]:-}" = "done" ] || continue
-    if [ -n "$next" ] && [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then
-      fixed=$(( fixed + RL_REQ[n] - ${RL_USED[n]:-0} ))
+    rem=$(( RL_REQ[n] - ${RL_USED[n]:-0} ))
+    if [ -z "$next" ]; then
+      RL_T_OPEN="$rem"
+    else
+      # Does ANY later `done` pass read another tree? The nearest one does, or the answer is the
+      # nearest one's own, since it read this same tree.
+      if [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then differs=1; fi
+      if [ "$differs" -eq 1 ]; then RL_T_FIXED=$(( RL_T_FIXED + rem )); else RL_T_SUPERSEDED=$(( RL_T_SUPERSEDED + rem )); fi
     fi
     next="$n"
   done
-  printf '%s' "$fixed"
 }
 
-# _il_loop_span <text> — reviewer-derived text as a CODE SPAN. In prose a `Closes #N` in it would
-# register a closing link when the line lands in a PR body, and markup would render; a code span
-# suppresses both. A backtick inside would close the span, so it is rendered as a quote.
-_il_loop_span() { printf '`%s`' "${1//\`/\'}"; }
+# _il_loop_span <text> — reviewer-derived text as a CODE SPAN, into RL_SPAN. In prose a `Closes #N`
+# in it would register a closing link when the line lands in a PR body, and markup would render; a
+# code span suppresses both. A backtick inside would close the span, so it is rendered as a quote.
+_il_loop_span() { RL_SPAN="\`${1//\`/\'}\`"; }
 
-# _il_loop_disposed_text <kind> — the record's declined or deferred findings, every pass, oldest
-# first: `pass 2 #12 `site`: `text`` for a deferral, `pass 2 `site`: `text` — `reason`` for a
-# decline. Every one is named, for the reason `_il_loop_carried_text` gives.
-_il_loop_disposed_text() {
-  local kind="$1" i out="" sep="" occ
+# _il_loop_endings <kind> [<label>] — the record's findings that ended as <kind> (carry, decline or
+# defer), every pass, oldest first, into RL_ENDINGS, and how many into RL_ENDINGS_N. EVERY one is
+# named: the rendered line is the durable copy once run state is swept, and a set too large for a
+# PR body is refused by open-pr's own body bound rather than shortened here. Without <label> the
+# entries are `; `-joined for the one-line report; with it, each is its own summary line.
+_il_loop_endings() {
+  local kind="$1" label="${2:-}" i occ site txt arg entry sep=""
+  RL_ENDINGS=""; RL_ENDINGS_N=0
+  if [ "$kind" = carry ]; then
+    for i in "${!RL_CN[@]}"; do
+      occ=""; [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
+      _il_loop_span "${RL_CSITE[i]}"; site="$RL_SPAN"; _il_loop_span "${RL_CTXT[i]}"; txt="$RL_SPAN"
+      if [ -n "$label" ]; then RL_ENDINGS="${RL_ENDINGS}  carried ${RL_CSEV[i]} — ${label}, pass ${RL_CN[i]}: ${site}${occ}: ${txt}"$'\n'
+      else RL_ENDINGS="${RL_ENDINGS}${sep}pass ${RL_CN[i]} ${RL_CSEV[i]} ${site}${occ}: ${txt}"; sep="; "; fi
+      RL_ENDINGS_N=$((RL_ENDINGS_N + 1))
+    done
+    return 0
+  fi
   for i in "${!RL_DN[@]}"; do
     [ "${RL_DKIND[i]}" = "$kind" ] || continue
     occ=""; [ "${RL_DOCC[i]}" = 1 ] || occ=" (occurrence ${RL_DOCC[i]})"
+    _il_loop_span "${RL_DSITE[i]}"; site="$RL_SPAN"; _il_loop_span "${RL_DTXT[i]}"; txt="$RL_SPAN"
     if [ "$kind" = defer ]; then
-      out="${out}${sep}pass ${RL_DN[i]} #${RL_DARG[i]} $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}")"
+      entry="${site}${occ}: ${txt}"
+      if [ -n "$label" ]; then RL_ENDINGS="${RL_ENDINGS}  deferred to #${RL_DARG[i]} — ${label}, pass ${RL_DN[i]}: ${entry}"$'\n'
+      else RL_ENDINGS="${RL_ENDINGS}${sep}pass ${RL_DN[i]} #${RL_DARG[i]} ${entry}"; sep="; "; fi
     else
-      out="${out}${sep}pass ${RL_DN[i]} $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}") — $(_il_loop_span "${RL_DARG[i]}")"
+      _il_loop_span "${RL_DARG[i]}"; arg="$RL_SPAN"
+      entry="${site}${occ}: ${txt} — ${arg}"
+      if [ -n "$label" ]; then RL_ENDINGS="${RL_ENDINGS}  declined — ${label}, pass ${RL_DN[i]}: ${entry}"$'\n'
+      else RL_ENDINGS="${RL_ENDINGS}${sep}pass ${RL_DN[i]} ${entry}"; sep="; "; fi
     fi
-    sep="; "
+    RL_ENDINGS_N=$((RL_ENDINGS_N + 1))
   done
-  printf '%s' "$out"
 }
 
 # _il_loop_ended_text — how the record's REQUIRED findings ended, as the tail of the rendered line:
-# ` — fixed: F · declined: D (…) · deferred: E (…)`, each part only when it is not zero.
+# ` — fixed: F · superseded: S · declined: D (…) · deferred: E (…) · carried: C (…)`, each part only
+# when it is not zero. What is still open is the verdict's to say, not the tail's.
 _il_loop_ended_text() {
-  local i fixed nd=0 nf=0 out="" sep=""
-  fixed="$(_il_loop_fixed)"
-  for i in "${!RL_DN[@]}"; do
-    if [ "${RL_DKIND[i]}" = defer ]; then nf=$((nf + 1)); else nd=$((nd + 1)); fi
-  done
-  if [ "$fixed" -gt 0 ]; then out="fixed: $fixed"; sep=" · "; fi
-  if [ "$nd" -gt 0 ]; then out="${out}${sep}declined: $nd ($(_il_loop_disposed_text decline))"; sep=" · "; fi
-  if [ "$nf" -gt 0 ]; then out="${out}${sep}deferred: $nf ($(_il_loop_disposed_text defer))"; fi
+  local out="" sep=""
+  _il_loop_tally
+  if [ "$RL_T_FIXED" -gt 0 ]; then out="fixed: $RL_T_FIXED"; sep=" · "; fi
+  if [ "$RL_T_SUPERSEDED" -gt 0 ]; then out="${out}${sep}superseded: $RL_T_SUPERSEDED"; sep=" · "; fi
+  _il_loop_endings decline
+  if [ "$RL_ENDINGS_N" -gt 0 ]; then out="${out}${sep}declined: $RL_ENDINGS_N ($RL_ENDINGS)"; sep=" · "; fi
+  _il_loop_endings defer
+  if [ "$RL_ENDINGS_N" -gt 0 ]; then out="${out}${sep}deferred: $RL_ENDINGS_N ($RL_ENDINGS)"; sep=" · "; fi
+  _il_loop_endings carry
+  if [ "$RL_ENDINGS_N" -gt 0 ]; then out="${out}${sep}carried: $RL_ENDINGS_N ($RL_ENDINGS)"; fi
   [ -z "$out" ] || printf ' — %s' "$out"
-}
-
-# _il_loop_carried_text — the carried findings of the latest pass, for the line a PR body carries.
-# EVERY carried finding is named — the PR body is the durable copy once run state is swept — with
-# its site and text as code spans. A set too large for a PR body is refused by open-pr's own body
-# bound rather than silently shortened here.
-_il_loop_carried_text() {
-  local i out="" sep="" occ
-  for i in "${!RL_CN[@]}"; do
-    [ "${RL_CN[i]}" = "$RL_PASSES" ] || continue
-    occ=""; [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
-    out="${out}${sep}${RL_CSEV[i]} $(_il_loop_span "${RL_CSITE[i]}")${occ}: $(_il_loop_span "${RL_CTXT[i]}")"
-    sep="; "
-  done
-  printf '%s' "$out"
 }
 
 # _il_loop_open <verb> <args>… — the shared preamble of pass and begin: parse the options, resolve
@@ -5131,7 +5157,7 @@ _il_loop_reserve() {
       return 20
     fi
   fi
-  _il_loop_append "$RL_REC" "$kind"$'\t'"$RL_N"$'\t'"$RL_BUD"$'\t'"$RL_T1"$'\t'"$RL_TOKEN"; rc=$?
+  _il_loop_append "$RL_REC" "$kind"$'\t'"$RL_N"$'\t'"$RL_BUD"$'\t'"$RL_T1"$'\t'"$RL_TOKEN" "$_IL_LOOP_RESULT_MAX"; rc=$?
   if [ "$rc" -ne 0 ] && { [ -e "$aside" ] || [ -L "$aside" ]; }; then
     mv -f "$aside" "$RL_DIR/review.md" 2>/dev/null \
       || printf 'implement-lib: review-loop: could not restore the previous review.md — it is kept at %s\n' "$aside" >&2
@@ -5140,7 +5166,7 @@ _il_loop_reserve() {
   fi
   _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
   if [ "$rc" -eq 19 ]; then
-    printf 'implement-lib: review-loop: %s is at its %s-byte bound — no further pass can be recorded in it\n' "$RL_REC" "$_IL_LOOP_MAX_BYTES" >&2
+    printf 'implement-lib: review-loop: %s is at its %s-byte bound — it has no room for another pass and its result, so none is dispatched\n' "$RL_REC" "$_IL_LOOP_MAX_BYTES" >&2
     return 20
   fi
   [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
@@ -5359,8 +5385,10 @@ cmd_review_loop_carry() {
     fi
     c=$((c + 1))
   done
+  # The exact row returned 10 above, so any ending found here is a different one: another verb's,
+  # or a carry at another severity.
   was="$(_il_loop_ended_as "$L")"
-  if [ "$was" = defer ] || [ "$was" = decline ]; then
+  if [ "$was" != "" ]; then
     _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
     printf 'implement-lib: review-loop carry: that finding of pass %s already ended another way (%s) — one finding takes one disposition\n' "$L" "$was" >&2
     return 19
@@ -5584,10 +5612,10 @@ _il_loop_decide() {
     return 39
   fi
   if [ "$hard" -gt 0 ]; then
-    printf 'local review: %s%s, exhausted — BLOCKED: %s carried CRITICAL/HIGH finding(s) (%s)\n' "$passes" "$after" "$hard" "$(_il_loop_carried_text)"
+    printf 'local review: %s%s, exhausted — BLOCKED: %s carried CRITICAL/HIGH finding(s)\n' "$passes" "$after" "$hard"
     return 39
   fi
-  printf 'local review: %s%s, exhausted — carried: %s (%s)\n' "$passes" "$after" "$c" "$(_il_loop_carried_text)"
+  printf 'local review: %s%s, exhausted: every REQUIRED finding of pass %s was carried, declined or deferred\n' "$passes" "$after" "$L"
   return 33
 }
 
@@ -5605,15 +5633,37 @@ _il_loop_stuck() {
 #
 # WHICH RECORDS: `review-loop.tsv` — without --pr always; with --pr only when the run marker beside
 # it names that pull request, since a state directory can hold one PR's run record and another PR's
-# rounds — and, with --pr, every `review-loop-pr<N>-<sha12>.tsv`. ROUNDS ARE ORDERED BY ANCESTRY:
-# a round's key is the head it started from, each such head is an ancestor of the next, and an
-# ancestor has strictly fewer commits behind it. A key that no longer resolves to a commit sorts
-# last, by name, and its line says its position is unknown.
+# rounds — and, with --pr, every `review-loop-pr<N>-<sha12>.tsv`. A marker that exists and cannot
+# be read is 20, never "names another PR": the run record's owner is then unknown.
+#
+# THE LOCK SPANS MEMBERSHIP AND THE READS: which records exist, the marker, and every parse happen
+# under the loop's lock, so a record a writer adds meanwhile is either wholly in the summary or
+# wholly after it. Only ordering and printing happen outside it.
+#
+# ROUNDS ARE ORDERED BY ANCESTRY: a round's key is the head it started from, each such head is an
+# ancestor of the next, and an ancestor has strictly fewer commits behind it. A key that no longer
+# resolves to a commit sorts last, by name, and its line says its position is unknown.
 
-# _il_loop_summary_one <label> <record> — parse one record and fold it into the SM_* accumulators.
-# 0 · 18 · 20.
+# A byte no stored field can hold (every one refuses control characters), so replacing it can
+# never touch reviewer-derived text.
+_IL_LOOP_LABEL_MARK=$'\001'
+
+# _il_loop_marker_pr <marker> — the pull-request number a run marker names, or nothing when it
+# names none yet. 0 · 20 (it is not a regular file, or does not read as a marker object).
+_il_loop_marker_pr() {
+  local url
+  [ -f "$1" ] && [ ! -L "$1" ] || return 20
+  url="$(jq -er 'if type == "object" then (.prUrl // "" | if type == "string" then . else error("prUrl") end) else error("marker") end' "$1" 2>/dev/null)" || return 20
+  printf '%s' "${url##*/pull/}"
+}
+
+# _il_loop_summary_one <slot> <record> — parse one record (the caller holds the lock) and stash
+# what the summary prints for it under <slot>: SM_COUNTS[slot] (its per-pass REQUIRED counts),
+# SM_LINE[slot] (its passes, bare) and SM_ENDS[slot] (one line per finding that ended without a
+# fix, with _IL_LOOP_LABEL_MARK where the record's label goes — the label depends on the order,
+# which is decided after the lock is released), and add its totals. 0 · 18 · 20.
 _il_loop_summary_one() {
-  local label="$1" f="$2" rc n i L occ
+  local slot="$1" f="$2" rc n counts="" ends=""
   _il_loop_parse "$f"; rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'implement-lib: review-loop summary: the record %s does not parse (rc %s) — no summary is rendered from a partial run\n' "$f" "$rc" >&2
@@ -5621,40 +5671,27 @@ _il_loop_summary_one() {
   fi
   SM_RECORDS=$((SM_RECORDS + 1)); SM_PASSES=$((SM_PASSES + RL_PASSES))
   for (( n = 1; n <= RL_PASSES; n++ )); do
-    if [ "${RL_OUT[n]:-}" = "done" ]; then SM_COUNTS="${SM_COUNTS}${SM_COUNTS:+, }${RL_REQ[n]}"
-    else SM_COUNTS="${SM_COUNTS}${SM_COUNTS:+, }failed"; fi
+    if [ "${RL_OUT[n]:-}" = "done" ]; then counts="${counts}${counts:+, }${RL_REQ[n]}"
+    else counts="${counts}${counts:+, }failed"; fi
   done
-  SM_FIXED=$(( SM_FIXED + $(_il_loop_fixed) ))
-  L="$RL_PASSES"
-  if [ "$L" -gt 0 ]; then
-    if [ "${RL_OUT[L]:-}" = "done" ]; then SM_OPEN=$(( SM_OPEN + RL_REQ[L] - ${RL_USED[L]:-0} ))
-    else SM_UNFINISHED=$((SM_UNFINISHED + 1)); fi
-  fi
-  if [ "$L" -gt 0 ]; then SM_LINES="${SM_LINES}  ${label}: $(_il_loop_passes_text bare)"$'\n'
-  elif [ "$RL_LAST" = off ]; then SM_LINES="${SM_LINES}  ${label}: disabled, no pass"$'\n'
-  elif [ "$RL_LAST" = none ]; then SM_LINES="${SM_LINES}  ${label}: no usable reviewer, no pass"$'\n'
-  else SM_LINES="${SM_LINES}  ${label}: no pass"$'\n'; fi
-  for i in "${!RL_DN[@]}"; do
-    occ=""; [ "${RL_DOCC[i]}" = 1 ] || occ=" (occurrence ${RL_DOCC[i]})"
-    if [ "${RL_DKIND[i]}" = defer ]; then
-      SM_DEFERRED=$((SM_DEFERRED + 1))
-      SM_ENDS="${SM_ENDS}  deferred to #${RL_DARG[i]} — ${label}, pass ${RL_DN[i]}: $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}")"$'\n'
-    else
-      SM_DECLINED=$((SM_DECLINED + 1))
-      SM_ENDS="${SM_ENDS}  declined — ${label}, pass ${RL_DN[i]}: $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}") — $(_il_loop_span "${RL_DARG[i]}")"$'\n'
-    fi
-  done
-  for i in "${!RL_CN[@]}"; do
-    occ=""; [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
-    SM_CARRIED=$((SM_CARRIED + 1))
-    SM_ENDS="${SM_ENDS}  carried ${RL_CSEV[i]} — ${label}, pass ${RL_CN[i]}: $(_il_loop_span "${RL_CSITE[i]}")${occ}: $(_il_loop_span "${RL_CTXT[i]}")"$'\n'
-  done
+  SM_COUNTS[$slot]="$counts"
+  _il_loop_tally
+  SM_FIXED=$((SM_FIXED + RL_T_FIXED)); SM_SUPERSEDED=$((SM_SUPERSEDED + RL_T_SUPERSEDED))
+  SM_OPEN=$((SM_OPEN + RL_T_OPEN)); SM_UNFINISHED=$((SM_UNFINISHED + RL_T_UNFINISHED))
+  if [ "$RL_PASSES" -gt 0 ]; then SM_LINE[$slot]="$(_il_loop_passes_text bare)"
+  elif [ "$RL_LAST" = off ]; then SM_LINE[$slot]="disabled, no pass"
+  elif [ "$RL_LAST" = none ]; then SM_LINE[$slot]="no usable reviewer, no pass"
+  else SM_LINE[$slot]="no pass"; fi
+  _il_loop_endings decline "$_IL_LOOP_LABEL_MARK"; SM_DECLINED=$((SM_DECLINED + RL_ENDINGS_N)); ends="$RL_ENDINGS"
+  _il_loop_endings defer "$_IL_LOOP_LABEL_MARK";   SM_DEFERRED=$((SM_DEFERRED + RL_ENDINGS_N)); ends="${ends}${RL_ENDINGS}"
+  _il_loop_endings carry "$_IL_LOOP_LABEL_MARK";   SM_CARRIED=$((SM_CARRIED + RL_ENDINGS_N));   ends="${ends}${RL_ENDINGS}"
+  SM_ENDS[$slot]="$ends"
   return 0
 }
 
 cmd_review_loop_summary() {
-  local pr="" dir="" f sha cnt rc=0 notes="" marker_pr="" word
-  local -a args=() rounds=() keyed=()
+  local pr="" dir="" f sha cnt rc=0 notes="" marker marker_pr label slot key all_counts="" c
+  local -a args=() shas=() keyed=() order=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --pr) [ "$#" -ge 2 ] || { echo "implement-lib: review-loop summary: --pr needs a value" >&2; exit 2; }
@@ -5668,46 +5705,35 @@ cmd_review_loop_summary() {
   [ "${#args[@]}" -eq 1 ] || { echo "implement-lib: review-loop summary needs <state-dir>" >&2; exit 2; }
   dir="${args[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
-  if [ -n "$pr" ]; then
-    # The run record is this PR's only when the run marker beside it says so.
-    if [ -f "$dir/implement-issue-active.json" ] && [ ! -L "$dir/implement-issue-active.json" ]; then
-      marker_pr="$(jq -r '(.prUrl // "") | if type == "string" then . else "" end' "$dir/implement-issue-active.json" 2>/dev/null)" || marker_pr=""
-    fi
-    for f in "$dir"/review-loop-pr"$pr"-*.tsv; do
-      [ -e "$f" ] || [ -L "$f" ] || continue
-      sha="${f##*-}"; sha="${sha%.tsv}"
-      [[ "$sha" =~ ^[0-9a-f]{12}$ ]] || continue
-      # THE ORDER KEY is how many commits the round head has behind it; one that no longer resolves
-      # sorts after every one that does.
-      if cnt="$(git rev-list --count "$sha" 2>/dev/null)" && [[ "$cnt" =~ ^[0-9]{1,12}$ ]]; then
-        keyed+=("$(printf '%013d\t%s' "$cnt" "$sha")")
-      else
-        keyed+=("$(printf '9999999999999\t%s' "$sha")")
-      fi
-    done
-    if [ "${#keyed[@]}" -gt 0 ]; then
-      mapfile -t rounds < <(printf '%s\n' "${keyed[@]}" | LC_ALL=C sort)
-    fi
-  fi
-  SM_RECORDS=0; SM_PASSES=0; SM_COUNTS=""; SM_FIXED=0; SM_OPEN=0; SM_UNFINISHED=0
-  SM_DECLINED=0; SM_DEFERRED=0; SM_CARRIED=0; SM_LINES=""; SM_ENDS=""
-  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
-    || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
-  f="$dir/review-loop.tsv"
+  SM_RECORDS=0; SM_PASSES=0; SM_FIXED=0; SM_SUPERSEDED=0; SM_OPEN=0; SM_UNFINISHED=0
+  SM_DECLINED=0; SM_DEFERRED=0; SM_CARRIED=0
+  local -A SM_COUNTS=() SM_LINE=() SM_ENDS=()
+  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" || { echo "implement-lib: review-loop summary: could not take the loop's lock" >&2; return 20; }
+  f="$dir/review-loop.tsv"; marker="$dir/implement-issue-active.json"
   if [ -e "$f" ] || [ -L "$f" ]; then
-    if [ -z "$pr" ] || [ "${marker_pr##*/pull/}" = "$pr" ]; then
-      _il_loop_summary_one "/implement-issue" "$f" || rc=$?
+    if [ -z "$pr" ]; then
+      _il_loop_summary_one run "$f" || rc=$?
+    elif [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+      notes="  /implement-issue: not counted — a run record is here with no run marker to say which PR it belongs to"$'\n'
+    elif ! marker_pr="$(_il_loop_marker_pr "$marker")"; then
+      printf 'implement-lib: review-loop summary: %s exists but could not be read as a run marker, so whether the run record beside it belongs to PR #%s is unknown — no summary is rendered\n' "$marker" "$pr" >&2
+      rc=20
+    elif [ "$marker_pr" = "$pr" ]; then
+      # The run record is this PR's only when the run marker beside it says so.
+      _il_loop_summary_one run "$f" || rc=$?
     else
-      notes="  /implement-issue: not counted — a run record is here, but no readable run marker names PR #$pr"$'\n'
+      notes="  /implement-issue: not counted — a run record is here, but its run marker does not name PR #$pr"$'\n'
     fi
   elif [ -n "$pr" ]; then
     notes="  /implement-issue: not counted — no run record is in this state directory"$'\n'
   fi
-  if [ "$rc" -eq 0 ]; then
-    for f in "${rounds[@]}"; do
-      sha="${f#*$'\t'}"
-      if [ "${f%%$'\t'*}" = 9999999999999 ]; then word="round from $sha (position unknown: that commit no longer resolves)"; else word="round from $sha"; fi
-      _il_loop_summary_one "$word" "$dir/review-loop-pr${pr}-${sha}.tsv" || { rc=$?; break; }
+  if [ "$rc" -eq 0 ] && [ -n "$pr" ]; then
+    for f in "$dir"/review-loop-pr"$pr"-*.tsv; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      sha="${f##*-}"; sha="${sha%.tsv}"
+      [[ "$sha" =~ ^[0-9a-f]{12}$ ]] || continue
+      _il_loop_summary_one "$sha" "$f" || { rc=$?; break; }
+      shas+=("$sha")
     done
   fi
   _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
@@ -5716,12 +5742,42 @@ cmd_review_loop_summary() {
     printf 'local review, whole run: nothing recorded\n%s' "$notes"
     return 11
   fi
-  printf 'local review, whole run: %s pass(es) in %s record(s) — REQUIRED per pass: %s — fixed: %s · declined: %s · deferred: %s · carried: %s' \
-    "$SM_PASSES" "$SM_RECORDS" "${SM_COUNTS:-none}" "$SM_FIXED" "$SM_DECLINED" "$SM_DEFERRED" "$SM_CARRIED"
-  if [ "$SM_OPEN" -gt 0 ]; then printf ' · open: %s' "$SM_OPEN"; fi
+  # THE ORDER KEY is how many commits a round's head has behind it; one that no longer resolves
+  # sorts after every one that does.
+  for sha in "${shas[@]}"; do
+    if cnt="$(git rev-list --count "$sha" 2>/dev/null)" && [[ "$cnt" =~ ^[0-9]{1,12}$ ]]; then
+      keyed+=("$(printf '%013d\t%s' "$cnt" "$sha")")
+    else
+      keyed+=("$(printf '9999999999999\t%s' "$sha")")
+    fi
+  done
+  if [ "${#keyed[@]}" -gt 0 ]; then
+    mapfile -t order < <(printf '%s\n' "${keyed[@]}" | LC_ALL=C sort)
+  fi
+  if [ -n "${SM_LINE[run]+x}" ]; then order=("run" "${order[@]}"); fi
+  for key in "${order[@]}"; do
+    slot="${key#*$'\t'}"
+    c="${SM_COUNTS[$slot]}"
+    [ -z "$c" ] || all_counts="${all_counts}${all_counts:+, }${c}"
+  done
+  printf 'local review, whole run: %s pass(es) in %s record(s) — REQUIRED per pass: %s — fixed: %s · superseded: %s · declined: %s · deferred: %s · carried: %s · open: %s' \
+    "$SM_PASSES" "$SM_RECORDS" "${all_counts:-none}" "$SM_FIXED" "$SM_SUPERSEDED" "$SM_DECLINED" "$SM_DEFERRED" "$SM_CARRIED" "$SM_OPEN"
   if [ "$SM_UNFINISHED" -gt 0 ]; then printf ' · %s record(s) ended on a failed or unfinished pass' "$SM_UNFINISHED"; fi
-  printf '\n%s%s%s' "$SM_LINES" "$notes" "$SM_ENDS"
-  printf '  fixed is derived, per pass: a finding the next pass raised again is counted again.\n'
+  printf '\n'
+  for key in "${order[@]}"; do
+    slot="${key#*$'\t'}"
+    if [ "$slot" = run ]; then label="/implement-issue"
+    elif [ "${key%%$'\t'*}" = 9999999999999 ]; then label="round from $slot (position unknown: that commit no longer resolves)"
+    else label="round from $slot"; fi
+    printf '  %s: %s\n' "$label" "${SM_LINE[$slot]}"
+  done
+  printf '%s' "$notes"
+  for key in "${order[@]}"; do
+    slot="${key#*$'\t'}"
+    if [ "$slot" = run ]; then label="/implement-issue"; else label="round from $slot"; fi
+    printf '%s' "${SM_ENDS[$slot]//"$_IL_LOOP_LABEL_MARK"/$label}"
+  done
+  printf '  Counts are per pass: fixed = a later pass read a changed tree · superseded = a later pass re-read the same tree · open = the latest pass. A finding raised again is counted again.\n'
   return 0
 }
 

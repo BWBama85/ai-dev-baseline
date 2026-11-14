@@ -164,7 +164,7 @@ if [ "$MODE" = mutation ]; then
     '; then' \
     'carry against a loop that is NOT exhausted is refused (17)'
   shmutant_mut carry-bound-ignored \
-    '  [ $(( sz + ${#2} + 1 )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19' \
+    '  [ $(( sz + ${#2} + 1 + head )) -le "$_IL_LOOP_MAX_BYTES" ] || return 19' \
     '  :' \
     'a carry that would take the record past its bound is refused (19)'
   shmutant_mut control-char-finding \
@@ -224,8 +224,8 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'open-pr refuses (39) when the tip moved across the verdict read'
   shmutant_mut site-not-in-identity \
-    '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[2]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[3]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"' \
-    '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[2]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"' \
+    '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[3]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[5]}"' \
+    '        k="$n"$'"'"'\t'"'"'"${ADB_SWEEP_F[4]}"$'"'"'\t'"'"'"${ADB_SWEEP_F[5]}"' \
     'same-text findings at different sites leave a readable, fully carried record'
   shmutant_mut local-head-accepts-foreign \
     "        1) printf 'implement-lib: dispatch-review: HEAD %s does not descend from PR %s'\"'\"'s head %s — this is not that pull request plus local commits; sync the branch and re-run.\\n' \"\$lhead\" \"\$crit_pr\" \"\$phead\" >&2; return 16 ;;" \
@@ -269,7 +269,7 @@ if [ "$MODE" = mutation ]; then
     '        :' \
     'a finding both deferred and declined refuses the record'
   shmutant_mut carried-after-deferred-read \
-    '        [ "${taken[$k2]:-carry}" = carry ] || return 18' \
+    '        [ "${taken[$k]:-}" = "" ] || return 18' \
     '        :' \
     'a finding deferred and then carried refuses the record'
   shmutant_mut over-disposition-read \
@@ -305,7 +305,7 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'defer against a failed pass is refused (17)'
   shmutant_mut carry-of-disposed-accepted \
-    '  if [ "$was" = defer ] || [ "$was" = decline ]; then' \
+    '  if [ "$was" != "" ]; then' \
     '  if false; then' \
     'a finding already deferred cannot also be carried (19)'
   shmutant_mut ended-tail-dropped \
@@ -313,28 +313,52 @@ if [ "$MODE" = mutation ]; then
     "  [ -z \"\$out\" ] || printf '%s\\n' \"\$out\"" \
     'the report line names the deferred finding and its issue'
   shmutant_mut finding-text-not-spanned \
-    "_il_loop_span() { printf '\`%s\`' \"\${1//\\\`/\\'}\"; }" \
-    "_il_loop_span() { printf '%s' \"\$1\"; }" \
+    '_il_loop_span() { RL_SPAN="\`${1//\`/\'"'"'}\`"; }' \
+    '_il_loop_span() { RL_SPAN="$1"; }' \
     'a carried closing keyword is rendered inside a code span'
   shmutant_mut fixed-counts-same-tree \
-    '    if [ -n "$next" ] && [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then' \
-    '    if [ -n "$next" ]; then' \
+    '      if [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then differs=1; fi' \
+    '      differs=1' \
     'a pass retaken on the same tree fixes nothing'
+  shmutant_mut fixed-looks-one-pass-ahead \
+    '      if [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then differs=1; fi' \
+    '      differs=0; if [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then differs=1; fi' \
+    'fixed counts a pass when ANY later pass read a changed tree'
   shmutant_mut fixed-counts-disposed \
-    '      fixed=$(( fixed + RL_REQ[n] - ${RL_USED[n]:-0} ))' \
-    '      fixed=$(( fixed + RL_REQ[n] ))' \
+    '    rem=$(( RL_REQ[n] - ${RL_USED[n]:-0} ))' \
+    '    rem=$(( RL_REQ[n] ))' \
     'fixed excludes what was declined or deferred'
+  shmutant_mut superseded-dropped \
+    '      if [ "$differs" -eq 1 ]; then RL_T_FIXED=$(( RL_T_FIXED + rem )); else RL_T_SUPERSEDED=$(( RL_T_SUPERSEDED + rem )); fi' \
+    '      if [ "$differs" -eq 1 ]; then RL_T_FIXED=$(( RL_T_FIXED + rem )); fi' \
+    'a finding a later pass on the same tree no longer raised is superseded, never dropped'
+  shmutant_mut open-dropped \
+    '      RL_T_OPEN="$rem"' \
+    '      :' \
+    'the outcomes add up to the REQUIRED total'
+  shmutant_mut pass-without-result-room \
+    '"$RL_TOKEN" "$_IL_LOOP_RESULT_MAX"; rc=$?' \
+    '"$RL_TOKEN"; rc=$?' \
+    'a pass whose result would not fit is refused before it is dispatched'
   shmutant_mut summary-counts-foreign-run \
-    '    if [ -z "$pr" ] || [ "${marker_pr##*/pull/}" = "$pr" ]; then' \
-    '    if true; then' \
+    '    elif [ "$marker_pr" = "$pr" ]; then' \
+    '    elif true; then' \
     'summary --pr leaves out a run record whose marker names another PR'
+  shmutant_mut summary-marker-unread \
+    "\"\$1\" 2>/dev/null)\" || return 20" \
+    "\"\$1\" 2>/dev/null)\" || url=\"\"" \
+    'summary refuses (20) a run marker it cannot read'
+  shmutant_mut summary-unlocked \
+    "  _il_claim_mutex_take \"\$dir\" \"\$_IL_LOOP_MUTEX\" || { echo \"implement-lib: review-loop summary: could not take the loop's lock\" >&2; return 20; }" \
+    '  :' \
+    'summary reads under the loop'"'"'s lock, and refuses (20) when it cannot take it'
   shmutant_mut summary-order-reversed \
-    "      mapfile -t rounds < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort)" \
-    "      mapfile -t rounds < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort -r)" \
+    "    mapfile -t order < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort)" \
+    "    mapfile -t order < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort -r)" \
     'summary orders the rounds by ancestry, oldest first'
   shmutant_mut summary-partial-accepted \
-    '      _il_loop_summary_one "$word" "$dir/review-loop-pr${pr}-${sha}.tsv" || { rc=$?; break; }' \
-    '      _il_loop_summary_one "$word" "$dir/review-loop-pr${pr}-${sha}.tsv" || true' \
+    '      _il_loop_summary_one "$sha" "$f" || { rc=$?; break; }' \
+    '      _il_loop_summary_one "$sha" "$f" || true' \
     'summary refuses (18) when a round record does not parse'
   # The byte bound on a finding holds only under `local LC_ALL=C`; the row needs a UTF-8 locale to
   # have a witness, so it is registered only where one exists.
@@ -504,10 +528,34 @@ rl "$d" carry --severity low --site f.sh:1 --finding 'a third' .claude/state
 eq "$RL_RC" 17 "2 a carry past the declared count is refused (17)"
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "2 every REQUIRED finding carried, none HIGH: 33 — push, and say so"
-has "$RL_OUT" 'exhausted — carried: 2 (low `f.sh:1`: `a nit in f.sh`; medium `f.sh:1`: `rename <x> & [y]`)' \
+has "$RL_OUT" 'carried: 2 (pass 3 low `f.sh:1`: `a nit in f.sh`; pass 3 medium `f.sh:1`: `rename <x> & [y]`)' \
    "2 the line names each carried finding in code spans (reviewer-derived text renders no markup)"
+has "$RL_OUT" "exhausted: every REQUIRED finding of pass 3 was carried, declined or deferred — fixed: 4 · carried: 2 (" \
+   "2 …after the verdict, beside what the earlier passes' fixes answered"
 has "$RL_OUT" "pass 1 -> 2 REQUIRED · pass 2 -> 2 · pass 3 -> 2" "2 …after every pass"
 
+# One finding is carried once: its severity is the driver's triage, not part of what the finding is.
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:2
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --site f.sh:1 --finding 'one finding' .claude/state
+rl "$d" carry --severity medium --site f.sh:1 --finding 'one finding' .claude/state
+eq "$RL_RC" 19 "2 a finding already carried cannot be carried again at another severity (19)"
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "2 …so one finding carried cannot stand in for two"
+has "$RL_OUT" 'carried: 1 (pass 1 low `f.sh:1`: `one finding`)' "2 an under-carried BLOCKED line still names what was carried"
+printf 'carry\t1\tmedium\tf.sh:1\t1\tone finding\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "2 a finding carried at two severities refuses the record"
+# A carry made before the budget was raised stays on the line once later passes converge.
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1 req:0
+rl "$d" pass .claude/state codex
+rl "$d" carry --severity low --site f.sh:1 --finding 'left for later' .claude/state
+RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; commit_fix "$d" more
+rl "$d" pass .claude/state codex
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "2 a raised budget lets a later pass converge"
+has "$RL_OUT" 'carried: 1 (pass 1 low `f.sh:1`: `left for later`)' "2 …and the converged line still names what an earlier pass carried"
+RL_ENV=""
 # A carried HIGH blocks; a carried LOW pushes (above). Both observed.
 d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
 rl "$d" pass .claude/state codex
@@ -516,6 +564,7 @@ rl "$d" carry --severity high --site f.sh:1 --finding 'unescaped path' .claude/s
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "2 a carried HIGH blocks"
 has "$RL_OUT" "CRITICAL/HIGH" "2 …and says why"
+has "$RL_OUT" 'carried: 1 (pass 1 high `f.sh:1`: `unescaped path`)' "2 …and the BLOCKED line still names the carried finding"
 rl "$d" carry --severity sev1 --site f.sh:1 --finding x .claude/state
 eq "$RL_RC" 19 "2 a severity outside the closed set is refused (19)"
 rl "$d" carry --severity low --site f.sh:1 --finding "$(printf 'a\tb')" .claude/state
@@ -1132,6 +1181,21 @@ has "$RL_OUT" "is at its 1048576-byte bound" "13 …naming the bound"
 eq "$(count "$d")" 1 "13 …before anything is dispatched"
 rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 eq "$RL_RC" 17 "13 …and the full record still reads (17, not 18)"
+# Room for the reservation alone is not room for the pass: 200 bytes free take a `start` row and
+# leave less than its result needs, so a pass dispatched there could never be recorded.
+d="$(fixture)"; script "$d" req:9999 req:0
+rl "$d" pass .claude/state codex
+R="$d/.claude/state/review-loop.tsv"
+awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" 'BEGIN {
+  room = 1048576 - cur - 200
+  while (room >= 31) {
+    if (room > 345) len = 315; else if (room > 315) len = room - 31; else len = room
+    i++; printf "defer\t1\t7\t-\t1\t%05d%s\n", i, substr(pad, 1, len - 20); room -= len
+  } }' >> "$R"
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 20 "13 a pass whose result would not fit is refused before it is dispatched"
+eq "$(count "$d")" 1 "13 …with no dispatch and no reservation left open"
+eq "$(grep -c '^start' "$R")" 1 "13 …and no second start row written"
 RL_ENV=""
 d="$(fixture)"; printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$d/agents.toml"
 git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1
@@ -1205,6 +1269,15 @@ rl "$d" pass .claude/state codex
 rl "$d" report .claude/state
 eq "$RL_RC" 0 "14 a second pass over the unchanged tree may converge"
 hasnt "$RL_OUT" "fixed:" "14 a pass retaken on the same tree fixes nothing"
+has "$RL_OUT" " — superseded: 1" "14 …and its finding is still accounted for: superseded, since the same tree was read again"
+# ANY later pass over a changed tree, not only the next one: trees A, A, B.
+d="$(fixture)"; script "$d" req:1 req:1 req:0
+rl "$d" pass .claude/state codex
+rl "$d" pass .claude/state codex
+commit_fix "$d" fixed
+rl "$d" pass .claude/state codex
+rl "$d" report .claude/state
+has "$RL_OUT" "pass 3 -> 0, converged — fixed: 2" "14 fixed counts a pass when ANY later pass read a changed tree, not only the next one"
 
 # Refused fields, and the passes a disposition cannot be taken against.
 d="$(fixture)"; script "$d" req:2
@@ -1239,7 +1312,7 @@ eq "$RL_RC" 19 "14 a finding already deferred cannot also be carried (19)"
 rl "$d" carry --severity low --site f.sh:2 --finding 'a nit' .claude/state
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "14 an exhaustion with one finding carried LOW and the other deferred pushes (33)"
-has "$RL_OUT" 'carried: 1 (low `f.sh:2`: `a nit`) — deferred: 1 (pass 1 #5 ' "14 …naming both"
+has "$RL_OUT" ' — deferred: 1 (pass 1 #5 `f.sh:1`: `old bug`) · carried: 1 (pass 1 low `f.sh:2`: `a nit`)' "14 …naming both"
 d="$(fixture)"; script "$d" req:3
 rl "$d" pass .claude/state codex
 rl "$d" defer --issue 5 --site f.sh:1 --finding 'old bug' .claude/state
@@ -1296,7 +1369,7 @@ H2="$(git -C "$d" rev-parse HEAD)"; PH="$H2"; commit_fix "$d" round2; script "$d
 prl "$d" review-loop pass --pr 7 --head "$H2" .claude/state codex
 prl "$d" review-loop summary --pr 7 .claude/state
 eq "$RL_RC" 0 "15 summary renders a run of one implementation record and two rounds"
-has "$RL_OUT" "local review, whole run: 4 pass(es) in 3 record(s) — REQUIRED per pass: 2, 0, 1, 0 — fixed: 2 · declined: 1 · deferred: 0 · carried: 0" \
+has "$RL_OUT" "local review, whole run: 4 pass(es) in 3 record(s) — REQUIRED per pass: 2, 0, 1, 0 — fixed: 2 · superseded: 0 · declined: 1 · deferred: 0 · carried: 0 · open: 0" \
    "15 the first line carries the run's total passes, each pass's REQUIRED count, and how the findings ended"
 has "$RL_OUT" "  /implement-issue: pass 1 -> 2 REQUIRED · pass 2 -> 0" "15 …then one line per record"
 has "$RL_OUT" "  declined — round from ${H1:0:12}, pass 1: \`f.sh:3\`: \`could be more thorough\` — \`a shape, not a defect\`" \
@@ -1321,9 +1394,41 @@ cp "$S/review-loop-pr7-${H2:0:12}.tsv" "$S/review-loop-pr7-aaaaaaaaaaaa.tsv"
 prl "$d" review-loop summary --pr 7 .claude/state
 has "$RL_OUT" "round from aaaaaaaaaaaa (position unknown" "15 a round whose head no longer resolves is listed last, and says so"
 rm -f "$S/review-loop-pr7-aaaaaaaaaaaa.tsv"
+# A run marker that exists and cannot be read answers nothing about whose the run record is.
+marker "$S" "https://github.com/o/r/pull/7"
+printf '{"prUrl": ' > "$S/implement-issue-active.json"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 summary refuses (20) a run marker it cannot read — never a summary without the run's passes"
+printf '[]\n' > "$S/implement-issue-active.json"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 …and one that is not a marker object"
+rm -f "$S/implement-issue-active.json"
+prl "$d" review-loop summary --pr 7 .claude/state
+has "$RL_OUT" "not counted — a run record is here with no run marker" "15 a run record with no marker beside it is left out, and the line says why"
+marker "$S" "https://github.com/o/r/pull/7"
+# Membership and the reads happen under the loop's lock.
+mkdir "$S/.review-loop-mutex"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 20 "15 summary reads under the loop's lock, and refuses (20) when it cannot take it"
+rmdir "$S/.review-loop-mutex"
 printf 'bogus\tx\n' >> "$S/review-loop-pr7-${H2:0:12}.tsv"
 prl "$d" review-loop summary --pr 7 .claude/state
 eq "$RL_RC" 18 "15 summary refuses (18) when a round record does not parse — never a partial run"
+# Every REQUIRED finding has an outcome: 3 on tree A (one declined), 2 on A again, then 1 on B, open.
+e="$(fixture)"; script "$e" req:3 req:2 req:1
+rl "$e" pass .claude/state codex
+rl "$e" decline --reason 'a shape' --site f.sh:1 --finding 'x' .claude/state
+rl "$e" pass .claude/state codex
+commit_fix "$e" b
+rl "$e" pass .claude/state codex
+rl "$e" summary .claude/state
+has "$RL_OUT" "REQUIRED per pass: 3, 2, 1 — fixed: 4 · superseded: 0 · declined: 1 · deferred: 0 · carried: 0 · open: 1" \
+   "15 the outcomes add up to the REQUIRED total: 3 + 2 + 1 = 4 fixed + 1 declined + 1 open"
+e="$(fixture)"; script "$e" req:2 req:0
+rl "$e" pass .claude/state codex
+rl "$e" pass .claude/state codex
+rl "$e" summary .claude/state
+has "$RL_OUT" "REQUIRED per pass: 2, 0 — fixed: 0 · superseded: 2 · " "15 a finding a later pass on the same tree no longer raised is superseded, never dropped from the totals"
 
 # =============================== 16. the reviewer brief (#618) ==================================
 d="$(fixture)"; script "$d" req:0

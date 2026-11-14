@@ -1292,8 +1292,9 @@ the trend stays invisible for exactly the multi-round loop it is meant to measur
 **The local review is reported whole, not only per round (#618).** Each round's row ends with that
 round's loop line; the block under the rows covers the run — `/implement-issue`'s passes when its
 record is still in this checkout and its run marker names this PR, then every round's, oldest
-first: total passes, each pass's REQUIRED count, and how each finding ended (fixed, declined with
-its reason, deferred with its issue, carried). Render it; never assemble it by hand:
+first: total passes, each pass's REQUIRED count, and how each finding ended (fixed, superseded,
+declined with its reason, deferred with its issue, carried, or still open). Render it; never
+assemble it by hand:
 
 ```bash
 WHOLE_RUN="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .gemini/state)"; WRC=$?
@@ -1303,10 +1304,12 @@ case "$WRC" in
 esac
 ```
 
-`fixed` is derived — the REQUIRED findings of a pass that a later pass over a changed tree
-followed, less those declined, deferred or carried — and it counts per pass, so a finding the
-next pass raised again is counted again. The records are run state that `/cleanup` sweeps; this
-summary is where the figures survive.
+`fixed`, `superseded` and `open` are derived from the passes — a pass's REQUIRED findings, less
+those declined, deferred or carried, are fixed when any later pass read a changed tree, superseded
+when later passes only re-read the same tree, and open when the pass is the record's latest — and
+they count per pass, so a finding the next pass raised again is counted again. Together with the
+recorded outcomes they add up to the sum of every pass's REQUIRED count. The records are run state
+that `/cleanup` sweeps; this summary is where the figures survive.
 
 **Each row carries the round's declines beside its findings (#438).** A round that declined
 everything reads `0 findings` with `declined: 6` under it, not as a round with nothing in it. The

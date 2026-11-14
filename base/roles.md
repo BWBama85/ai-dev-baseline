@@ -330,7 +330,8 @@ findings left, each is carried with the severity step 9's triage gives it: MEDIU
 final pass blocks the run.
 
 `0` disables the loop and every summary says so. An empty `local_passes`, a leading zero, a
-non-integer and anything past **10** are hard errors, never the built-in **3**.
+non-integer other than the string `"until-clean"` (below) and anything past **10** are hard errors,
+never the built-in **3**.
 `ADB_LOCAL_REVIEW_PASSES` overrides for one run under the same rules, except that an empty or unset
 variable means "not overridden"; the key layers repo → global. `role-dispatch.sh local-passes` reads it.
 
@@ -353,9 +354,14 @@ calls goes under a `PRE-EXISTING` heading that the verdict does not count.
 
 `review-loop report` prints one record's line — the total passes, each pass's REQUIRED count, the
 verdict, and how the findings ended — and `review-loop summary [--pr N]` prints the run whole,
-across `/implement-issue` and every resolver round. `fixed` in both is derived, never recorded:
-the REQUIRED findings of a pass that a later pass over a changed tree followed, less those
-declined, deferred or carried. It counts per pass, so a finding raised again is counted again.
+across `/implement-issue` and every resolver round. Every REQUIRED finding is accounted for. A
+finding with a row is **declined**, **deferred** or **carried**, and the line names each one, on a
+blocked line too. The rest are derived from the passes, never recorded: **fixed** when any later
+pass read a changed tree, **superseded** when later passes only re-read the same tree (that
+pass's count no longer stands), and **open** when the pass is the latest. The counts are per
+pass, so a finding raised again is counted again; together they add up to the sum of every
+pass's REQUIRED count. One finding — its site, occurrence and text — ends one way: it cannot be
+carried twice at two severities, or both carried and deferred.
 
 ## Scope: bespoke orchestration stays project-scoped
 

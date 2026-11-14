@@ -26,10 +26,14 @@ only by a release it upgrades to. These entries are the notes for both.
   total passes and ends with how the findings ended (`fixed`, each declined finding with its
   reason, each deferred one with its issue), on blocked lines too. A new `review-loop summary
   [--pr N]` prints a run whole, across `/implement-issue` and every resolver round, oldest first;
-  `/resolve-pr-threads` puts it in its closing summary. `fixed` is derived: the REQUIRED findings
-  of a pass that a later pass over a changed tree followed, less those declined, deferred or
-  carried, counted per pass. Under `"until-clean"` a reviewer that becomes unusable after a pass
-  blocks the run (39).
+  `/resolve-pr-threads` puts it in its closing summary. Every REQUIRED finding is accounted for:
+  beside the recorded outcomes, `fixed` (any later pass read a changed tree), `superseded` (later
+  passes only re-read the same tree) and `open` (the latest pass) are derived per pass, and the
+  outcomes add up to the sum of the passes' REQUIRED counts. Carried findings are now named on
+  every line that follows them, a blocked or later converged one included. One finding (site,
+  occurrence, text) ends one way: a second carry of it at another severity is refused, where it
+  used to count twice. A pass is reserved only when the record has room for its result as well.
+  Under `"until-clean"` a reviewer that becomes unusable after a pass blocks the run (39).
 - **A question to the operator carries a recommendation and uses the structured question tool
   (#617).** A new practice, `asking-the-operator.md`: every question names the option the agent
   would take and why; when the turn has a structured question tool (`AskUserQuestion` in Claude
@@ -38,6 +42,8 @@ only by a release it upgrades to. These entries are the notes for both.
   `/implement-issue` asks a blocking gap finding and a close-out decision that way,
   `/resolve-pr-threads` a hand-back that needs a decision, and `/roadmap` asks its `?` questions
   and any `!` owner-action that is a choice after its printed block, which still ends on `Next:`.
+  A `/roadmap` `?` line now carries `Recommend: <answer> — <why>` before `Record:`, so it states
+  a recommendation where there is no tool to ask through.
   `self-review.md` checks the hand-back. There is no config key and no lint.
 
 - **The installer adds a curated command allowlist, and `/adopt` audits what would still prompt

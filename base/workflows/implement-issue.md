@@ -565,11 +565,12 @@ A second finding identical to one already carried (same site, severity and line)
 `decline` and `defer` take `--occurrence` the same way.
 
 Then the report, which is the loop's verdict and its one line: the total passes, each pass's
-REQUIRED count, the verdict, and how the findings ended — `fixed` (derived: the REQUIRED findings of
-a pass that a later pass over a changed tree followed, less those declined, deferred or carried;
-counted per pass, so a finding raised again is counted again), each declined finding with its
-reason, each deferred one with its issue. Paste the line into the PR body and the close-out
-**verbatim**; it is rendered from the record, never written by hand:
+REQUIRED count, the verdict, and how the findings ended — each declined finding with its reason,
+each deferred one with its issue, each carried one with its severity, and two derived counts:
+`fixed` (the REQUIRED findings, less those with a row, of a pass that any later pass followed on a
+changed tree) and `superseded` (those of a pass that later passes only re-read on the same tree).
+Both count per pass, so a finding raised again is counted again. Paste the line into the PR body
+and the close-out **verbatim**; it is rendered from the record, never written by hand:
 
 ```bash
 {{IMPLEMENT_LIB}} review-loop report {{STATE_DIR}}
