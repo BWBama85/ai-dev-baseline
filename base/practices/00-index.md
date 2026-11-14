@@ -14,6 +14,7 @@ Each file covers exactly one concern:
 | `ci-discipline.md` | Diagnose-before-rerun; no flaky-CI gambling |
 | `issues-and-scope.md` | Track deferred work that matters — and nothing else |
 | `handling-the-unknown.md` | Classify → place → record → escalate the unknown; no improvised one-offs |
+| `asking-the-operator.md` | A question to the operator carries a recommendation and uses the harness's structured question tool when there is one |
 | `repo-scope.md` | Confirm work belongs to *this* repo before starting |
 | `debugging.md` | Evidence-backed root cause, not guesses |
 | `self-review.md` | Mandatory pre-PR self-review pass |

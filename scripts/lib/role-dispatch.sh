@@ -691,7 +691,9 @@ adb_dispatch_max_rounds() {
 # adb_dispatch_local_passes [--with-source] — the local convergence loop's pass budget (#491):
 # `ADB_LOCAL_REVIEW_PASSES` (one run), else `[reviewers] local_passes` layered repo → global.
 #
-#   0 + <n>  usable: 0 (the loop is disabled) through 10. `--with-source` prints `<n> <env|repo|global>`
+#   0 + <n>  usable: 0 (the loop is disabled) through 10, or the word `until-clean` (#618): no pass
+#            budget, the loop ends only on a clean pass. `--with-source` prints
+#            `<n|until-clean> <env|repo|global>`
 #   3        declared nowhere — the CALLER applies its built-in default and names it as such
 #   2        declared but unusable — a HARD ERROR, never the default. Each shape has its own message:
 #            empty, not a plain integer, a leading zero, and out of range (past 10)
@@ -699,6 +701,10 @@ adb_dispatch_max_rounds() {
 # The env var follows the one-run-override contract: unset or empty means "not overridden"; a
 # non-empty value is validated exactly like the key. `0` is matched as the exact string before the
 # leading-zero rule, so `00` is refused rather than read as the sentinel.
+#
+# `until-clean` HAS ONE SPELLING PER SURFACE: the TOML string `"until-clean"` in a manifest (the
+# reader hands a string over with its quotes) and the bare word in the env var. A bare word in a
+# manifest is not TOML and a quoted one in the env var is not the word, so each is refused.
 _ADB_RD_LOCAL_PASSES_MAX=10
 adb_dispatch_local_passes() {
   local raw layer="" with_source=0 _rc what
@@ -710,13 +716,17 @@ adb_dispatch_local_passes() {
     case "$_rc" in 0) ;; 1) return 3 ;; *) _adb_rd_read_failed "$_rc"; return 2 ;; esac
     layer="${raw%% *}"; raw="${raw#* }"; what="[reviewers].local_passes"
   fi
+  if { [ "$layer" = env ] && [ "$raw" = until-clean ]; } || { [ "$layer" != env ] && [ "$raw" = '"until-clean"' ]; }; then
+    if [ "$with_source" -eq 1 ]; then printf 'until-clean %s\n' "$layer"; else printf 'until-clean\n'; fi
+    return 0
+  fi
   case "$raw" in
     ''|'""'|"''")
-      printf 'role-dispatch: %s is empty — write 0 to disable the local review loop, or a pass budget of 1-%s\n' \
+      printf 'role-dispatch: %s is empty — write 0 to disable the local review loop, a pass budget of 1-%s, or until-clean\n' \
         "$what" "$_ADB_RD_LOCAL_PASSES_MAX" >&2
       return 2 ;;
     *[!0-9]*)
-      printf 'role-dispatch: %s must be a plain decimal integer 0-%s — no quotes, sign or underscores (got %s)\n' \
+      printf 'role-dispatch: %s must be a plain decimal integer 0-%s — no quotes, sign or underscores — or until-clean, written "until-clean" in a manifest and bare in the env var (got %s)\n' \
         "$what" "$_ADB_RD_LOCAL_PASSES_MAX" "$(adb_display_value "$raw")" >&2
       return 2 ;;
     0)  ;;
@@ -726,7 +736,7 @@ adb_dispatch_local_passes() {
   esac
   # Length first: an 18+ digit value would overflow the comparison below.
   if [ "${#raw}" -gt 2 ] || [ "$raw" -gt "$_ADB_RD_LOCAL_PASSES_MAX" ]; then
-    printf 'role-dispatch: %s is out of range — 0 disables the loop, and a budget may be at most %s passes (got %s)\n' \
+    printf 'role-dispatch: %s is out of range — 0 disables the loop, a budget may be at most %s passes, and until-clean sets none (got %s)\n' \
       "$what" "$_ADB_RD_LOCAL_PASSES_MAX" "$(adb_display_value "$raw")" >&2
     return 2
   fi

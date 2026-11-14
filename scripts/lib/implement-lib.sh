@@ -186,8 +186,14 @@
 #                                           # reserve a NATIVE pass before its subagent runs
 #   implement-lib.sh review-loop carry [--pr N --head SHA] --severity S --site P --finding T <state-dir>
 #                                           # record one REQUIRED finding pushed unfixed on exhaustion
+#   implement-lib.sh review-loop defer [--pr N --head SHA] --issue N --site P --finding T <state-dir>
+#   implement-lib.sh review-loop decline [--pr N --head SHA] --reason R --site P --finding T <state-dir>
+#                                           # #618: end one REQUIRED finding without a fix — filed, or
+#                                           # declined with its reason
 #   implement-lib.sh review-loop report [--pr N --head SHA] <state-dir>
 #                                           # the loop's one line and its push-or-block verdict
+#   implement-lib.sh review-loop summary [--pr N] <state-dir>
+#                                           # #618: every record of the run — passes, counts, dispositions
 #   implement-lib.sh open-pr <state-dir> --title <t> --body-file <f> [--closes n,m]
 #                                           # step 10: push, create, PROVE closing links, guard, arm.
 #                                           # 39: the local review loop does not certify the tip
@@ -3165,14 +3171,15 @@ cmd_dispatch_review() {
     return 20
   fi
   {
-    printf '%s\n\n' 'You are the independent code reviewer for the diff below. Work through this ordered checklist and report EVERYTHING you find — filter nothing, and do not withhold low-confidence findings (triage is the next step'\''s job, not yours). Every finding carries a `file:line` and an explicit REQUIRED or OPTIONAL mark.'
+    printf '%s\n\n' 'You are the independent code reviewer for the diff below. Work through this ordered checklist and report EVERYTHING you find — filter nothing, and do not withhold low-confidence findings (triage is the next step'\''s job, not yours). Every finding carries a `file:line` and an explicit REQUIRED or OPTIONAL mark, or sits under the PRE-EXISTING heading described below.'
+    printf '%s\n\n' 'WHAT REQUIRED MEANS HERE: a defect this diff INTRODUCES, or one it makes REACHABLE — a path, input or caller that did not reach the defective code before this diff. A defect in code this diff does not change and only calls, which was there before it and which it does not make newly reachable, is NOT a REQUIRED or OPTIONAL finding of this review: report it under a separate heading `PRE-EXISTING`, placed after the findings and before the verdict trailer, with its `file:line` and one line saying why it predates the diff, so it can be filed instead of fixed in place. When you cannot tell which side a defect is on, mark it REQUIRED and say what you could not establish.'
     printf '%s\n' '1. CORRECTNESS / EDGE CASES — empty, single, zero, negative, max, unicode; escaping wherever a value crosses a syntax boundary; off-by-one; idempotency; resource leaks.'
     printf '%s\n' '2. REUSE — does this re-implement a primitive that already exists? Name the existing home. (This repo'\''s law: source the shared primitive, never copy it.)'
     printf '%s\n' '3. ALTITUDE — is the fix at the right depth, or a bandaid on shared infrastructure?'
     printf '%s\n' '4. CAN A NEW GUARD ACTUALLY FAIL? — a check added by this diff must be shown capable of going red; a gate that cannot answer wrong is worse than no gate.'
     printf '%s\n' '5. DOCUMENTATION CONFORMANCE — where the diff uses somebody else'\''s API, service or framework, is it used the way that vendor documents? Not only does-this-exist but is-this-the-recommended-shape.'
     printf '%s\n\n' '6. CLAIM INTEGRITY — does every factual assertion the diff ADDS hold? Check changelog/decision/commit sentences against the diff itself; a cited identifier must be the thing it is claimed to be.'
-    printf '%s\n\n' 'FINAL CHECK, before finishing: confirm every acceptance criterion is either satisfied by this diff or named as unmet, and that each finding is marked REQUIRED or OPTIONAL.'
+    printf '%s\n\n' 'FINAL CHECK, before finishing: confirm every acceptance criterion is either satisfied by this diff or named as unmet, and that each finding is marked REQUIRED or OPTIONAL, or listed under PRE-EXISTING.'
   } 1>&"$_rpfd" 2>/dev/null || { exec {_rpfd}>&-; rm -f "$pft"; printf 'implement-lib: could not write %s\n' "$pf" >&2; return 20; }
   # THE PROMOTED CHECKLIST (#487), through the one helper the survey and gap prompts already use,
   # with its identical NOTE-never-fatal rc contract. The code reviewer was the ONLY dispatched
@@ -3182,7 +3189,7 @@ cmd_dispatch_review() {
   # and anything appended after it falsifies the prompt's own description of its layout.
   _il_append_checklist "$_rpfd" "the code review"
   {
-    printf '\n%s\n' 'FINISH WITH THE VERDICT TRAILER. The LAST line of your reply must be exactly `ADB-REVIEW-VERDICT v1 required=<N> optional=<M>`, where N and M are how many REQUIRED and OPTIONAL findings you reported above, as plain integers with no leading zeros. Write an explicit 0 rather than omitting a count. Put it nowhere else in the reply — not quoted, not indented, not inside a code fence — and write it once: a second copy, or a missing one, refuses the whole result.'
+    printf '\n%s\n' 'FINISH WITH THE VERDICT TRAILER. The LAST line of your reply must be exactly `ADB-REVIEW-VERDICT v1 required=<N> optional=<M>`, where N and M are how many REQUIRED and OPTIONAL findings you reported above, as plain integers with no leading zeros; a PRE-EXISTING item counts toward neither. Write an explicit 0 rather than omitting a count. Put it nowhere else in the reply — not quoted, not indented, not inside a code fence — and write it once: a second copy, or a missing one, refuses the whole result.'
     # THE SENTENCE MUST DESCRIBE THE PROMPT THAT IS ACTUALLY BUILT. An unlinked PR carries no
     # criteria (#489), and promising them anyway tells the reviewer to check the diff against
     # segments that never arrive — the prompt asserting its own layout wrongly.
@@ -4020,8 +4027,8 @@ cmd_sweep_mark() {
 }
 
 # _il_open_pr_loop_gate <state-dir> — may open-pr push the current tip, by the local convergence
-# loop's own verdict? 0 when `review-loop report` returns a push-able code (0 converged · 33
-# exhausted with MEDIUM/LOW carried · 35 disabled or no reviewer), or when the loop is disabled
+# loop's own verdict? 0 when `review-loop report` returns a push-able code (0 converged or settled ·
+# 33 exhausted with MEDIUM/LOW carried · 35 disabled or no reviewer), or when the loop is disabled
 # (`local_passes = 0`) and nothing was recorded. 1 otherwise, the reason said on stderr.
 _il_open_pr_loop_gate() {
   local dir="$1" bud out rc
@@ -4577,7 +4584,12 @@ cmd_sweep_identity() {
 #   review-loop pass   --published [--pr N --head SHA] <state-dir> <token>   …record its reply
 #   review-loop carry  [--pr N --head SHA] --severity critical|high|medium|low --site <path[:line]>
 #                      [--occurrence K] --finding <text | - (one line on stdin)> <state-dir>
+#   review-loop defer   [--pr N --head SHA] --issue <n> --site <path[:line]> [--occurrence K]
+#                       --finding <text | -> <state-dir>
+#   review-loop decline [--pr N --head SHA] --reason <text> --site <path[:line]> [--occurrence K]
+#                       --finding <text | -> <state-dir>
 #   review-loop report [--pr N --head SHA] <state-dir>
+#   review-loop summary [--pr N] <state-dir>
 #
 # THE RECORD is `review-loop.tsv` for an /implement-issue run, or `review-loop-pr<N>-<sha12>.tsv` for
 # one /resolve-pr-threads round, keyed by the first 12 hex of the pushed head the round started from
@@ -4585,11 +4597,14 @@ cmd_sweep_identity() {
 # event, TAB-separated, validated WHOLE by every reader (and never written past its 1 MiB bound):
 #   start <n> <budget> <tree> <token>             dispatched pass n reserved against its tree
 #   begin <n> <budget> <tree> <token>             native pass n reserved against its tree
+#                                                 (<budget> is 1-10, or `until-clean`)
 #   done  <n> <tree> <required> <optional> <review-sha256>
 #   fail  <n> <rc|-> dispatch|verdict|moved|missing|unbound|interrupted
 #   off   env|repo|global                         local_passes = 0: nothing dispatched
 #   none  deferred|none                           no usable reviewer: nothing dispatched
 #   carry <n> critical|high|medium|low <site> <occurrence> <finding>
+#   defer <n> <issue> <site> <occurrence> <finding>
+#   decline <n> <site> <occurrence> <finding> <reason>
 #
 # A PASS REVIEWS A COMMITTED, BOUND TREE. It refuses a dirty worktree (27): the review reads the
 # worktree and a push ships HEAD, so only a clean tree makes the two the same. Its digest
@@ -4604,6 +4619,24 @@ cmd_sweep_identity() {
 # THE BUDGET IS READ LIVE on every call (`role-dispatch.sh local-passes`, built-in 3). Once any pass
 # exists, a budget of 0 or an unavailable reviewer means EXHAUSTED rather than "disabled": neither
 # can launder a failed final pass or a carried CRITICAL/HIGH into a push.
+#
+# `until-clean` IS NO BUDGET (#618): no pass is refused as spent and none is the last, so 33, 37 and
+# 38 are unreachable under it and `carry` has nothing to carry. A reviewer lost after a pass BLOCKS
+# (39) rather than exhausting: nothing can then take the pass the setting asks for. What still
+# bounds it is each dispatch's own deadline and the record's 1 MiB bound.
+#
+# A REQUIRED FINDING ENDS ONE OF FOUR WAYS, and only the first changes the tree: FIXED, and read
+# again by the next pass; DECLINED, with the reason; DEFERRED, with the issue filed for it; or
+# CARRIED, on exhaustion. `decline` and `defer` are taken against the latest `done` pass, budget
+# left or not. A pass whose EVERY REQUIRED finding is declined or deferred, on the tree it read, is
+# SETTLED, and certifies that tree as a clean pass does (`report` 0). One finding — (site,
+# occurrence, text) — takes one disposition, and a pass never takes more of them than it declared
+# REQUIRED findings; the reader enforces both. Like a carry, a disposition is the driver's
+# attestation: nothing proves the row names a finding the review actually made.
+#
+# FIXED IS DERIVED, never recorded: a `done` pass followed by a later `done` pass over a DIFFERENT
+# tree counts its REQUIRED findings as fixed, less those declined, deferred or carried. It counts
+# per pass, so a finding the next pass raises again is counted by both.
 #
 # A CARRIED FINDING IS (site, severity, occurrence, text): two REQUIRED findings may share their
 # wording, and even their site, and still be two findings — the second is carried with
@@ -4626,14 +4659,25 @@ cmd_sweep_identity() {
 #         record or the budget does not parse · 20 unreadable, unwritable, or no tree digest · 2 usage
 # begin:  0 reserved · 35 · 38 · 27 · 16 · 18 · 20 · 2, as pass
 # carry:  0 · 10 this exact row is already recorded · 17 nothing to carry (the loop is not exhausted,
-#         or the final pass's REQUIRED count is already carried) · 19 a refused field, or a row that
-#         would take the record past its bound · 18 · 20 · 2
-# report: prints ONE line, rendered from the record. 0 converged on the current tree · 33 exhausted,
-#         every REQUIRED finding carried, none CRITICAL/HIGH: push, and the line names what was
-#         carried · 35 disabled, or no usable reviewer, before any pass · 34 not terminal: take
-#         another pass · 39 BLOCK (a carried CRITICAL/HIGH, fewer carries than the final pass
-#         declared, a failed final pass, or a tree change after the final pass) · 27 the worktree is not
-#         clean · 11 nothing recorded · 16 · 18 · 20 · 2
+#         or every REQUIRED finding of the final pass already has a disposition) · 19 a refused field,
+#         a finding already declined or deferred, or a row that would take the record past its bound
+#         · 18 · 20 · 2
+# defer, decline: 0 · 10 this exact row is already recorded · 17 nothing to disposition (the latest
+#         pass is not a finished one with REQUIRED findings, or every one it declared already has a
+#         disposition) · 19 a refused field, a finding that already ended another way, or a row
+#         that would take the record past its bound · 18 · 20 · 2
+# report: prints ONE line, rendered from the record: the passes, the verdict, and how the record's
+#         REQUIRED findings ended. 0 converged on the current tree, or settled on it · 33 exhausted,
+#         every REQUIRED finding carried, declined or deferred, no carry CRITICAL/HIGH: push, and
+#         the line names each · 35 disabled, or no usable reviewer, before any pass · 34 not
+#         terminal: take another pass · 39 BLOCK (a carried CRITICAL/HIGH, fewer dispositions than
+#         the final pass declared, a failed final pass, a tree change after the final pass, or
+#         until-clean with no usable reviewer) · 27 the worktree is not clean · 11 nothing recorded
+#         · 16 · 18 · 20 · 2
+# summary: prints the whole run — every record in <state-dir> that belongs to it, oldest first: the
+#         run's own (`review-loop.tsv`; with --pr, only when the run marker names that PR) and, with
+#         --pr, each round's. It reports and never decides. 0 · 11 nothing recorded · 18 a record
+#         does not parse · 20 · 2
 _IL_LOOP_MUTEX=".review-loop-mutex"
 _IL_LOOP_MAX_BYTES=1048576
 _IL_LOOP_DEFAULT=3
@@ -4651,19 +4695,30 @@ _il_loop_budget() {
   esac
 }
 
+# RL_USED[n] counts every disposition of pass n (carry, defer, decline); RL_DNUM[n] the declined and
+# deferred alone, which are the ones that can settle a pass.
 _il_loop_reset() {
   RL_PASSES=0; RL_OPEN=""; RL_OPEN_KIND=""; RL_OPEN_TOKEN=""; RL_LAST=""; RL_NONE=""
   RL_TREE=(); RL_OUT=(); RL_REQ=(); RL_RC=(); RL_WHY=()
   RL_CN=(); RL_CSEV=(); RL_CSITE=(); RL_COCC=(); RL_CTXT=()
+  RL_DN=(); RL_DKIND=(); RL_DSITE=(); RL_DOCC=(); RL_DTXT=(); RL_DARG=()
+  RL_USED=(); RL_DNUM=()
 }
+
+# _il_loop_unbounded <budget> — is the budget `until-clean`?
+_il_loop_unbounded() { [ "$1" = until-clean ]; }
+
+# _il_loop_issue_ok <n> — an issue number: 1-10 digits, no leading zero.
+_il_loop_issue_ok() { [[ "$1" =~ ^[1-9][0-9]{0,9}$ ]]; }
 
 # _il_loop_parse <record> — validate the record whole and load it into the RL_* globals.
 # 0 · 18 (a byte rule, a row outside the grammar, or an event out of order) · 20 (unreadable).
 # Absent is the caller's question, not this function's.
 _il_loop_parse() {
-  local f="$1" line n want k
-  local -A seen=()
-  local -a ccount=()
+  local f="$1" line n want k k2 site occ txt arg
+  # `taken` maps a finding — (pass, site, occurrence, text) — to how it ended, so one finding cannot
+  # be both carried and declined or deferred.
+  local -A seen=() taken=()
   _il_loop_reset
   adb_bytes_whole "$f" "$_IL_LOOP_MAX_BYTES" || return $?
   while IFS= read -r line; do
@@ -4673,9 +4728,9 @@ _il_loop_parse() {
         [ -z "$RL_OPEN" ] || return 18
         n="${ADB_SWEEP_F[1]}"; want=$((RL_PASSES + 1))
         [ "$n" = "$want" ] || return 18
-        [[ "${ADB_SWEEP_F[2]}" =~ ^([1-9]|10)$ ]] || return 18
+        [[ "${ADB_SWEEP_F[2]}" =~ ^([1-9]|10|until-clean)$ ]] || return 18
         # A pass is only ever reserved WITHIN the budget it ran under; the writer cannot emit more.
-        [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18
+        _il_loop_unbounded "${ADB_SWEEP_F[2]}" || [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18
         [[ "${ADB_SWEEP_F[3]}" =~ ^[0-9a-f]{64}$ ]] || return 18
         [[ "${ADB_SWEEP_F[4]}" =~ ^[a-z][a-z0-9-]{0,31}$ ]] || return 18
         RL_PASSES="$n"; RL_OPEN="$n"; RL_OPEN_KIND="${ADB_SWEEP_F[0]}"; RL_OPEN_TOKEN="${ADB_SWEEP_F[4]}"
@@ -4722,9 +4777,37 @@ _il_loop_parse() {
         k="$n"$'\t'"${ADB_SWEEP_F[2]}"$'\t'"${ADB_SWEEP_F[3]}"$'\t'"${ADB_SWEEP_F[4]}"$'\t'"${ADB_SWEEP_F[5]}"
         [ -z "${seen[$k]:-}" ] || return 18
         seen[$k]=1
-        ccount[n]=$(( ${ccount[n]:-0} + 1 ))
-        [ "${ccount[n]}" -le "${RL_REQ[n]}" ] || return 18
+        k2="$n"$'\t'"${ADB_SWEEP_F[3]}"$'\t'"${ADB_SWEEP_F[4]}"$'\t'"${ADB_SWEEP_F[5]}"
+        [ "${taken[$k2]:-carry}" = carry ] || return 18
+        taken[$k2]=carry
+        RL_USED[n]=$(( ${RL_USED[n]:-0} + 1 ))
+        [ "${RL_USED[n]}" -le "${RL_REQ[n]}" ] || return 18
         RL_CN+=("$n"); RL_CSEV+=("${ADB_SWEEP_F[2]}"); RL_CSITE+=("${ADB_SWEEP_F[3]}"); RL_COCC+=("${ADB_SWEEP_F[4]}"); RL_CTXT+=("${ADB_SWEEP_F[5]}") ;;
+      defer$'\t'*|decline$'\t'*)
+        adb_sweep_split "$line" 6 || return 18
+        [ -z "$RL_OPEN" ] || return 18
+        n="${ADB_SWEEP_F[1]}"
+        # Against the latest pass only, which must be a `done` with REQUIRED findings — as a carry is.
+        # The equality comes FIRST: `n` is record text until it has matched the pass counter, and
+        # an array subscript is evaluated as arithmetic.
+        [ "$n" = "$RL_PASSES" ] || return 18
+        [ "${RL_OUT[n]:-}" = "done" ] && [ "${RL_REQ[n]}" -gt 0 ] || return 18
+        if [ "${ADB_SWEEP_F[0]}" = defer ]; then
+          arg="${ADB_SWEEP_F[2]}"; site="${ADB_SWEEP_F[3]}"; occ="${ADB_SWEEP_F[4]}"; txt="${ADB_SWEEP_F[5]}"
+          _il_loop_issue_ok "$arg" || return 18
+        else
+          site="${ADB_SWEEP_F[2]}"; occ="${ADB_SWEEP_F[3]}"; txt="${ADB_SWEEP_F[4]}"; arg="${ADB_SWEEP_F[5]}"
+          _il_loop_finding_ok "$arg" || return 18
+        fi
+        _il_loop_site_ok "$site" || return 18
+        [[ "$occ" =~ ^[1-9][0-9]{0,3}$ ]] || return 18
+        _il_loop_finding_ok "$txt" || return 18
+        k2="$n"$'\t'"$site"$'\t'"$occ"$'\t'"$txt"
+        [ -z "${taken[$k2]:-}" ] || return 18
+        taken[$k2]="${ADB_SWEEP_F[0]}"
+        RL_USED[n]=$(( ${RL_USED[n]:-0} + 1 )); RL_DNUM[n]=$(( ${RL_DNUM[n]:-0} + 1 ))
+        [ "${RL_REQ[n]}" -ge "${RL_USED[n]}" ] || return 18
+        RL_DN+=("$n"); RL_DKIND+=("${ADB_SWEEP_F[0]}"); RL_DSITE+=("$site"); RL_DOCC+=("$occ"); RL_DTXT+=("$txt"); RL_DARG+=("$arg") ;;
       *) return 18 ;;
     esac
   done < "$f" || return 20
@@ -4803,11 +4886,16 @@ _il_loop_context() {
   fi
 }
 
+# _il_loop_names_finding <verb> — does the verb record one finding (and so take --site, --finding
+# and --occurrence)?
+_il_loop_names_finding() { case "$1" in carry|defer|decline) return 0 ;; *) return 1 ;; esac; }
+
 # _il_loop_opts <verb> <args>… — the options every verb shares, plus the verb's own. Sets RL_PR,
-# RL_HEAD, RL_EFFORT, RL_PUBLISHED, RL_UNAVAIL, RL_SEV, RL_FIND and RL_ARGS (the positionals).
+# RL_HEAD, RL_EFFORT, RL_PUBLISHED, RL_UNAVAIL, RL_SEV, RL_FIND, RL_SITE, RL_OCC, RL_ISSUE, RL_REASON
+# and RL_ARGS (the positionals).
 _il_loop_opts() {
   local verb="$1"; shift
-  RL_PR=""; RL_HEAD=""; RL_EFFORT=""; RL_PUBLISHED=0; RL_UNAVAIL=""; RL_SEV=""; RL_FIND=""; RL_SITE=""; RL_OCC=1; RL_ARGS=()
+  RL_PR=""; RL_HEAD=""; RL_EFFORT=""; RL_PUBLISHED=0; RL_UNAVAIL=""; RL_SEV=""; RL_FIND=""; RL_SITE=""; RL_OCC=1; RL_ISSUE=""; RL_REASON=""; RL_ARGS=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --pr)          [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --pr needs a value" >&2; exit 2; }
@@ -4825,12 +4913,16 @@ _il_loop_opts() {
                      RL_UNAVAIL="$2"; shift ;;
       --severity)    [ "$verb" = carry ] && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --severity is a carry option and needs a value" >&2; exit 2; }
                      RL_SEV="$2"; shift ;;
-      --finding)     [ "$verb" = carry ] && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --finding is a carry option and needs a value" >&2; exit 2; }
+      --finding)     _il_loop_names_finding "$verb" && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --finding is a carry, defer or decline option and needs a value" >&2; exit 2; }
                      RL_FIND="$2"; shift ;;
-      --site)        [ "$verb" = carry ] && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --site is a carry option and needs a value" >&2; exit 2; }
+      --site)        _il_loop_names_finding "$verb" && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --site is a carry, defer or decline option and needs a value" >&2; exit 2; }
                      RL_SITE="$2"; shift ;;
-      --occurrence)  [ "$verb" = carry ] && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --occurrence is a carry option and needs a value" >&2; exit 2; }
+      --occurrence)  _il_loop_names_finding "$verb" && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --occurrence is a carry, defer or decline option and needs a value" >&2; exit 2; }
                      RL_OCC="$2"; shift ;;
+      --issue)       [ "$verb" = defer ] && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --issue is a defer option and needs a value" >&2; exit 2; }
+                     RL_ISSUE="$2"; shift ;;
+      --reason)      [ "$verb" = decline ] && [ "$#" -ge 2 ] || { echo "implement-lib: review-loop: --reason is a decline option and needs a value" >&2; exit 2; }
+                     RL_REASON="$2"; shift ;;
       --)            shift; RL_ARGS+=("$@"); break ;;
       -*)            echo "implement-lib: review-loop $verb: unknown option '$1'" >&2; exit 2 ;;
       *)             RL_ARGS+=("$1") ;;
@@ -4843,14 +4935,20 @@ _il_loop_opts() {
 }
 
 # _il_loop_exhausted <budget> — no further pass can be taken: the budget is spent, or it is now 0,
-# or the reviewer is unavailable. Reads the loaded record.
+# or the reviewer is unavailable. Never under until-clean, which has no last pass. Reads the loaded
+# record.
 _il_loop_exhausted() {
+  _il_loop_unbounded "$1" && return 1
   [ "$1" -eq 0 ] || [ "$RL_LAST" = none ] || [ "$RL_PASSES" -ge "$1" ]
 }
 
-# _il_loop_passes_text — the per-pass half of the rendered line, oldest first.
+# _il_loop_passes_text [bare] — the per-pass half of the rendered line, oldest first, led by the
+# total (`3 passes · `) unless `bare`. Empty when no pass was taken.
 _il_loop_passes_text() {
-  local n out="" sep="" first=1
+  local n out="" sep="" first=1 lead=""
+  if [ "${1:-}" != bare ] && [ "$RL_PASSES" -gt 0 ]; then
+    if [ "$RL_PASSES" -eq 1 ]; then lead="1 pass · "; else lead="$RL_PASSES passes · "; fi
+  fi
   for (( n = 1; n <= RL_PASSES; n++ )); do
     if [ "${RL_OUT[n]:-}" = "done" ]; then
       if [ "$first" -eq 1 ]; then out="${out}${sep}pass $n -> ${RL_REQ[n]} REQUIRED"; first=0
@@ -4864,7 +4962,56 @@ _il_loop_passes_text() {
     fi
     sep=" · "
   done
+  printf '%s%s' "$lead" "$out"
+}
+
+# _il_loop_fixed — the DERIVED count of fixed findings in the loaded record: for each `done` pass
+# that a later `done` pass over a different tree follows, its REQUIRED count less its dispositions.
+_il_loop_fixed() {
+  local n next="" fixed=0
+  for (( n = RL_PASSES; n >= 1; n-- )); do
+    [ "${RL_OUT[n]:-}" = "done" ] || continue
+    if [ -n "$next" ] && [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then
+      fixed=$(( fixed + RL_REQ[n] - ${RL_USED[n]:-0} ))
+    fi
+    next="$n"
+  done
+  printf '%s' "$fixed"
+}
+
+# _il_loop_span <text> — reviewer-derived text as a code span (see `_il_loop_carried_text`).
+_il_loop_span() { printf '`%s`' "${1//\`/\'}"; }
+
+# _il_loop_disposed_text <kind> — the record's declined or deferred findings, every pass, oldest
+# first: `pass 2 #12 `site`: `text`` for a deferral, `pass 2 `site`: `text` — `reason`` for a
+# decline. Every one is named, for the reason `_il_loop_carried_text` gives.
+_il_loop_disposed_text() {
+  local kind="$1" i out="" sep="" occ
+  for i in "${!RL_DN[@]}"; do
+    [ "${RL_DKIND[i]}" = "$kind" ] || continue
+    occ=""; [ "${RL_DOCC[i]}" = 1 ] || occ=" (occurrence ${RL_DOCC[i]})"
+    if [ "$kind" = defer ]; then
+      out="${out}${sep}pass ${RL_DN[i]} #${RL_DARG[i]} $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}")"
+    else
+      out="${out}${sep}pass ${RL_DN[i]} $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}") — $(_il_loop_span "${RL_DARG[i]}")"
+    fi
+    sep="; "
+  done
   printf '%s' "$out"
+}
+
+# _il_loop_ended_text — how the record's REQUIRED findings ended, as the tail of the rendered line:
+# ` — fixed: F · declined: D (…) · deferred: E (…)`, each part only when it is not zero.
+_il_loop_ended_text() {
+  local i fixed nd=0 nf=0 out="" sep=""
+  fixed="$(_il_loop_fixed)"
+  for i in "${!RL_DN[@]}"; do
+    if [ "${RL_DKIND[i]}" = defer ]; then nf=$((nf + 1)); else nd=$((nd + 1)); fi
+  done
+  if [ "$fixed" -gt 0 ]; then out="fixed: $fixed"; sep=" · "; fi
+  if [ "$nd" -gt 0 ]; then out="${out}${sep}declined: $nd ($(_il_loop_disposed_text decline))"; sep=" · "; fi
+  if [ "$nf" -gt 0 ]; then out="${out}${sep}deferred: $nf ($(_il_loop_disposed_text defer))"; fi
+  [ -z "$out" ] || printf ' — %s' "$out"
 }
 
 # _il_loop_carried_text — the carried findings of the latest pass, for the line a PR body carries.
@@ -4943,7 +5090,7 @@ _il_loop_open() {
 # refusals, then the `start`/`begin` row. Releases the lock on every path. Sets RL_N and RL_T1.
 _il_loop_reserve() {
   local kind="$1" rc
-  if [ "$RL_BUD" -eq 0 ]; then
+  if [ "$RL_BUD" = 0 ]; then
     # `0` can only be DECLARED (the built-in is 3), so its source is always env, repo or global.
     # Not while a native pass is still open: an `off` row there is an event the reader refuses.
     rc=0
@@ -4953,7 +5100,7 @@ _il_loop_reserve() {
     printf 'local review: disabled (local_passes = 0, from %s) — nothing dispatched; report decides\n' "$RL_BSRC"
     return 35
   fi
-  if [ "$RL_PASSES" -ge "$RL_BUD" ]; then
+  if ! _il_loop_unbounded "$RL_BUD" && [ "$RL_PASSES" -ge "$RL_BUD" ]; then
     _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
     printf 'local review: refused — %s of %s budgeted passes already taken (local_passes from %s); nothing dispatched\n' "$RL_PASSES" "$RL_BUD" "$RL_BSRC"
     return 38
@@ -4993,6 +5140,10 @@ _il_loop_reserve() {
     rm -rf "$aside" 2>/dev/null
   fi
   _il_claim_mutex_drop "$RL_DIR" "$_IL_LOOP_MUTEX"
+  if [ "$rc" -eq 19 ]; then
+    printf 'implement-lib: review-loop: %s is at its %s-byte bound — no further pass can be recorded in it\n' "$RL_REC" "$_IL_LOOP_MAX_BYTES" >&2
+    return 20
+  fi
   [ "$rc" -eq 0 ] || { echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20; }
   return 0
 }
@@ -5048,14 +5199,14 @@ _il_loop_finish() {
       printf 'local review: pass %s/%s -> 0 REQUIRED (%s OPTIONAL) — converged on this tree\n' "$n" "$RL_BUD" "$opt"
       return 0
     fi
-    if [ "$n" -lt "$RL_BUD" ]; then
-      printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — fix, commit, and take pass %s\n' "$n" "$RL_BUD" "$req" "$opt" "$((n + 1))"
+    if _il_loop_unbounded "$RL_BUD" || [ "$n" -lt "$RL_BUD" ]; then
+      printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — fix (or decline or defer) each, commit, and take pass %s\n' "$n" "$RL_BUD" "$req" "$opt" "$((n + 1))"
       return 34
     fi
     printf 'local review: pass %s/%s -> %s REQUIRED (%s OPTIONAL) — the budget is spent: carry each REQUIRED finding, then report\n' "$n" "$RL_BUD" "$req" "$opt"
     return 33
   fi
-  if [ "$n" -lt "$RL_BUD" ]; then
+  if _il_loop_unbounded "$RL_BUD" || [ "$RL_BUD" -gt "$n" ]; then
     printf 'local review: pass %s/%s -> FAILED (%s) — a failed pass is never clean; take pass %s\n' "$n" "$RL_BUD" "$why" "$((n + 1))"
     return 36
   fi
@@ -5118,39 +5269,68 @@ cmd_review_loop_pass() {
   _il_loop_finish "$RL_N" "$RL_T1" "$why" "$frc" "$expect"
 }
 
-cmd_review_loop_carry() {
-  _il_loop_opts carry "$@"
-  local dir bud rc i c=0 L
-  [ "${#RL_ARGS[@]}" -eq 1 ] || { echo "implement-lib: review-loop carry needs <state-dir>" >&2; exit 2; }
-  [ -n "$RL_SEV" ] && [ -n "$RL_FIND" ] && [ -n "$RL_SITE" ] || { echo "implement-lib: review-loop carry needs --severity, --site and --finding" >&2; exit 2; }
-  # `--finding -` reads the one line from stdin, so reviewer-derived text never has to survive shell
-  # quoting — a quoted heredoc passes an apostrophe or a `$` through untouched.
+# _il_loop_take_finding <verb> — resolve `--finding -` (ONE line on stdin) into RL_FIND, so
+# reviewer-derived text never has to survive shell quoting. 0 · 19 (more than a line, a NUL, or
+# nothing) · 20.
+_il_loop_take_finding() {
+  local verb="$1"
   if [ "$RL_FIND" = "-" ]; then
     # STAGED TO A FILE, not captured: `$(…)` would drop NUL bytes and trailing newlines before any
     # check saw them. Accepted: no NUL, and at most one newline, as the final byte.
     local _ff _fsz _fnul _fnl
-    _ff="$(mktemp "${TMPDIR:-/tmp}/adb-finding.XXXXXX")" || { echo "implement-lib: review-loop carry: could not stage stdin" >&2; return 20; }
+    _ff="$(mktemp "${TMPDIR:-/tmp}/adb-finding.XXXXXX")" || { echo "implement-lib: review-loop $verb: could not stage stdin" >&2; return 20; }
     # BOUNDED: a pipe held open without supplying the line would otherwise hold the command forever.
     adb_run_bounded 30 5 head -c $(( _IL_LOOP_FINDING_MAX + 2 )) > "$_ff" \
-      || { rm -f "$_ff"; echo "implement-lib: review-loop carry: could not read stdin within 30 s" >&2; return 20; }
+      || { rm -f "$_ff"; echo "implement-lib: review-loop $verb: could not read stdin within 30 s" >&2; return 20; }
     _fsz="$(LC_ALL=C wc -c < "$_ff" | tr -d ' ')"; _fnul="$(LC_ALL=C tr -cd '\000' < "$_ff" | LC_ALL=C wc -c | tr -d ' ')"
     _fnl="$(LC_ALL=C tr -cd '\n' < "$_ff" | LC_ALL=C wc -c | tr -d ' ')"
     if [ "$_fnul" != 0 ] || [ "$_fnl" -gt 1 ] || { [ "$_fnl" = 1 ] && [ "$(tail -c 1 "$_ff" | od -An -tx1 | tr -d ' \n')" != 0a ]; }; then
       rm -f "$_ff"
-      echo "implement-lib: review-loop carry: --finding - reads ONE line with no NUL byte; stdin carried more" >&2
+      echo "implement-lib: review-loop $verb: --finding - reads ONE line with no NUL byte; stdin carried more" >&2
       return 19
     fi
-    [ "$_fsz" -gt 0 ] || { rm -f "$_ff"; echo "implement-lib: review-loop carry: --finding - read nothing from stdin" >&2; return 19; }
+    [ "$_fsz" -gt 0 ] || { rm -f "$_ff"; echo "implement-lib: review-loop $verb: --finding - read nothing from stdin" >&2; return 19; }
     RL_FIND="$(cat "$_ff")"; rm -f "$_ff"
   fi
+  return 0
+}
+
+# _il_loop_finding_fields <verb> — the three fields every recorded finding carries. 0 · 19.
+_il_loop_finding_fields() {
+  _il_loop_finding_ok "$RL_FIND" \
+    || { printf 'implement-lib: review-loop %s: --finding must be 1-%s bytes with no control character\n' "$1" "$_IL_LOOP_FINDING_MAX" >&2; return 19; }
+  _il_loop_site_ok "$RL_SITE" \
+    || { echo "implement-lib: review-loop $1: --site must be a repository-relative path[:line] (or - for none)" >&2; return 19; }
+  [[ "$RL_OCC" =~ ^[1-9][0-9]{0,3}$ ]] \
+    || { echo "implement-lib: review-loop $1: --occurrence must be a positive integer (1-9999)" >&2; return 19; }
+}
+
+# _il_loop_ended_as <pass> — how the finding in RL_SITE/RL_OCC/RL_FIND already ended on <pass>:
+# prints `carry`, `defer` or `decline`, or nothing. Reads the loaded record.
+_il_loop_ended_as() {
+  local i
+  for i in "${!RL_DN[@]}"; do
+    if [ "${RL_DN[i]}" = "$1" ] && [ "${RL_DSITE[i]}" = "$RL_SITE" ] && [ "${RL_DOCC[i]}" = "$RL_OCC" ] && [ "${RL_DTXT[i]}" = "$RL_FIND" ]; then
+      printf '%s' "${RL_DKIND[i]}"; return 0
+    fi
+  done
+  for i in "${!RL_CN[@]}"; do
+    if [ "${RL_CN[i]}" = "$1" ] && [ "${RL_CSITE[i]}" = "$RL_SITE" ] && [ "${RL_COCC[i]}" = "$RL_OCC" ] && [ "${RL_CTXT[i]}" = "$RL_FIND" ]; then
+      printf 'carry'; return 0
+    fi
+  done
+  return 0
+}
+
+cmd_review_loop_carry() {
+  _il_loop_opts carry "$@"
+  local dir bud rc i c=0 L was
+  [ "${#RL_ARGS[@]}" -eq 1 ] || { echo "implement-lib: review-loop carry needs <state-dir>" >&2; exit 2; }
+  [ -n "$RL_SEV" ] && [ -n "$RL_FIND" ] && [ -n "$RL_SITE" ] || { echo "implement-lib: review-loop carry needs --severity, --site and --finding" >&2; exit 2; }
+  _il_loop_take_finding carry || return $?
   case "$RL_SEV" in critical|high|medium|low) : ;;
     *) echo "implement-lib: review-loop carry: --severity must be critical|high|medium|low" >&2; return 19 ;; esac
-  _il_loop_finding_ok "$RL_FIND" \
-    || { printf 'implement-lib: review-loop carry: --finding must be 1-%s bytes with no control character\n' "$_IL_LOOP_FINDING_MAX" >&2; return 19; }
-  _il_loop_site_ok "$RL_SITE" \
-    || { echo "implement-lib: review-loop carry: --site must be a repository-relative path[:line] (or - for none)" >&2; return 19; }
-  [[ "$RL_OCC" =~ ^[1-9][0-9]{0,3}$ ]] \
-    || { echo "implement-lib: review-loop carry: --occurrence must be a positive integer (1-9999)" >&2; return 19; }
+  _il_loop_finding_fields carry || return $?
   dir="${RL_ARGS[0]}"
   [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
   bud="$(_il_loop_budget)" || return $?
@@ -5180,9 +5360,15 @@ cmd_review_loop_carry() {
     fi
     c=$((c + 1))
   done
-  if [ "$c" -ge "${RL_REQ[L]}" ]; then
+  was="$(_il_loop_ended_as "$L")"
+  if [ "$was" = defer ] || [ "$was" = decline ]; then
     _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-    printf 'implement-lib: review-loop carry: pass %s declared %s REQUIRED and all %s are already carried\n' "$L" "${RL_REQ[L]}" "$c" >&2
+    printf 'implement-lib: review-loop carry: that finding of pass %s already ended another way (%s) — one finding takes one disposition\n' "$L" "$was" >&2
+    return 19
+  fi
+  if [ "${RL_USED[L]:-0}" -ge "${RL_REQ[L]}" ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    printf 'implement-lib: review-loop carry: pass %s declared %s REQUIRED and all %s already have a disposition\n' "$L" "${RL_REQ[L]}" "${RL_USED[L]:-0}" >&2
     return 17
   fi
   _il_loop_append "$RL_REC" "carry"$'\t'"$L"$'\t'"$RL_SEV"$'\t'"$RL_SITE"$'\t'"$RL_OCC"$'\t'"$RL_FIND"; rc=$?
@@ -5194,6 +5380,92 @@ cmd_review_loop_carry() {
   esac
   printf 'local review: carried %s of %s from pass %s — %s\n' "$((c + 1))" "${RL_REQ[L]}" "$L" "$RL_SEV"
   return 0
+}
+
+# cmd_review_loop_dispose <defer|decline> <args>… — end one REQUIRED finding of the latest pass
+# without a fix. The two verbs differ only in the field that says how it ended: `--issue` (the
+# issue filed for a defect that predates the diff) or `--reason` (why it is not this diff's to fix).
+cmd_review_loop_dispose() {
+  local kind="$1"; shift
+  _il_loop_opts "$kind" "$@"
+  local dir rc L was arg row word
+  [ "${#RL_ARGS[@]}" -eq 1 ] || { echo "implement-lib: review-loop $kind needs <state-dir>" >&2; exit 2; }
+  if [ "$kind" = defer ]; then
+    [ -n "$RL_ISSUE" ] && [ -n "$RL_FIND" ] && [ -n "$RL_SITE" ] || { echo "implement-lib: review-loop defer needs --issue, --site and --finding" >&2; exit 2; }
+    arg="$RL_ISSUE"; word="deferred to #$RL_ISSUE"
+  else
+    [ -n "$RL_REASON" ] && [ -n "$RL_FIND" ] && [ -n "$RL_SITE" ] || { echo "implement-lib: review-loop decline needs --reason, --site and --finding" >&2; exit 2; }
+    arg="$RL_REASON"; word="declined"
+  fi
+  _il_loop_take_finding "$kind" || return $?
+  _il_loop_finding_fields "$kind" || return $?
+  if [ "$kind" = defer ]; then
+    _il_loop_issue_ok "$arg" \
+      || { echo "implement-lib: review-loop defer: --issue must be the number of the issue filed for the finding (a positive integer, no leading zero)" >&2; return 19; }
+  else
+    _il_loop_finding_ok "$arg" \
+      || { printf 'implement-lib: review-loop decline: --reason must be 1-%s bytes with no control character\n' "$_IL_LOOP_FINDING_MAX" >&2; return 19; }
+  fi
+  dir="${RL_ARGS[0]}"
+  [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
+  if [ -n "$RL_PR" ]; then RL_REC="$dir/review-loop-pr${RL_PR}-${RL_HEAD:0:12}.tsv"; else RL_REC="$dir/review-loop.tsv"; fi
+  [ -f "$RL_REC" ] || { echo "implement-lib: review-loop $kind: no loop is recorded, so no finding is open" >&2; return 17; }
+  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
+    || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
+  _il_loop_parse "$RL_REC"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    printf 'implement-lib: review-loop: the record %s does not parse (rc %s) — refused whole\n' "$RL_REC" "$rc" >&2
+    return "$rc"
+  fi
+  L="$RL_PASSES"
+  if [ "$L" -eq 0 ] || [ -n "$RL_OPEN" ] || [ "${RL_OUT[L]:-}" != "done" ] || [ "${RL_REQ[L]}" -eq 0 ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    echo "implement-lib: review-loop $kind: nothing to disposition — the latest pass is not a finished one with REQUIRED findings" >&2
+    return 17
+  fi
+  was="$(_il_loop_ended_as "$L")"
+  if [ -n "$was" ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    # The IDENTICAL row is the retry; the same finding ending any other way is a conflict.
+    if [ "$was" = "$kind" ] && _il_loop_same_ending "$L" "$arg"; then
+      echo "local review: already recorded — $word $RL_SITE: $RL_FIND"
+      return 10
+    fi
+    printf 'implement-lib: review-loop %s: that finding of pass %s already ended another way (%s) — one finding takes one disposition\n' "$kind" "$L" "$was" >&2
+    return 19
+  fi
+  if [ "${RL_REQ[L]}" -le "${RL_USED[L]:-0}" ]; then
+    _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+    printf 'implement-lib: review-loop %s: pass %s declared %s REQUIRED and all %s already have a disposition\n' "$kind" "$L" "${RL_REQ[L]}" "${RL_USED[L]:-0}" >&2
+    return 17
+  fi
+  if [ "$kind" = defer ]; then
+    row="defer"$'\t'"$L"$'\t'"$arg"$'\t'"$RL_SITE"$'\t'"$RL_OCC"$'\t'"$RL_FIND"
+  else
+    row="decline"$'\t'"$L"$'\t'"$RL_SITE"$'\t'"$RL_OCC"$'\t'"$RL_FIND"$'\t'"$arg"
+  fi
+  _il_loop_append "$RL_REC" "$row"; rc=$?
+  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+  case "$rc" in
+    0)  : ;;
+    19) printf 'implement-lib: review-loop %s: this row would take %s past its %s-byte bound — refused rather than written unreadable\n' "$kind" "$RL_REC" "$_IL_LOOP_MAX_BYTES" >&2; return 19 ;;
+    *)  echo "implement-lib: review-loop: could not write $RL_REC" >&2; return 20 ;;
+  esac
+  printf 'local review: %s — %s of %s REQUIRED finding(s) of pass %s now have a disposition\n' "$word" "$(( ${RL_USED[L]:-0} + 1 ))" "${RL_REQ[L]}" "$L"
+  return 0
+}
+
+# _il_loop_same_ending <pass> <arg> — does the recorded defer/decline of the finding in
+# RL_SITE/RL_OCC/RL_FIND on <pass> carry this same issue or reason?
+_il_loop_same_ending() {
+  local i
+  for i in "${!RL_DN[@]}"; do
+    if [ "${RL_DN[i]}" = "$1" ] && [ "${RL_DSITE[i]}" = "$RL_SITE" ] && [ "${RL_DOCC[i]}" = "$RL_OCC" ] && [ "${RL_DTXT[i]}" = "$RL_FIND" ]; then
+      [ "${RL_DARG[i]}" = "$2" ]; return $?
+    fi
+  done
+  return 1
 }
 
 cmd_review_loop_report() {
@@ -5227,14 +5499,16 @@ cmd_review_loop_report() {
   fi
   out="$(_il_loop_decide)"; rc=$?
   _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
-  [ -z "$out" ] || printf '%s\n' "$out"
+  # HOW THE FINDINGS ENDED rides every rendered line, a blocked one included: the line is what a PR
+  # body and a STOP message keep once the record is swept.
+  [ -z "$out" ] || printf '%s%s\n' "$out" "$(_il_loop_ended_text)"
   return "$rc"
 }
 
 # _il_loop_decide — report's verdict over the loaded record, the budget in RL_BUD/RL_BSRC. Prints the
 # one line; returns report's code.
 _il_loop_decide() {
-  local bud="$RL_BUD" bsrc="$RL_BSRC" rc L cur passes after="" i c=0 hard=0
+  local bud="$RL_BUD" bsrc="$RL_BSRC" rc L cur passes after="" i c=0 d=0 hard=0 stuck=0
   passes="$(_il_loop_passes_text)"
   L="$RL_PASSES"
   # EVERY push-able verdict is about the tree a push ships, so a dirty worktree answers first —
@@ -5246,14 +5520,18 @@ _il_loop_decide() {
     return 27
   fi
   if [ "$L" -eq 0 ]; then
-    if [ "$bud" -eq 0 ]; then printf 'local review: disabled (local_passes = 0, from %s)\n' "$bsrc"; return 35; fi
+    if [ "$bud" = 0 ]; then printf 'local review: disabled (local_passes = 0, from %s)\n' "$bsrc"; return 35; fi
     if [ "$RL_LAST" = none ]; then printf 'local review: no usable reviewer (rung %s) — nothing dispatched\n' "$RL_NONE"; return 35; fi
     printf 'local review: no pass taken yet under a budget of %s (local_passes from %s) — take a pass\n' "$bud" "$bsrc"
     return 34
   fi
   # After a pass, disabling the loop or losing the reviewer EXHAUSTS it rather than excusing it.
-  if [ "$bud" -eq 0 ]; then after=" (then disabled)"; elif [ "$RL_LAST" = none ]; then after=" (then no usable reviewer)"; fi
+  if [ "$bud" = 0 ]; then after=" (then disabled)"; elif [ "$RL_LAST" = none ]; then after=" (then no usable reviewer)"; fi
+  # …except under until-clean, which has no last pass to exhaust on: there a lost reviewer leaves
+  # nothing that could take the pass the setting asks for, so anything short of terminal BLOCKS.
+  if _il_loop_unbounded "$bud" && [ "$RL_LAST" = none ]; then stuck=1; fi
   if [ -n "$RL_OPEN" ] || [ "${RL_OUT[L]:-}" != "done" ]; then
+    if [ "$stuck" -eq 1 ]; then _il_loop_stuck "$passes" "$after"; return $?; fi
     if ! _il_loop_exhausted "$bud"; then
       printf 'local review: %s — not converged; take pass %s\n' "$passes" "$((L + 1))"
       return 34
@@ -5267,6 +5545,7 @@ _il_loop_decide() {
       printf 'local review: %s, converged%s\n' "$passes" "$after"
       return 0
     fi
+    if [ "$stuck" -eq 1 ]; then _il_loop_stuck "$passes" "$after"; return $?; fi
     if ! _il_loop_exhausted "$bud"; then
       printf 'local review: %s, converged on an earlier tree — the tree changed since; take pass %s\n' "$passes" "$((L + 1))"
       return 34
@@ -5274,8 +5553,20 @@ _il_loop_decide() {
     printf 'local review: %s%s — BLOCKED: converged, then the tree changed after the final pass\n' "$passes" "$after"
     return 39
   fi
+  d="${RL_DNUM[L]:-0}"
+  # SETTLED: every REQUIRED finding of the latest pass was declined or deferred, and the tree is
+  # still the one that pass read — nothing is left for another pass to answer.
+  if [ "$d" -eq "${RL_REQ[L]}" ] && [ "${RL_TREE[L]}" = "$cur" ]; then
+    printf 'local review: %s, settled%s: every REQUIRED finding of pass %s was declined or deferred\n' "$passes" "$after" "$L"
+    return 0
+  fi
+  if [ "$stuck" -eq 1 ]; then _il_loop_stuck "$passes" "$after"; return $?; fi
   if ! _il_loop_exhausted "$bud"; then
-    printf 'local review: %s — not converged; fix, commit, and take pass %s\n' "$passes" "$((L + 1))"
+    if [ "$d" -gt 0 ]; then
+      printf 'local review: %s — not converged; %s of %s REQUIRED finding(s) of pass %s declined or deferred — fix the rest, commit, and take pass %s\n' "$passes" "$d" "${RL_REQ[L]}" "$L" "$((L + 1))"
+    else
+      printf 'local review: %s — not converged; fix, commit, and take pass %s\n' "$passes" "$((L + 1))"
+    fi
     return 34
   fi
   if [ "$cur" != "${RL_TREE[L]}" ]; then
@@ -5287,8 +5578,10 @@ _il_loop_decide() {
     c=$((c + 1))
     case "${RL_CSEV[i]}" in critical|high) hard=$((hard + 1)) ;; esac
   done
-  if [ "$c" -lt "${RL_REQ[L]}" ]; then
-    printf 'local review: %s%s — BLOCKED: exhausted with %s REQUIRED finding(s), %s carried\n' "$passes" "$after" "${RL_REQ[L]}" "$c"
+  if [ "$((c + d))" -lt "${RL_REQ[L]}" ]; then
+    printf 'local review: %s%s — BLOCKED: exhausted with %s REQUIRED finding(s), %s carried' "$passes" "$after" "${RL_REQ[L]}" "$c"
+    if [ "$d" -gt 0 ]; then printf ', %s declined or deferred' "$d"; fi
+    printf '\n'
     return 39
   fi
   if [ "$hard" -gt 0 ]; then
@@ -5299,6 +5592,140 @@ _il_loop_decide() {
   return 33
 }
 
+# _il_loop_stuck <passes> <after> — the BLOCKED line of an until-clean loop whose reviewer is gone.
+# Returns report's 39.
+_il_loop_stuck() {
+  printf 'local review: %s%s — BLOCKED: until-clean ends only on a clean or settled pass, and no reviewer is usable to take one\n' "$1" "$2"
+  return 39
+}
+
+# --- review-loop summary (#618) -------------------------------------------------------------------
+# One record covers one /implement-issue run or one resolver round, so a run that went through
+# both, and through several rounds, has several. `summary` reads them all and prints the run whole:
+# its passes, each pass's REQUIRED count, and how every finding ended.
+#
+# WHICH RECORDS: `review-loop.tsv` — without --pr always; with --pr only when the run marker beside
+# it names that pull request, since a state directory can hold one PR's run record and another PR's
+# rounds — and, with --pr, every `review-loop-pr<N>-<sha12>.tsv`. ROUNDS ARE ORDERED BY ANCESTRY:
+# a round's key is the head it started from, each such head is an ancestor of the next, and an
+# ancestor has strictly fewer commits behind it. A key that no longer resolves to a commit sorts
+# last, by name, and its line says its position is unknown.
+
+# _il_loop_summary_one <label> <record> — parse one record and fold it into the SM_* accumulators.
+# 0 · 18 · 20.
+_il_loop_summary_one() {
+  local label="$1" f="$2" rc n i L occ
+  _il_loop_parse "$f"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'implement-lib: review-loop summary: the record %s does not parse (rc %s) — no summary is rendered from a partial run\n' "$f" "$rc" >&2
+    return "$rc"
+  fi
+  SM_RECORDS=$((SM_RECORDS + 1)); SM_PASSES=$((SM_PASSES + RL_PASSES))
+  for (( n = 1; n <= RL_PASSES; n++ )); do
+    if [ "${RL_OUT[n]:-}" = "done" ]; then SM_COUNTS="${SM_COUNTS}${SM_COUNTS:+, }${RL_REQ[n]}"
+    else SM_COUNTS="${SM_COUNTS}${SM_COUNTS:+, }failed"; fi
+  done
+  SM_FIXED=$(( SM_FIXED + $(_il_loop_fixed) ))
+  L="$RL_PASSES"
+  if [ "$L" -gt 0 ]; then
+    if [ "${RL_OUT[L]:-}" = "done" ]; then SM_OPEN=$(( SM_OPEN + RL_REQ[L] - ${RL_USED[L]:-0} ))
+    else SM_UNFINISHED=$((SM_UNFINISHED + 1)); fi
+  fi
+  if [ "$L" -gt 0 ]; then SM_LINES="${SM_LINES}  ${label}: $(_il_loop_passes_text bare)"$'\n'
+  elif [ "$RL_LAST" = off ]; then SM_LINES="${SM_LINES}  ${label}: disabled, no pass"$'\n'
+  elif [ "$RL_LAST" = none ]; then SM_LINES="${SM_LINES}  ${label}: no usable reviewer, no pass"$'\n'
+  else SM_LINES="${SM_LINES}  ${label}: no pass"$'\n'; fi
+  for i in "${!RL_DN[@]}"; do
+    occ=""; [ "${RL_DOCC[i]}" = 1 ] || occ=" (occurrence ${RL_DOCC[i]})"
+    if [ "${RL_DKIND[i]}" = defer ]; then
+      SM_DEFERRED=$((SM_DEFERRED + 1))
+      SM_ENDS="${SM_ENDS}  deferred to #${RL_DARG[i]} — ${label}, pass ${RL_DN[i]}: $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}")"$'\n'
+    else
+      SM_DECLINED=$((SM_DECLINED + 1))
+      SM_ENDS="${SM_ENDS}  declined — ${label}, pass ${RL_DN[i]}: $(_il_loop_span "${RL_DSITE[i]}")${occ}: $(_il_loop_span "${RL_DTXT[i]}") — $(_il_loop_span "${RL_DARG[i]}")"$'\n'
+    fi
+  done
+  for i in "${!RL_CN[@]}"; do
+    occ=""; [ "${RL_COCC[i]}" = 1 ] || occ=" (occurrence ${RL_COCC[i]})"
+    SM_CARRIED=$((SM_CARRIED + 1))
+    SM_ENDS="${SM_ENDS}  carried ${RL_CSEV[i]} — ${label}, pass ${RL_CN[i]}: $(_il_loop_span "${RL_CSITE[i]}")${occ}: $(_il_loop_span "${RL_CTXT[i]}")"$'\n'
+  done
+  return 0
+}
+
+cmd_review_loop_summary() {
+  local pr="" dir="" f sha cnt rc=0 notes="" marker_pr="" word
+  local -a args=() rounds=() keyed=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --pr) [ "$#" -ge 2 ] || { echo "implement-lib: review-loop summary: --pr needs a value" >&2; exit 2; }
+            [[ "$2" =~ ^[1-9][0-9]{0,10}$ ]] || { echo "implement-lib: review-loop summary: --pr must be a PR number" >&2; exit 2; }
+            pr="$2"; shift ;;
+      -*)   echo "implement-lib: review-loop summary: unknown option '$1'" >&2; exit 2 ;;
+      *)    args+=("$1") ;;
+    esac
+    shift
+  done
+  [ "${#args[@]}" -eq 1 ] || { echo "implement-lib: review-loop summary needs <state-dir>" >&2; exit 2; }
+  dir="${args[0]}"
+  [ -d "$dir" ] || { printf 'implement-lib: review-loop: no state dir at %s\n' "$dir" >&2; return 20; }
+  if [ -n "$pr" ]; then
+    # The run record is this PR's only when the run marker beside it says so.
+    if [ -f "$dir/implement-issue-active.json" ] && [ ! -L "$dir/implement-issue-active.json" ]; then
+      marker_pr="$(jq -r '(.prUrl // "") | if type == "string" then . else "" end' "$dir/implement-issue-active.json" 2>/dev/null)" || marker_pr=""
+    fi
+    for f in "$dir"/review-loop-pr"$pr"-*.tsv; do
+      [ -e "$f" ] || [ -L "$f" ] || continue
+      sha="${f##*-}"; sha="${sha%.tsv}"
+      [[ "$sha" =~ ^[0-9a-f]{12}$ ]] || continue
+      # THE ORDER KEY is how many commits the round head has behind it; one that no longer resolves
+      # sorts after every one that does.
+      if cnt="$(git rev-list --count "$sha" 2>/dev/null)" && [[ "$cnt" =~ ^[0-9]{1,12}$ ]]; then
+        keyed+=("$(printf '%013d\t%s' "$cnt" "$sha")")
+      else
+        keyed+=("$(printf '9999999999999\t%s' "$sha")")
+      fi
+    done
+    if [ "${#keyed[@]}" -gt 0 ]; then
+      mapfile -t rounds < <(printf '%s\n' "${keyed[@]}" | LC_ALL=C sort)
+    fi
+  fi
+  SM_RECORDS=0; SM_PASSES=0; SM_COUNTS=""; SM_FIXED=0; SM_OPEN=0; SM_UNFINISHED=0
+  SM_DECLINED=0; SM_DEFERRED=0; SM_CARRIED=0; SM_LINES=""; SM_ENDS=""
+  _il_claim_mutex_take "$dir" "$_IL_LOOP_MUTEX" \
+    || { echo "implement-lib: review-loop: could not take the loop's lock" >&2; return 20; }
+  f="$dir/review-loop.tsv"
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    if [ -z "$pr" ] || [ "${marker_pr##*/pull/}" = "$pr" ]; then
+      _il_loop_summary_one "/implement-issue" "$f" || rc=$?
+    else
+      notes="  /implement-issue: not counted — a run record is here, but its run marker does not name PR #$pr"$'\n'
+    fi
+  elif [ -n "$pr" ]; then
+    notes="  /implement-issue: not counted — no run record is in this state directory"$'\n'
+  fi
+  if [ "$rc" -eq 0 ]; then
+    for f in "${rounds[@]}"; do
+      sha="${f#*$'\t'}"
+      if [ "${f%%$'\t'*}" = 9999999999999 ]; then word="round from $sha (position unknown: that commit no longer resolves)"; else word="round from $sha"; fi
+      _il_loop_summary_one "$word" "$dir/review-loop-pr${pr}-${sha}.tsv" || { rc=$?; break; }
+    done
+  fi
+  _il_claim_mutex_drop "$dir" "$_IL_LOOP_MUTEX"
+  [ "$rc" -eq 0 ] || return "$rc"
+  if [ "$SM_RECORDS" -eq 0 ]; then
+    printf 'local review, whole run: nothing recorded\n%s' "$notes"
+    return 11
+  fi
+  printf 'local review, whole run: %s pass(es) in %s record(s) — REQUIRED per pass: %s — fixed: %s · declined: %s · deferred: %s · carried: %s' \
+    "$SM_PASSES" "$SM_RECORDS" "${SM_COUNTS:-none}" "$SM_FIXED" "$SM_DECLINED" "$SM_DEFERRED" "$SM_CARRIED"
+  if [ "$SM_OPEN" -gt 0 ]; then printf ' · open: %s' "$SM_OPEN"; fi
+  if [ "$SM_UNFINISHED" -gt 0 ]; then printf ' · %s record(s) ended on a failed or unfinished pass' "$SM_UNFINISHED"; fi
+  printf '\n%s%s%s' "$SM_LINES" "$notes" "$SM_ENDS"
+  printf '  fixed is derived, per pass: a finding the next pass raised again is counted again.\n'
+  return 0
+}
+
 cmd_review_loop() {
   local verb="${1:-}"
   [ "$#" -ge 1 ] && shift
@@ -5306,8 +5733,10 @@ cmd_review_loop() {
     pass)   cmd_review_loop_pass "$@" ;;
     begin)  cmd_review_loop_begin "$@" ;;
     carry)  cmd_review_loop_carry "$@" ;;
+    defer|decline) cmd_review_loop_dispose "$verb" "$@" ;;
     report) cmd_review_loop_report "$@" ;;
-    *) echo "implement-lib: review-loop needs a verb: pass | begin | carry | report" >&2; exit 2 ;;
+    summary) cmd_review_loop_summary "$@" ;;
+    *) echo "implement-lib: review-loop needs a verb: pass | begin | carry | defer | decline | report | summary" >&2; exit 2 ;;
   esac
 }
 

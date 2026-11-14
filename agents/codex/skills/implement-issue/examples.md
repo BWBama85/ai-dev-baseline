@@ -58,7 +58,7 @@ Rung: <independent <agent> | same-model (not independent) | deferred to <logins>
 |---|---|---|---|
 | … | … | … | … |
 <the line from bash "$HOME/.codex/scripts/lib/implement-lib.sh" review-loop report .codex/state, verbatim — e.g.
-`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`>
+`local review: 3 passes · pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged — fixed: 10 · deferred: 1 (pass 2 #412 ``lib/store.sh:88``: ``reads return empty on a database error``)`>
 
 ## Docs consulted
 <the rendered block from bash "$HOME/.codex/scripts/lib/docs-lib.sh" report --state .codex/state>

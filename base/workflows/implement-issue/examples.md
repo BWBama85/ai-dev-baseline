@@ -55,7 +55,7 @@ Rung: <independent <agent> | same-model (not independent) | deferred to <logins>
 |---|---|---|---|
 | … | … | … | … |
 <the line from {{IMPLEMENT_LIB}} review-loop report {{STATE_DIR}}, verbatim — e.g.
-`local review: pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged`>
+`local review: 3 passes · pass 1 -> 9 REQUIRED · pass 2 -> 2 · pass 3 -> 0, converged — fixed: 10 · deferred: 1 (pass 2 #412 ``lib/store.sh:88``: ``reads return empty on a database error``)`>
 
 ## Docs consulted
 <the rendered block from {{DOCS_LIB}} report --state {{STATE_DIR}}>

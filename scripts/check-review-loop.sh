@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# ai-dev-baseline — behavior tests for the local convergence loop (#491): `implement-lib.sh
+# ai-dev-baseline — behavior tests for the local convergence loop (#491, #618): `implement-lib.sh
 # review-loop`, `role-dispatch.sh local-passes`, `dispatch-review --local-head`, and the workflow
 # prose that drives them.
 #
 # The loop's dangerous direction is a FALSE CONVERGED: fix code pushed as reviewed when no review
 # read it. So every case asserts on the stored record and the rendered line, never on the word the
 # driver would like to see — a failed pass, a moved tree, an edit after a clean pass, a reused reply
-# and an under-carried exhaustion must each refuse to read as clean.
+# and an under-carried exhaustion must each refuse to read as clean. Since #618 a REQUIRED finding
+# can also end declined or deferred, and `until-clean` removes the budget: a partly dispositioned
+# pass, a disposition on a stale tree and a loop whose reviewer is gone must not read as clean either.
 #
 # The reviewer is a stub `codex` on PATH that answers from a per-invocation script and counts its
 # own invocations, so "never dispatches a fourth time" is observed, not inferred. Every case builds
@@ -58,7 +60,7 @@ if [ "$MODE" = mutation ]; then
   . "$ROOT/scripts/shmutant.sh" || bad "check-review-loop: scripts/shmutant.sh could not be sourced"
   shmutant_target scripts/lib/implement-lib.sh
   shmutant_mut budget-cap-ignored \
-    '  if [ "$RL_PASSES" -ge "$RL_BUD" ]; then' \
+    '  if ! _il_loop_unbounded "$RL_BUD" && [ "$RL_PASSES" -ge "$RL_BUD" ]; then' \
     '  if false; then' \
     'a spent budget never dispatches a fourth time'
   shmutant_mut failed-dispatch-reads-clean \
@@ -94,7 +96,7 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'a commit after an EXHAUSTED pass blocks'
   shmutant_mut undercarried-exhaustion-pushes \
-    '  if [ "$c" -lt "${RL_REQ[L]}" ]; then' \
+    '  if [ "$((c + d))" -lt "${RL_REQ[L]}" ]; then' \
     '  if false; then' \
     'an exhaustion with fewer carries than declared BLOCKS'
   shmutant_mut carried-high-pushes \
@@ -114,7 +116,7 @@ if [ "$MODE" = mutation ]; then
     '  [ "$RL_PASSES" -ge "$1" ]' \
     'a reviewer lost after a pass with findings exhausts the loop'
   shmutant_mut disabled-dispatches \
-    '  if [ "$RL_BUD" -eq 0 ]; then' \
+    '  if [ "$RL_BUD" = 0 ]; then' \
     '  if false; then' \
     'local_passes = 0 is 35'
   shmutant_mut report-invents-empty \
@@ -138,7 +140,7 @@ if [ "$MODE" = mutation ]; then
     '  if false; then' \
     'a record that changed underneath a pass refuses to record its result'
   shmutant_mut pass-past-budget-accepted \
-    '        [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18' \
+    '        _il_loop_unbounded "${ADB_SWEEP_F[2]}" || [ "$n" -le "${ADB_SWEEP_F[2]}" ] || return 18' \
     '        :' \
     'a pass numbered past the budget it ran under refuses the record'
   shmutant_mut unknown-row-accepted \
@@ -150,7 +152,7 @@ if [ "$MODE" = mutation ]; then
     '  :' \
     'a record with no final newline is refused'
   shmutant_mut overcarry-accepted \
-    '  if [ "$c" -ge "${RL_REQ[L]}" ]; then' \
+    '  if [ "${RL_USED[L]:-0}" -ge "${RL_REQ[L]}" ]; then' \
     '  if false; then' \
     'a carry past the declared count is refused (17)'
   shmutant_mut duplicate-carry-appended \
@@ -233,6 +235,111 @@ if [ "$MODE" = mutation ]; then
     "        1) printf 'implement-lib: dispatch-review: HEAD %s does not descend from PR %s'\"'\"'s head %s — this is not that pull request plus local commits; sync the branch and re-run.\\n' \"\$lhead\" \"\$crit_pr\" \"\$phead\" >&2; return 16 ;;" \
     '        1) : ;;' \
     '--local-head refuses a HEAD that does not descend from the PR head'
+  # ---- #618: until-clean, decline/defer, the settled verdict, the derived count, the summary ----
+  shmutant_mut until-clean-read-as-a-number \
+    '_il_loop_unbounded() { [ "$1" = until-clean ]; }' \
+    '_il_loop_unbounded() { false; }' \
+    'under until-clean every pass with REQUIRED findings is 34'
+  shmutant_mut until-clean-pass-is-final \
+    '    if _il_loop_unbounded "$RL_BUD" || [ "$n" -lt "$RL_BUD" ]; then' \
+    '    if [ "$n" -lt "$RL_BUD" ] 2>/dev/null; then' \
+    'under until-clean every pass with REQUIRED findings is 34'
+  shmutant_mut until-clean-failed-pass-is-final \
+    '  if _il_loop_unbounded "$RL_BUD" || [ "$RL_BUD" -gt "$n" ]; then' \
+    '  if [ "$RL_BUD" -gt "$n" ] 2>/dev/null; then' \
+    'a failed pass under until-clean is 36, never the final 37'
+  shmutant_mut until-clean-exhausts \
+    '  _il_loop_unbounded "$1" && return 1' \
+    '  :' \
+    'carry under until-clean is refused (17) even after the reviewer is lost'
+  shmutant_mut until-clean-lost-reviewer-waits \
+    '  if _il_loop_unbounded "$bud" && [ "$RL_LAST" = none ]; then stuck=1; fi' \
+    '  :' \
+    'until-clean with the reviewer lost after a pass BLOCKS (39)'
+  shmutant_mut settled-ignores-tree \
+    '  if [ "$d" -eq "${RL_REQ[L]}" ] && [ "${RL_TREE[L]}" = "$cur" ]; then' \
+    '  if [ "$d" -eq "${RL_REQ[L]}" ]; then' \
+    'a commit after a settled pass un-settles it'
+  shmutant_mut settled-on-partial \
+    '  if [ "$d" -eq "${RL_REQ[L]}" ] && [ "${RL_TREE[L]}" = "$cur" ]; then' \
+    '  if [ "$d" -gt 0 ] && [ "${RL_TREE[L]}" = "$cur" ]; then' \
+    'a pass with one of two REQUIRED findings declined is NOT settled'
+  shmutant_mut stale-pass-disposition-read \
+    '        [ "$n" = "$RL_PASSES" ] || return 18' \
+    '        :' \
+    'a defer row against an earlier pass refuses the record'
+  shmutant_mut conflicting-disposition-read \
+    '        [ -z "${taken[$k2]:-}" ] || return 18' \
+    '        :' \
+    'a finding both deferred and declined refuses the record'
+  shmutant_mut carried-after-deferred-read \
+    '        [ "${taken[$k2]:-carry}" = carry ] || return 18' \
+    '        :' \
+    'a finding deferred and then carried refuses the record'
+  shmutant_mut over-disposition-read \
+    '        [ "${RL_REQ[n]}" -ge "${RL_USED[n]}" ] || return 18' \
+    '        :' \
+    'more dispositions than the pass declared REQUIRED refuses the record'
+  shmutant_mut defer-issue-unread \
+    '          _il_loop_issue_ok "$arg" || return 18' \
+    '          :' \
+    'a defer row whose issue is not a number refuses the record'
+  shmutant_mut defer-issue-open \
+    '    _il_loop_issue_ok "$arg" \' \
+    '    true \' \
+    'defer refuses an issue that is not a number (19)'
+  shmutant_mut dispose-conflict-accepted \
+    '  if [ -n "$was" ]; then' \
+    '  if false; then' \
+    'a finding already deferred cannot also be declined (19)'
+  shmutant_mut dispose-retry-refused \
+    '    if [ "$was" = "$kind" ] && _il_loop_same_ending "$L" "$arg"; then' \
+    '    if false; then' \
+    'the identical defer is a no-op (10)'
+  shmutant_mut dispose-other-issue-is-retry \
+    '      [ "${RL_DARG[i]}" = "$2" ]; return $?' \
+    '      return 0' \
+    'the same finding deferred to a different issue is a conflict (19)'
+  shmutant_mut over-dispose-accepted \
+    '  if [ "${RL_REQ[L]}" -le "${RL_USED[L]:-0}" ]; then' \
+    '  if false; then' \
+    'a disposition past the declared count is refused (17)'
+  shmutant_mut dispose-on-failed-pass \
+    '  if [ "$L" -eq 0 ] || [ -n "$RL_OPEN" ] || [ "${RL_OUT[L]:-}" != "done" ] || [ "${RL_REQ[L]}" -eq 0 ]; then' \
+    '  if false; then' \
+    'defer against a failed pass is refused (17)'
+  shmutant_mut carry-of-disposed-accepted \
+    '  if [ "$was" = defer ] || [ "$was" = decline ]; then' \
+    '  if false; then' \
+    'a finding already deferred cannot also be carried (19)'
+  shmutant_mut ended-tail-dropped \
+    "  [ -z \"\$out\" ] || printf '%s%s\\n' \"\$out\" \"\$(_il_loop_ended_text)\"" \
+    "  [ -z \"\$out\" ] || printf '%s\\n' \"\$out\"" \
+    'the report line names the deferred finding and its issue'
+  shmutant_mut disposed-text-not-spanned \
+    "_il_loop_span() { printf '\`%s\`' \"\${1//\\\`/\\'}\"; }" \
+    "_il_loop_span() { printf '%s' \"\$1\"; }" \
+    'a deferred closing keyword is rendered inside a code span'
+  shmutant_mut fixed-counts-same-tree \
+    '    if [ -n "$next" ] && [ "${RL_TREE[n]}" != "${RL_TREE[next]}" ]; then' \
+    '    if [ -n "$next" ]; then' \
+    'a pass retaken on the same tree fixes nothing'
+  shmutant_mut fixed-counts-disposed \
+    '      fixed=$(( fixed + RL_REQ[n] - ${RL_USED[n]:-0} ))' \
+    '      fixed=$(( fixed + RL_REQ[n] ))' \
+    'fixed excludes what was declined or deferred'
+  shmutant_mut summary-counts-foreign-run \
+    '    if [ -z "$pr" ] || [ "${marker_pr##*/pull/}" = "$pr" ]; then' \
+    '    if true; then' \
+    'summary --pr leaves out a run record whose marker names another PR'
+  shmutant_mut summary-order-reversed \
+    "      mapfile -t rounds < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort)" \
+    "      mapfile -t rounds < <(printf '%s\\n' \"\${keyed[@]}\" | LC_ALL=C sort -r)" \
+    'summary orders the rounds by ancestry, oldest first'
+  shmutant_mut summary-partial-accepted \
+    '      _il_loop_summary_one "$word" "$dir/review-loop-pr${pr}-${sha}.tsv" || { rc=$?; break; }' \
+    '      _il_loop_summary_one "$word" "$dir/review-loop-pr${pr}-${sha}.tsv" || true' \
+    'summary refuses (18) when a round record does not parse'
   # The byte bound on a finding holds only under `local LC_ALL=C`; the row needs a UTF-8 locale to
   # have a witness, so it is registered only where one exists.
   if locale -a 2>/dev/null | grep -qx -e C.UTF-8 -e en_US.UTF-8 -e C.utf8 -e en_US.utf8; then
@@ -260,6 +367,10 @@ if [ "$MODE" = mutation ]; then
     "    ''|'\"\"'|\"''\")" \
     "    '__never__')" \
     'an empty value names itself as empty'
+  shmutant_mut until-clean-one-spelling \
+    '  if { [ "$layer" = env ] && [ "$raw" = until-clean ]; } || { [ "$layer" != env ] && [ "$raw" = '"'"'"until-clean"'"'"' ]; }; then' \
+    '  if [ "$raw" = until-clean ] || [ "$raw" = '"'"'"until-clean"'"'"' ]; then' \
+    'a bare until-clean in a manifest is refused'
   check_shmutant_pool check-review-loop-rd "$work/pool-rd" prep runner 6
 
   # The resolver's pre-push live check is prose the resolver executes, so its row runs against the
@@ -345,6 +456,13 @@ rl() {
       ${RL_ENV:-} bash "$IL" review-loop "$@" 2>&1 )"; RL_RC=$?
 }
 count() { cat "$1.count" 2>/dev/null || echo 0; }
+# code_line_of <file> <text> — the line of <text> INSIDE a fenced block; line_of, anywhere.
+code_line_of() {
+  awk -v pat="$2" '/^[[:space:]]*(```|~~~)/ { f = !f; next } f && index($0, pat) { print NR; exit }' "$1"
+}
+line_of() { grep -n -m1 -F -- "$2" "$1" | cut -d: -f1; }
+order() { local a="$2" b="$3"
+  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then ok; else bad "$1 [@${a:-none} < @${b:-none}]"; fi; }
 commit_fix() { printf 'fix %s\n' "$2" >> "$1/f.sh"; git -C "$1" commit -qam "fix $2" >/dev/null 2>&1; }
 rec() { cat "$1/.claude/state/review-loop.tsv" 2>/dev/null; }
 
@@ -359,7 +477,7 @@ rl "$d" pass .claude/state codex
 eq "$RL_RC" 0 "1 a pass with zero REQUIRED converges (0)"
 rl "$d" report .claude/state
 eq "$RL_RC" 0 "1 report on a converged, unedited tree is 0"
-eq "$RL_OUT" "local review: pass 1 -> 2 REQUIRED · pass 2 -> 0, converged" "1 the per-pass line, rendered from the record"
+eq "$RL_OUT" "local review: 2 passes · pass 1 -> 2 REQUIRED · pass 2 -> 0, converged — fixed: 2" "1 the line, rendered from the record: the total, each pass, the verdict, what was fixed"
 eq "$(count "$d")" 2 "1 exactly two dispatches"
 
 # =============================== 2. exhaustion and carry =========================================
@@ -818,6 +936,15 @@ has "$BO" "ADB_LOCAL_REVIEW_PASSES" "8 …naming the variable"
 printf '[reviewers]\nlocal_passes = 4\n' > "$FHOME/.config/ai-dev-baseline/agents.toml"
 rm -f "$d/agents.toml"; BO="$(bud "$d")"; eq "$?/$BO" "0/4 global" "8 the global manifest is the lower layer"
 rm -f "$FHOME/.config/ai-dev-baseline/agents.toml"
+# #618: `until-clean` is no budget. One spelling per surface — a TOML string in a manifest, the bare
+# word in the env var.
+set_lp "$d" '"until-clean"'; BO="$(bud "$d")"; eq "$?/$BO" "0/until-clean repo" "8 \"until-clean\" in a manifest is the no-budget value, with its layer"
+set_lp "$d" until-clean;     BO="$(bud "$d")"; eq "$?" 2 "8 a bare until-clean in a manifest is refused — a bare word is not TOML"
+has "$BO" 'written "until-clean" in a manifest' "8 …and the message says how to spell it"
+set_lp "$d" '"Until-Clean"'; BO="$(bud "$d")"; eq "$?" 2 "8 any other string is still malformed"
+set_lp "$d" 5
+BO="$(bud "$d" until-clean)"; eq "$?/$BO" "0/until-clean env" "8 ADB_LOCAL_REVIEW_PASSES=until-clean overrides the manifest"
+BO="$(bud "$d" '"until-clean"')"; eq "$?" 2 "8 a quoted until-clean in the env var is refused — it is not the word"
 set_lp "$d" x
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 18 "8 review-loop refuses to run on an unusable budget (18) rather than use the default"
@@ -942,16 +1069,251 @@ RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$RB:$OB:$SB:$PATH" MOVE_REPO="$d" 
 [ -e "$d.moved" ] && ok || bad "12 the tip-move fixture fired (the witness below is otherwise vacuous)"
 eq "$RL_RC" 39 "12 open-pr refuses (39) when the tip moved across the verdict read"
 
+# =============================== 13. until-clean (#618) =========================================
+# No budget: no pass is refused as spent and none is the last, so the spent-budget codes (33, 37, 38)
+# are unreachable — observed over more passes than the old ceiling of 10 allowed.
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=until-clean"
+script "$d" req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 127 req:0
+odd=""
+for i in 1 2 3 4 5 6 7 8 9 10 11; do
+  rl "$d" pass .claude/state codex
+  [ "$RL_RC" = 34 ] || odd="$odd pass$i=$RL_RC"
+  [ "$i" = 11 ] || commit_fix "$d" "u$i"
+done
+eq "$odd" "" "13 under until-clean every pass with REQUIRED findings is 34 — eleven of them, never the spent-budget 33 or 38"
+has "$RL_OUT" "pass 11/until-clean" "13 …and the pass line names the setting where a budget would stand"
+has "$(rec "$d")" "$(printf 'start\t11\tuntil-clean\t')" "13 …recorded as the budget the pass ran under"
+rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
+eq "$RL_RC" 17 "13 carry under until-clean is refused (17): nothing is ever exhausted"
+rl "$d" report .claude/state
+eq "$RL_RC" 34 "13 report under until-clean with REQUIRED findings is 34 — take another pass — never a block or a carry"
+commit_fix "$d" u11
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 36 "13 a failed pass under until-clean is 36, never the final 37"
+rl "$d" report .claude/state
+eq "$RL_RC" 34 "13 …and report asks for another pass rather than blocking on a failed final one"
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 0 "13 the thirteenth pass converges"
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "13 …and report certifies it"
+has "$RL_OUT" "local review: 13 passes · " "13 …with the total leading the line"
+eq "$(count "$d")" 13 "13 thirteen dispatches, none refused"
+
+# A reviewer lost after a pass cannot exhaust a loop that has no last pass: it BLOCKS.
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" pass --unavailable none .claude/state
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "13 until-clean with the reviewer lost after a pass BLOCKS (39) — never the carried 33"
+has "$RL_OUT" "until-clean ends only on a clean or settled pass" "13 …and says why"
+rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
+eq "$RL_RC" 17 "13 carry under until-clean is refused (17) even after the reviewer is lost"
+# The budget is read live: a finite one set after until-clean took more passes than it allows is spent.
+d="$(fixture)"; script "$d" req:1 req:1 req:1 req:1 req:1
+for i in 1 2 3 4; do rl "$d" pass .claude/state codex; [ "$i" = 4 ] || commit_fix "$d" "s$i"; done
+RL_ENV="ADB_LOCAL_REVIEW_PASSES=3"
+rl "$d" pass .claude/state codex
+eq "$RL_RC" 38 "13 a finite budget set after until-clean took four passes refuses the fifth (38)"
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "13 …and the record until-clean wrote still reads under it (39, not 18)"
+RL_ENV=""
+d="$(fixture)"; printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$d/agents.toml"
+git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1
+script "$d" req:0
+rl "$d" pass .claude/state codex
+has "$RL_OUT" "pass 1/until-clean" "13 the manifest spelling reaches the loop"
+
+# =============================== 14. decline and defer (#618) ===================================
+# #618 acceptance: a pass whose only REQUIRED finding is deferred with an issue lets the round push.
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" defer --issue 12 --site f.sh:1 --finding 'reads return empty on a database error' .claude/state
+eq "$RL_RC" 0 "14 defer records a finding against the issue filed for it"
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "14 a pass whose only REQUIRED finding is deferred is settled (0): it certifies the tree it read"
+eq "$RL_OUT" 'local review: 1 pass · pass 1 -> 1 REQUIRED, settled: every REQUIRED finding of pass 1 was declined or deferred — deferred: 1 (pass 1 #12 `f.sh:1`: `reads return empty on a database error`)' \
+   "14 the report line names the deferred finding and its issue"
+eq "$(count "$d")" 1 "14 …with no further dispatch"
+rl "$d" defer --issue 12 --site f.sh:1 --finding 'reads return empty on a database error' .claude/state
+eq "$RL_RC" 10 "14 the identical defer is a no-op (10), so a retry is safe"
+rl "$d" defer --issue 13 --site f.sh:1 --finding 'reads return empty on a database error' .claude/state
+eq "$RL_RC" 19 "14 the same finding deferred to a different issue is a conflict (19), never a second row"
+rl "$d" decline --reason 'not reachable' --site f.sh:1 --finding 'reads return empty on a database error' .claude/state
+eq "$RL_RC" 19 "14 a finding already deferred cannot also be declined (19)"
+rl "$d" defer --issue 12 --site f.sh:2 --finding 'another' .claude/state
+eq "$RL_RC" 17 "14 a disposition past the declared count is refused (17)"
+eq "$(grep -c '^defer' "$d/.claude/state/review-loop.tsv")" 1 "14 …and one row is all the record holds"
+commit_fix "$d" late
+rl "$d" report .claude/state
+eq "$RL_RC" 34 "14 a commit after a settled pass un-settles it — the tree it certified is gone"
+# …through open-pr's own gate, and through a resolver round's record.
+d="$(opfix)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+rl "$d" defer --issue 12 --site f.sh:1 --finding 'pre-existing' .claude/state
+opr "$d"
+eq "$RL_RC" 24 "14 a settled loop lets open-pr through to its push"
+d="$(fixture)"; git -C "$d" remote add origin https://github.com/o/r.git
+PH="$(git -C "$d" rev-parse HEAD)"; commit_fix "$d" unpushed; script "$d" req:1
+prl "$d" review-loop pass --pr 7 --head "$PH" .claude/state codex
+prl "$d" review-loop defer --pr 7 --head "$PH" --issue 12 --site f.sh:1 --finding 'pre-existing' .claude/state
+prl "$d" review-loop report --pr 7 --head "$PH" .claude/state
+eq "$RL_RC" 0 "14 a resolver round whose only REQUIRED finding is deferred reports the push-able 0"
+
+# Two findings, one declined: not settled. The other fixed, the next pass's own deferred: settled,
+# and the line says how each ended.
+d="$(fixture)"; script "$d" req:2 req:1
+rl "$d" pass .claude/state codex
+rl "$d" decline --reason 'a helper would live better elsewhere: a shape' --site f.sh:1 --finding 'move the helper' .claude/state
+eq "$RL_RC" 0 "14 decline records a finding with its reason"
+rl "$d" report .claude/state
+eq "$RL_RC" 34 "14 a pass with one of two REQUIRED findings declined is NOT settled"
+has "$RL_OUT" "1 of 2 REQUIRED finding(s) of pass 1 declined or deferred" "14 …and the line says how far it got"
+commit_fix "$d" other
+rl "$d" pass .claude/state codex
+RL_OUT="$( cd "$d" && env HOME="$FHOME" bash "$IL" review-loop defer --issue 40 --site 'lib/a file.sh:9' --occurrence 2 --finding - .claude/state <<'FINDING' 2>&1
+Closes #1 and `Fixes #2`
+FINDING
+)"; RL_RC=$?
+eq "$RL_RC" 0 "14 defer reads --finding - from stdin, with a site that has a space and an occurrence"
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "14 the later pass, its one finding deferred, settles"
+has "$RL_OUT" "\`Closes #1 and 'Fixes #2'\`" "14 a deferred closing keyword is rendered inside a code span, backticks neutralized"
+has "$RL_OUT" 'declined: 1 (pass 1 `f.sh:1`: `move the helper` — `a helper would live better elsewhere: a shape`)' \
+   "14 the line keeps an EARLIER pass's declined finding, with its reason"
+has "$RL_OUT" 'deferred: 1 (pass 2 #40 `lib/a file.sh:9` (occurrence 2): ' "14 …and the deferred one, with its issue and occurrence"
+has "$RL_OUT" " — fixed: 1 · declined: 1 " "14 fixed excludes what was declined or deferred: two REQUIRED, one declined, one fixed"
+# FIXED is derived from a later pass over a DIFFERENT tree.
+d="$(fixture)"; script "$d" req:1 req:0
+rl "$d" pass .claude/state codex
+rl "$d" pass .claude/state codex
+rl "$d" report .claude/state
+eq "$RL_RC" 0 "14 a second pass over the unchanged tree may converge"
+hasnt "$RL_OUT" "fixed:" "14 a pass retaken on the same tree fixes nothing"
+
+# Refused fields, and the passes a disposition cannot be taken against.
+d="$(fixture)"; script "$d" req:2
+rl "$d" defer --issue 12 --site f.sh:1 --finding x .claude/state
+eq "$RL_RC" 17 "14 defer with nothing recorded is refused (17)"
+rl "$d" pass .claude/state codex
+for bad_issue in abc 012 0 '#12' 12345678901; do
+  rl "$d" defer --issue "$bad_issue" --site f.sh:1 --finding x .claude/state
+  eq "$RL_RC" 19 "14 defer refuses an issue that is not a number (19): '$bad_issue'"
+done
+rl "$d" decline --reason "$(printf 'a\tb')" --site f.sh:1 --finding x .claude/state
+eq "$RL_RC" 19 "14 a reason carrying a TAB is refused (19) — it would forge a field"
+rl "$d" defer --issue 12 --site '../x' --finding x .claude/state
+eq "$RL_RC" 19 "14 defer takes carry's site rule"
+chmod 444 "$d/.claude/state/review-loop.tsv"
+rl "$d" defer --issue 12 --site f.sh:1 --finding x .claude/state
+chmod 644 "$d/.claude/state/review-loop.tsv"
+eq "$RL_RC" 20 "14 a defer that cannot be written fails (20), never reported as recorded"
+d="$(fixture)"; script "$d" 127
+rl "$d" pass .claude/state codex
+rl "$d" defer --issue 12 --site f.sh:1 --finding x .claude/state
+eq "$RL_RC" 17 "14 defer against a failed pass is refused (17)"
+eq "$(grep -c '^defer' "$d/.claude/state/review-loop.tsv")" 0 "14 …and nothing is appended"
+
+# Exhaustion counts every disposition: a carried LOW beside a deferred finding pushes; a finding
+# cannot end two ways; a shortfall still blocks, and its line still names what was deferred.
+d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:2
+rl "$d" pass .claude/state codex
+rl "$d" defer --issue 5 --site f.sh:1 --finding 'old bug' .claude/state
+rl "$d" carry --severity low --site f.sh:1 --finding 'old bug' .claude/state
+eq "$RL_RC" 19 "14 a finding already deferred cannot also be carried (19)"
+rl "$d" carry --severity low --site f.sh:2 --finding 'a nit' .claude/state
+rl "$d" report .claude/state
+eq "$RL_RC" 33 "14 an exhaustion with one finding carried LOW and the other deferred pushes (33)"
+has "$RL_OUT" 'carried: 1 (low `f.sh:2`: `a nit`) — deferred: 1 (pass 1 #5 ' "14 …naming both"
+d="$(fixture)"; script "$d" req:3
+rl "$d" pass .claude/state codex
+rl "$d" defer --issue 5 --site f.sh:1 --finding 'old bug' .claude/state
+rl "$d" carry --severity low --site f.sh:2 --finding 'a nit' .claude/state
+rl "$d" report .claude/state
+eq "$RL_RC" 39 "14 an exhaustion one disposition short still BLOCKS"
+has "$RL_OUT" "3 REQUIRED finding(s), 1 carried, 1 declined or deferred" "14 …and names the shortfall"
+has "$RL_OUT" "deferred: 1 (pass 1 #5 " "14 a BLOCKED line still names what was deferred"
+RL_ENV=""
+
+# The reader enforces what the writers promise: these rows are ones no writer can emit.
+d="$(fixture)"; script "$d" req:2 req:1
+rl "$d" pass .claude/state codex; commit_fix "$d" a
+rl "$d" pass .claude/state codex
+printf 'defer\t1\t12\tf.sh:1\t1\told\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "14 a defer row against an earlier pass refuses the record"
+d="$(fixture)"; script "$d" req:2
+rl "$d" pass .claude/state codex
+printf 'defer\t1\t12\tf.sh:1\t1\tx\ndecline\t1\tf.sh:1\t1\tx\tbecause\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "14 a finding both deferred and declined refuses the record"
+d="$(fixture)"; script "$d" req:2
+rl "$d" pass .claude/state codex
+printf 'defer\t1\t12\tf.sh:1\t1\tx\ncarry\t1\tlow\tf.sh:1\t1\tx\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "14 a finding deferred and then carried refuses the record"
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+printf 'defer\t1\t12\tf.sh:1\t1\tx\ndefer\t1\t12\tf.sh:2\t1\ty\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "14 more dispositions than the pass declared REQUIRED refuses the record"
+d="$(fixture)"; script "$d" req:1
+rl "$d" pass .claude/state codex
+printf 'defer\t1\tabc\tf.sh:1\t1\tx\n' >> "$d/.claude/state/review-loop.tsv"
+rl "$d" report .claude/state
+eq "$RL_RC" 18 "14 a defer row whose issue is not a number refuses the record"
+
+# =============================== 15. the whole-run summary (#618) ===============================
+# One record per /implement-issue run and per resolver round; `summary` reads the run whole.
+d="$(fixture)"; git -C "$d" remote add origin https://github.com/o/r.git
+S="$d/.claude/state"
+marker() { jq -n --arg u "$2" '{branch:"issue-7-x", issue:"7", phase:"pr_opened", startedAt:"2026-09-28T00:00:00Z", prUrl:$u}' > "$1/implement-issue-active.json"; }
+marker "$S" "https://github.com/o/r/pull/7"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 11 "15 summary with nothing recorded is 11"
+script "$d" req:2 req:0
+rl "$d" pass .claude/state codex; commit_fix "$d" impl
+rl "$d" pass .claude/state codex
+H1="$(git -C "$d" rev-parse HEAD)"; PH="$H1"; commit_fix "$d" round1; script "$d" req:1
+prl "$d" review-loop pass --pr 7 --head "$H1" .claude/state codex
+prl "$d" review-loop decline --pr 7 --head "$H1" --reason 'a shape, not a defect' --site f.sh:3 --finding 'could be more thorough' .claude/state
+H2="$(git -C "$d" rev-parse HEAD)"; PH="$H2"; commit_fix "$d" round2; script "$d" req:0
+prl "$d" review-loop pass --pr 7 --head "$H2" .claude/state codex
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 0 "15 summary renders a run of one implementation record and two rounds"
+has "$RL_OUT" "local review, whole run: 4 pass(es) in 3 record(s) — REQUIRED per pass: 2, 0, 1, 0 — fixed: 2 · declined: 1 · deferred: 0 · carried: 0" \
+   "15 the first line carries the run's total passes, each pass's REQUIRED count, and how the findings ended"
+has "$RL_OUT" "  /implement-issue: pass 1 -> 2 REQUIRED · pass 2 -> 0" "15 …then one line per record"
+has "$RL_OUT" "  declined — round from ${H1:0:12}, pass 1: \`f.sh:3\`: \`could be more thorough\` — \`a shape, not a defect\`" \
+   "15 …and one per finding that ended without a fix, with its reason"
+L1="$(printf '%s\n' "$RL_OUT" | grep -n -m1 -F "  round from ${H1:0:12}:" | cut -d: -f1)"
+L2="$(printf '%s\n' "$RL_OUT" | grep -n -m1 -F "  round from ${H2:0:12}:" | cut -d: -f1)"
+order "15 summary orders the rounds by ancestry, oldest first" "$L1" "$L2"
+rl "$d" summary .claude/state
+has "$RL_OUT" "2 pass(es) in 1 record(s)" "15 without --pr it is the run's own record alone"
+marker "$S" "https://github.com/o/r/pull/8"
+prl "$d" review-loop summary --pr 7 .claude/state
+has "$RL_OUT" "2 pass(es) in 2 record(s)" "15 summary --pr leaves out a run record whose marker names another PR"
+has "$RL_OUT" "/implement-issue: not counted" "15 …and says it left it out"
+cp "$S/review-loop-pr7-${H2:0:12}.tsv" "$S/review-loop-pr7-aaaaaaaaaaaa.tsv"
+prl "$d" review-loop summary --pr 7 .claude/state
+has "$RL_OUT" "round from aaaaaaaaaaaa (position unknown" "15 a round whose head no longer resolves is listed last, and says so"
+rm -f "$S/review-loop-pr7-aaaaaaaaaaaa.tsv"
+printf 'bogus\tx\n' >> "$S/review-loop-pr7-${H2:0:12}.tsv"
+prl "$d" review-loop summary --pr 7 .claude/state
+eq "$RL_RC" 18 "15 summary refuses (18) when a round record does not parse — never a partial run"
+
+# =============================== 16. the reviewer brief (#618) ==================================
+d="$(fixture)"; script "$d" req:0
+rl "$d" pass .claude/state codex
+RP="$(cat "$d/.claude/state/review-prompt.txt")"
+has "$RP" "a defect this diff INTRODUCES, or one it makes REACHABLE" "16 the brief scopes REQUIRED to what the diff introduced or made reachable"
+has "$RP" 'under a separate heading `PRE-EXISTING`' "16 …and gives a defect in code the diff only calls its own heading"
+has "$RP" "a PRE-EXISTING item counts toward neither" "16 …which the verdict trailer does not count"
+
 # =============================== 11. the prose drives the loop ==================================
 # #491 acceptance: step 9 calls the loop before step 10; the resolver calls it before the push and
 # before step 7's re-request. A command is located only INSIDE a fenced block — a prose mention of it
 # is not a call, and ordering pins that matched prose would stay green with the call deleted.
-code_line_of() {
-  awk -v pat="$2" '/^[[:space:]]*(```|~~~)/ { f = !f; next } f && index($0, pat) { print NR; exit }' "$1"
-}
-line_of() { grep -n -m1 -F -- "$2" "$1" | cut -d: -f1; }
-order() { local a="$2" b="$3"
-  if [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; then ok; else bad "$1 [@${a:-none} < @${b:-none}]"; fi; }
 IPASS="$(code_line_of "$IW" 'review-loop pass ${EFFORT:+--effort "$EFFORT"} {{STATE_DIR}} "$REVIEW_TOKEN"')"
 IBEGIN="$(code_line_of "$IW" 'review-loop begin {{STATE_DIR}} "$REVIEW_TOKEN"')"
 IREPORT="$(code_line_of "$IW" 'review-loop report {{STATE_DIR}}')"
@@ -988,5 +1350,16 @@ order "11 …after 4c, so the reviewed diff includes the ledger commit" "$(line_
 eq "$(grep -c 'git push origin' "$RW")" 1 "11 the resolver pushes ONCE per round — the fix and ledger pushes are consolidated"
 [ -n "$RPUSH" ] && ok || bad "11 …by the SHA the report certified, never by branch name"
 grep -q '^# *local_passes' "$ROOT/templates/agents.toml" && ok || bad "11 the template declares the key"
+# #618 acceptance: step 9 and 4d document the new dispositions, where a pass can precede them.
+IDEFER="$(code_line_of "$IW" 'review-loop defer --issue <n>')"
+order "11 step 9 documents the defer disposition, after the pass it is taken against" "$IPASS" "$IDEFER"
+order "11 …and before step 10" "$IDEFER" "$(line_of "$IW" '### 10. Push + open PR')"
+[ -n "$(code_line_of "$IW" 'review-loop decline --reason')" ] && ok || bad "11 step 9 documents the decline disposition"
+RDEFER="$(code_line_of "$RW" 'review-loop defer --pr "$PR_NUM" --head "$SWEEP_HEAD" --issue <n>')"
+order "11 4d documents the defer disposition, after its pass" "$RPASS" "$RDEFER"
+order "11 …and before the round's push" "$RDEFER" "$RPUSH"
+[ -n "$(code_line_of "$RW" 'review-loop decline --pr "$PR_NUM" --head "$SWEEP_HEAD" --reason')" ] && ok || bad "11 4d documents the decline disposition"
+[ -n "$(code_line_of "$RW" 'review-loop summary --pr "$PR_NUM" {{STATE_DIR}}')" ] && ok || bad "11 the resolver's closing summary renders the whole run"
+grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
 
 check_summary check-review-loop

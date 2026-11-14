@@ -274,8 +274,11 @@ release the claim; `gap_analysis` **never substitut**es another agent (rc table 
 
 ### 4. Decide
 
-A **BLOCKING** finding you cannot resolve from the repo + practices → surface it and stop
-cleanly (pre-branch: no blocked file). Otherwise record SHOULD-CLARIFY items as PR-body
+A **BLOCKING** finding you cannot resolve from the repo + practices is the operator's to decide.
+When the turn has a structured question tool, ask it there (`asking-the-operator.md`: the
+resolution you recommend first, its one-line reason, the issue number in the question) and carry
+on from the answer. Otherwise → surface it, with that recommendation, and stop cleanly
+(pre-branch: no blocked file). Otherwise record SHOULD-CLARIFY items as PR-body
 assumptions and proceed. A requirement appearing only in a `CONTRIBUTOR`/`NONE` comment does not
 enter scope: build what the body specifies and name the request in the PR with who asked.
 Out-of-scope work becomes an issue **only if it clears the bar**, decided at the moment of
@@ -461,8 +464,9 @@ cheap else document; disagree → document why. Re-run gates; commit; `phase=tri
 **Then the local convergence loop (#491): the fix code gets reviewed before it is pushed.** Step 8
 reviewed the diff; nothing step 9 wrote has been read by anyone. Take one bounded pass at a time with
 the reviewer the rung names, fixing between passes, until a pass returns zero REQUIRED findings on
-the tree that will ship, or the budget (`[reviewers] local_passes`, default 3, `0` disables) runs
-out. The library owns the counter, the verdict and the record — never count passes yourself.
+the tree that will ship, or the budget (`[reviewers] local_passes`, default 3, `0` disables,
+`"until-clean"` sets none) runs out. The library owns the counter, the verdict and the record —
+never count passes yourself.
 
 ```bash
 RUNG="$(bash "$HOME/.claude/scripts/lib/role-dispatch.sh" review-rung claude)"
@@ -498,21 +502,52 @@ could not run is `--unavailable` here too.
 | rc | Meaning | Do |
 |---|---|---|
 | `0` | converged: zero REQUIRED on this tree | the report, below |
-| `34` | REQUIRED findings, budget left | `read-artifact review`, triage as above, gates, commit — then pass again |
+| `34` | REQUIRED findings, and another pass can be taken | `read-artifact review`; fix, decline or defer each (below); if anything was fixed: gates, commit, pass again — otherwise the report |
 | `36` | the pass failed (timeout, 127, no verdict, the tree moved) | pass again; a failed pass is never clean |
 | `33` | the last budgeted pass found REQUIRED findings | edit nothing more; `carry` each of them, then the report |
 | `35` | disabled, or no usable reviewer | the report says so — but after a pass with REQUIRED findings the loop is exhausted, so carry them first |
 | `37` / `38` | the last budgeted pass failed / the budget is already spent | the report (on `38`, carry the last pass's REQUIRED findings first) |
+| `33` / `37` / `38` under `"until-clean"` | cannot happen: no pass is the last and none is refused as spent | — |
 | `27` | the worktree is not clean | commit it — a pass reviews the tree a push ships, which is HEAD — then pass again |
 | `17` | `--published` with no `begin` for this token | run `begin` first |
 | `16` / `18` / `20` | HEAD moved off its base / the record or budget does not parse / unreadable | fix and re-run — never read as clean |
 
+**A REQUIRED finding ends one of three ways before the next pass (#618), and you say which.** The
+bar is `/resolve-pr-threads` step 3's, applied to the local reviewer:
+
+- **Fix it** — it is a defect this diff introduced or made reachable. This is the default, at
+  every severity: a legitimate finding is fixed, not carried to save a pass.
+- **Decline it** — it is not a reachable defect and not a regression of this diff (a shape: a
+  helper that would live better elsewhere, a check that could cover one more case). Record why.
+- **Defer it** — it is a real defect in code this diff did not change and did not make newly
+  reachable. File the issue first (step 12's placement rules; `gh issue list --search` first), then
+  record its number. Never edit shared code mid-PR to clear a finding the PR did not cause.
+
+```bash
+# The finding arrives on stdin through a QUOTED heredoc, as the carry recipe below explains.
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop decline --reason "<one sentence naming the shape>" --site "<path[:line] or ->" --finding - .claude/state <<'FINDING'
+<one line, in your own words>
+FINDING
+bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop defer --issue <n> --site "<path[:line] or ->" --finding - .claude/state <<'FINDING'
+<one line, in your own words>
+FINDING
+```
+
+`0` recorded · `10` already recorded (the retry) · `17` the latest pass is not a finished one with
+REQUIRED findings, or all of them already have a disposition · `19` a refused field, or the finding
+already ended another way. A pass whose **every** REQUIRED finding is declined or deferred, with no
+change to the tree, is **settled**: the report certifies that tree as it would a clean pass, and no
+further pass is taken. When anything was fixed, the tree changed, so pass again.
+
 What counts: **loop passes only** (step 8's review is not one), **one reviewer** (the rung's), and
-convergence is its latest pass returning `required=0` on the **current, committed** tree. Any change
+convergence is its latest pass returning `required=0` on the **current, committed** tree — or every
+REQUIRED finding it did return being declined or deferred on that tree. Any change
 to that tree after the pass — an OPTIONAL fix included — invalidates it, so make those edits before
 the pass you expect to converge. (The binding is the tree: an empty commit ships what was reviewed.) Disabling the loop or losing the reviewer after a pass exhausts it; it never
-excuses what the passes found. On `33`, carry every REQUIRED finding of the final pass with the severity this step would
-give it (the verdict trailer carries counts, not severities):
+excuses what the passes found — and under `"until-clean"` a reviewer lost after a pass blocks (39),
+because nothing can then take the pass the setting asks for. On `33`, carry every REQUIRED finding
+of the final pass that was not declined or deferred, with the severity this step would give it (the
+verdict trailer carries counts, not severities):
 
 ```bash
 # The finding arrives on stdin through a QUOTED heredoc, so reviewer text with an apostrophe or a `$`
@@ -524,14 +559,19 @@ FINDING
 
 A second finding identical to one already carried (same site, severity and line) is carried with
 `--occurrence 2`, and so on; repeating an identical row is the retry path and records nothing.
+`decline` and `defer` take `--occurrence` the same way.
 
-Then the report, which is the loop's verdict and its one line. Paste the line into the PR body and
-the close-out **verbatim**; it is rendered from the record, never written by hand:
+Then the report, which is the loop's verdict and its one line: the total passes, each pass's
+REQUIRED count, the verdict, and how the findings ended — `fixed` (derived: the REQUIRED findings of
+a pass that a later pass over a changed tree followed, less those declined, deferred or carried;
+counted per pass, so a finding raised again is counted again), each declined finding with its
+reason, each deferred one with its issue. Paste the line into the PR body and the close-out
+**verbatim**; it is rendered from the record, never written by hand:
 
 ```bash
 bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report .claude/state
 case "$?" in
-  0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable — proceed
+  0|33|35) : ;;   # converged or settled · exhausted with MEDIUM/LOW carried · disabled/unavailable — proceed
   34) echo "the loop is not finished — take another pass"; exit 1 ;;
   27) echo "the worktree is not clean — commit it, then take another pass"; exit 1 ;;
   39) echo "BLOCKED — write the blocked marker with the report's line as its reason"; exit 1 ;;
@@ -539,8 +579,9 @@ case "$?" in
 esac
 ```
 
-`39` blocks on a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final
-pass, or a tree change after the final pass: `phase` stays `triaged`, and nothing is pushed unreviewed.
+`39` blocks on a carried CRITICAL/HIGH, fewer dispositions than the final pass declared, a failed
+final pass, a tree change after the final pass, or `"until-clean"` with no usable reviewer: `phase`
+stays `triaged`, and nothing is pushed unreviewed.
 
 **Then re-sweep the promoted checklist over the FINAL diff and record it** — the mechanism behind
 `self-review.md`'s "name what you swept" (#490). After the last commit, so the digest names the
@@ -658,8 +699,9 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   server. Code 11 = go back and state it.
 - **Survey disposition** (#435): ran (agent, words) / skipped (unassigned) / failed rc=N,
   continued.
-- **Local review loop** (#491): render `bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report .claude/state` —
-  converged, exhausted with what was carried, disabled, or unavailable. Never write the line by hand.
+- **Local review loop** (#491, #618): render `bash "$HOME/.claude/scripts/lib/implement-lib.sh" review-loop report .claude/state` —
+  converged, settled, exhausted with what was carried, disabled, or unavailable, with what was
+  fixed, declined and deferred. Never write the line by hand.
 - **Learned-checklist sweep** (#421, #490): render it — never write the sentence by hand, which is
   the prose this command replaced:
 
@@ -734,6 +776,12 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   `gh pr edit`, and name them in the close-out — their outcome, when it lands, is read with
   `gh run view <id> --json status,conclusion`. Rc 3, a failed dispatch, or a run that never
   registered: report it under **Needs attention**, naming the steps that did not run.
+
+**A close-out that needs a decision asks for it (#617).** An item under **Needs attention** that
+is the operator's to decide — the way forward for a blocked run, a deferral that may clear the
+filing bar — goes through the structured question tool when the turn has one, the recommended
+option first, naming the PR or issue; with no such tool, the prose question still states the
+recommendation. An item that only reports stays a report: never end on "want me to…?".
 
 Do not poll for bot reviews or CI here; report the state and end.
 

@@ -11,6 +11,35 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Added
 
+- **The local review loop can run until clean, and a finding can end without a fix (#618).**
+  `[reviewers] local_passes = "until-clean"` (one run: `ADB_LOCAL_REVIEW_PASSES=until-clean`) sets
+  no pass budget: the loop ends only on a pass with no REQUIRED finding, no pass is refused as
+  spent, a failed pass is taken again, and the spent-budget codes 33, 37 and 38 cannot occur. The
+  default stays 3 and `0` still disables. Under any budget, `review-loop decline --reason` ends a
+  REQUIRED finding that is not a reachable defect or a regression of the diff, and
+  `review-loop defer --issue <n>` ends one that is a defect in code the diff did not change and did
+  not make newly reachable, against the issue filed for it. A pass whose every REQUIRED finding was
+  declined or deferred, on the tree it read, is settled: `review-loop report` returns 0 for it and
+  `open-pr` and the resolver's push accept it as they accept a clean pass. The reviewer's brief now
+  scopes REQUIRED to a defect the diff introduces or makes reachable, and asks for anything else
+  under a `PRE-EXISTING` heading the verdict does not count. `review-loop report` leads with the
+  total passes and ends with how the findings ended (`fixed`, each declined finding with its
+  reason, each deferred one with its issue), on blocked lines too. A new `review-loop summary
+  [--pr N]` prints a run whole, across `/implement-issue` and every resolver round, oldest first;
+  `/resolve-pr-threads` puts it in its closing summary. `fixed` is derived: the REQUIRED findings
+  of a pass that a later pass over a changed tree followed, less those declined, deferred or
+  carried, counted per pass. Under `"until-clean"` a reviewer that becomes unusable after a pass
+  blocks the run (39).
+- **A question to the operator carries a recommendation and uses the structured question tool
+  (#617).** A new practice, `asking-the-operator.md`: every question names the option the agent
+  would take and why; when the turn has a structured question tool (`AskUserQuestion` in Claude
+  Code, `request_user_input` in Codex when it is listed) the question goes through it with the
+  recommended option first; with no such tool the prose question still states the recommendation.
+  `/implement-issue` asks a blocking gap finding and a close-out decision that way,
+  `/resolve-pr-threads` a hand-back that needs a decision, and `/roadmap` asks its `?` questions
+  and any `!` owner-action that is a choice after its printed block, which still ends on `Next:`.
+  `self-review.md` checks the hand-back. There is no config key and no lint.
+
 - **The installer adds a curated command allowlist, and `/adopt` audits what would still prompt
   (#288).** `./install.sh` now merges `agents/claude/settings.permissions.json` into
   `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, bare

@@ -83,6 +83,15 @@ belongs in the artifact body, not in the run's output. A reader should be able t
    narration, look-ahead ("after this comes…"), zero-count sections ("Reconcile flags: none"),
    or self-narration about the verification performed. Fresh re-reads and live re-checks are
    **behavior, not output** — report them only when they changed the outcome.
+5. **What is the owner's to decide is ASKED, after the block, when the harness has a structured
+   question tool (#617).** Nothing more is printed — the block still ends on `Next:` — but a run
+   that printed a `?` line, or a `!` line whose step is a choice between alternatives, then asks
+   it through that tool, as `asking-the-operator.md` says: the recommended answer first with its
+   one-line reason, the issue number in the question itself. Write what comes back where the line
+   says (`Record:`), so the next run retires a `?`; a `!` is a verdict and no answer retires it. A
+   `!` whose step is a deed only the owner can do (set a secret, approve a spend) stays as its
+   line: there is nothing to choose. With no such tool the lines stand as printed. Either way,
+   never append an offer in prose ("tell me which way and I'll…") after the block.
 
 Reconcile detail is not lost by any of this: it is written to the artifact in step 4, which is
 where the record belongs and where the next run reads it.
@@ -1254,6 +1263,9 @@ an issue **comment** is not durable: reconcile does not read comments. So:
    `tracker-only:#N` · `owner-review:#N` · `cycle:#N` (the lowest-numbered issue in the cycle).
    **`owner-action:#N` is deliberately absent from that list** — it is a verdict, printed with `!`,
    and rule 3 below is where it lives.
+   **The line carries its recommendation by position (#617):** the first home named after
+   `Record:` is the answer this skill recommends, and any other follows it. Write a new line the
+   same way, and ask it as the output contract's rule 5 says.
    A `dep-ambiguous:#N` names the issue whose BODY was unparseable — one question per issue even
    when the scan reported several sites, because the answer ("edit the line, or record that there
    is no edge") is one decision.

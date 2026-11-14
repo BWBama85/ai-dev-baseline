@@ -84,16 +84,19 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
 | `29` | `dispatch-review --criteria-from-pr` | the linked-issue read FAILED, or the PR returned a malformed `closingIssuesReferences`. Distinct from the rc `0` an empty-but-valid link set takes, so an API failure can never quietly degrade the review to lens-only and still report success |
 | `16` | `dispatch-review --criteria-from-pr` | the PR is not OPEN, or the checkout's HEAD is not its head commit. This review runs at the **start of a round, on the pushed head** — a review is never attributed to a commit it did not read. Sync the branch and re-run |
 | `16` | `dispatch-review --criteria-from-pr --local-head` | HEAD does not DESCEND from the PR's head — not that pull request plus local commits. The local convergence loop's form (#491); sync the branch |
-| `33` | `review-loop pass` / `report` | exhausted: the last budgeted pass found REQUIRED findings. `pass` → carry each one; `report` → every one is carried and none is CRITICAL/HIGH, so the push proceeds and the line names them |
-| `34` | `review-loop pass` / `report` | not converged, budget left — fix, commit, pass again |
+| `33` | `review-loop pass` / `report` | exhausted: the last budgeted pass found REQUIRED findings. `pass` → carry each one not declined or deferred; `report` → every one is carried, declined or deferred and no carry is CRITICAL/HIGH, so the push proceeds and the line names them. Unreachable under `"until-clean"` (#618), as `37` and `38` are |
+| `34` | `review-loop pass` / `report` | not converged, and another pass can be taken — fix, decline or defer each finding; when anything was fixed: commit, pass again |
 | `35` | `review-loop pass` / `begin` / `report` | `local_passes = 0`, or no usable reviewer: nothing dispatched. Before any pass the push proceeds and the line says so; after one, `report` treats the loop as exhausted instead |
 | `36` / `37` | `review-loop pass` | the pass FAILED (timeout, 127, no verdict, the tree moved during it) with budget left / on the last budgeted pass. A failed pass counts against the budget and is never clean |
 | `38` | `review-loop pass` | refused: the budget is spent, nothing dispatched — a fourth pass under `local_passes = 3` cannot happen |
-| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer carries than the final pass declared, a failed final pass, or a tree change after the final pass. Blocked marker, `phase` stays `triaged` |
+| `39` | `review-loop report` | BLOCK: a carried CRITICAL/HIGH, fewer dispositions than the final pass declared, a failed final pass, a tree change after the final pass, or `"until-clean"` with no usable reviewer. Blocked marker, `phase` stays `triaged` |
 | `11` | `review-loop report` | no loop was recorded — the loop never ran |
-| `17` | `review-loop pass --published` / `begin` / `carry` | no native pass was begun for this token — run `review-loop begin` before the subagent / a native pass is already begun — finish it with `pass --published` / nothing to carry (not exhausted, or its count is already carried) |
+| `17` | `review-loop pass --published` / `begin` / `carry` | no native pass was begun for this token — run `review-loop begin` before the subagent / a native pass is already begun — finish it with `pass --published` / nothing to carry (not exhausted — never, under `"until-clean"` — or every finding already has a disposition) |
+| `17` | `review-loop defer` / `decline` | nothing to disposition: the latest pass is not a finished one with REQUIRED findings, or every one it declared already has a disposition |
+| `10` | `review-loop carry` / `defer` / `decline` | this exact row is already recorded — the retry path, nothing written |
 | `27` | `review-loop pass` / `begin` / `report` | the worktree is not clean. A pass reviews the worktree and a push ships HEAD, so the loop reviews and certifies only a committed tree — commit, then pass again |
-| `19` | `review-loop carry` | a refused field (severity, a `--site` that is not a repository-relative `path[:line]` or `-`, an `--occurrence` that is not 1-9999, or a finding past 300 bytes or carrying a control character), or a row that would take the record past its 1 MiB bound |
+| `19` | `review-loop carry` / `defer` / `decline` | a refused field (severity, a `--site` that is not a repository-relative `path[:line]` or `-`, an `--occurrence` that is not 1-9999, an `--issue` that is not an issue number, or a finding or `--reason` past 300 bytes or carrying a control character), a finding that already ended another way, or a row that would take the record past its 1 MiB bound |
+| `11` / `18` | `review-loop summary` | nothing is recorded for the run / a record does not parse — no summary is rendered from a partial run |
 | `39` | `open-pr` | the local convergence loop does not certify the tip (`review-loop report` is not 0/33/35, or no loop was recorded while it is enabled), or the tip moved while that verdict was read. Re-run step 9's loop — never push past it |
 | `27` | `open-pr` | the worktree is not clean — an uncommitted or untracked change would be pushed around, so the reviewed tree is not the tip; commit it (or gitignore what is not part of the change) and re-run |
 
@@ -117,9 +120,13 @@ progressing, and the large `.err` is evidence of *active work*. Read the classif
   stop. Never push red.
 - **`review-loop report` returns 39** (#491) → the local convergence loop cannot certify the tree
   that would ship. Blocked marker, reason = the report's line. The escape is the operator's:
-  `ADB_LOCAL_REVIEW_PASSES` raised for one more pass, or the finding fixed and re-reviewed —
-  never an edit pushed past the last pass.
-- **Branch already exists on remote** → blocked marker; ask the user; never force-push.
+  `ADB_LOCAL_REVIEW_PASSES` raised for one more pass (or set to `until-clean`), or the finding
+  fixed and re-reviewed — never an edit pushed past the last pass. A repo that declares
+  `local_passes = "until-clean"` (#618) has no spent budget to block on: there 39 means the
+  reviewer became unusable before a clean or settled pass.
+- **Branch already exists on remote** → blocked marker; ask the operator what to do with it
+  (`asking-the-operator.md` — a structured question when the turn has the tool, your recommended
+  option first); never force-push.
 - **The Stop hook keeps blocking** → you are trying to end before the PR is open; open it or
   write the blocked marker. Don't fight the hook.
 - **The Stop hook nags about a run you never started** → it is reading a marker owned by another

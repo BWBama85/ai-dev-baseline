@@ -1054,7 +1054,8 @@ of bookkeeping.
 pushed**, by the same bounded one-pass loop `/implement-issue` step 9 runs. The async reviewer stays
 the last sample rather than the first: a round's fix diff used to go straight to it, at roughly 80
 minutes a sample. The record is keyed by the head the round started from (`$SWEEP_HEAD`, 4a), so
-every round has a fresh budget (`[reviewers] local_passes`, default 3; `0` disables).
+every round has a fresh budget (`[reviewers] local_passes`, default 3; `0` disables; `"until-clean"`
+sets none, so the round's loop ends only on a clean or settled pass).
 
 ```bash
 : "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
@@ -1095,9 +1096,31 @@ subagent — under the same deadline step 8 gives it — `publish-review`, and
 timed out or failed as the failed pass it was.
 
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
-(`read-artifact review`), fix, gate, commit, pass again · `36` pass again · `27` commit, pass again ·
-`33` carry each REQUIRED finding (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35`/`38` report — after a pass with REQUIRED findings the loop is exhausted, so carry them first · `37` report. `carry` and `report` take the same
-`--pr "$PR_NUM" --head "$SWEEP_HEAD"`. A fix made here answers the local reviewer, not a thread: it is
+(`read-artifact review`) and end each one, below; when anything was fixed: gate, commit, pass again ·
+`36` pass again · `27` commit, pass again ·
+`33` carry each REQUIRED finding not declined or deferred (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35`/`38` report — after a pass with REQUIRED findings the loop is exhausted, so carry them first · `37` report. Under `"until-clean"` `33`, `37` and `38` cannot happen. `carry`, `decline`, `defer` and `report` take the same
+`--pr "$PR_NUM" --head "$SWEEP_HEAD"`.
+
+**Step 3's disposition bar applies to the local reviewer too (#618).** A REQUIRED finding of a
+pass is **fixed** when it is (a) a reachable defect this round's diff introduced or made reachable,
+or (b) a regression of this PR. One that is neither — a shape from step 3's list — is **declined**,
+with the sentence that names the shape. One that is a real defect in code this PR did not change
+and did not make newly reachable is **deferred**: file the issue first (it must clear
+`issues-and-scope.md`'s bar), then record its number. Never edit shared code mid-round to clear a
+finding the PR did not cause — that widens the diff and feeds the next pass.
+
+```bash
+: "${SWEEP_HEAD:?SWEEP_HEAD (the head this round started from, set in 4a) is unset}"
+bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop decline --pr "$PR_NUM" --head "$SWEEP_HEAD" --reason "<one sentence naming the shape>" --site "<path[:line] or ->" --finding - .gemini/state <<'FINDING'
+<one line, in your own words>
+FINDING
+bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop defer --pr "$PR_NUM" --head "$SWEEP_HEAD" --issue <n> --site "<path[:line] or ->" --finding - .gemini/state <<'FINDING'
+<one line, in your own words>
+FINDING
+```
+
+A pass whose every REQUIRED finding is declined or deferred, with no change to the tree, is
+**settled**: `report` returns the push-able `0` and no further pass is taken. A fix made here answers the local reviewer, not a thread: it is
 **not** a ledger hit and takes no `sweep-mark` — name it in the round summary, as 4a0's findings are.
 When it corrects a thread's own fix, that thread's step-5 reply names this commit too ("Addressed in
 `<fix>`, corrected in `<loop fix>`"); the ledger hit keeps the commit that first fixed it, because
@@ -1129,7 +1152,7 @@ if [ "$NOW_HEAD" != "$SWEEP_HEAD" ]; then
   [ "$LIVE" = "OPEN $SWEEP_HEAD" ] \
     || { echo "STOP: PR #$PR_NUM is no longer OPEN at the round's head ($LIVE) — nothing was pushed. $LOOP_LINE"; exit 1; }   # run step 8 first
   case "$LRC" in
-    0|33|35) : ;;   # converged · exhausted with MEDIUM/LOW carried · disabled/unavailable
+    0|33|35) : ;;   # converged or settled · exhausted with MEDIUM/LOW carried · disabled/unavailable
     34) echo "the loop is not finished — take another pass. $LOOP_LINE"; exit 1 ;;
     27) echo "the worktree is not clean — commit it, then take another pass. $LOOP_LINE"; exit 1 ;;
     # A BLOCK OR NO VERDICT STOPS THE ROUND UNPUSHED: nothing resolves, and step 8 restores the branch.
@@ -1258,11 +1281,32 @@ Emit a concise summary to the user:
 > Per round (every round this run processed, oldest first):
 > <ROUND_ROWS>
 >
+> <the `local review, whole run:` block, verbatim>
+>
 > This PR so far: <pr-hits> findings · <pr-recurring> recurring · <pr-new-classes> classes
 
 **Every round's row, not just the last.** The summary is emitted once at the terminal exit, and a
 run that processed six rounds has six measurements to report — printing only the final one is how
 the trend stays invisible for exactly the multi-round loop it is meant to measure.
+
+**The local review is reported whole, not only per round (#618).** Each round's row ends with that
+round's loop line; the block under the rows covers the run — `/implement-issue`'s passes when its
+record is still in this checkout and its run marker names this PR, then every round's, oldest
+first: total passes, each pass's REQUIRED count, and how each finding ended (fixed, declined with
+its reason, deferred with its issue, carried). Render it; never assemble it by hand:
+
+```bash
+WHOLE_RUN="$(bash "$HOME/.gemini/scripts/lib/implement-lib.sh" review-loop summary --pr "$PR_NUM" .gemini/state)"; WRC=$?
+case "$WRC" in
+  0|11) : ;;   # print "$WHOLE_RUN" in the summary; 11 = no pass was recorded, and its line says so
+  *)    WHOLE_RUN="local review, whole run: not rendered (rc $WRC)" ;;   # 18 a record does not parse · 20 unreadable
+esac
+```
+
+`fixed` is derived — the REQUIRED findings of a pass that a later pass over a changed tree
+followed, less those declined, deferred or carried — and it counts per pass, so a finding the
+next pass raised again is counted again. The records are run state that `/cleanup` sweeps; this
+summary is where the figures survive.
 
 **Each row carries the round's declines beside its findings (#438).** A round that declined
 everything reads `0 findings` with `declined: 6` under it, not as a round with nothing in it. The
@@ -1712,6 +1756,7 @@ fi
 - **Never resolve a human-authored thread.** Even if it looks trivial. Human discussions require human resolution.
 - **Never push to the default branch.** This skill only ever pushes to the PR's head branch.
 - **Never force-push.** If your local branch has diverged from the remote head, fetch + rebase or ask the user — do not `push --force`.
+- **A hand-back that asks, asks properly (#617).** When an exit needs the operator's decision — what to do with a diverged branch, whether a process fix this run surfaced should be filed — ask it as `asking-the-operator.md` says: through the structured question tool when the turn has one, your recommended option first with its one-line reason, naming PR #N. With no such tool the prose question still states the recommendation. An exit that only reports — a wait that timed out, a read that failed — ends on the report; do not add a question to it.
 - **Never `--no-verify`** on commits. Pre-commit gates exist for a reason.
 - **Never amend already-pushed commits.** Always make a new commit per bot-review batch.
 - **Idempotent:** running this skill twice in a row should be a no-op the second time. If you're about to resolve a thread that's already `isResolved`, skip it silently.

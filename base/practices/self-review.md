@@ -29,6 +29,10 @@ landmines in freshly generated code before they reach a reviewer or production.
 List each finding explicitly and either fix it or consciously disposition it with
 a reason — before proceeding to push. "I read it over and it looks fine" is not a
 self-review; naming what you checked is.
+
+**Review the hand-back too.** A turn that ends on a question to the operator is checked
+against `asking-the-operator.md`: asked through the structured question tool when the
+turn has one, and carrying a recommendation.
 <!-- adb:procedure -->
 
 ## Sweep what this project has already learned
