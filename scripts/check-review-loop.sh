@@ -1633,11 +1633,11 @@ RDEFER="$(code_line_of "$RW" 'review-loop defer --pr "$PR_NUM" --head "$SWEEP_HE
 order "11 4d documents the defer disposition, after its pass" "$RPASS" "$RDEFER"
 order "11 …and before the round's push" "$RDEFER" "$RPUSH"
 [ -n "$(code_line_of "$RW" 'review-loop decline --pr "$PR_NUM" --head "$SWEEP_HEAD" --reason')" ] && ok || bad "11 4d documents the decline disposition"
-# Every exit of the resolver passes through step 8, so that is the ONE place the whole run is
-# rendered — the summary's exit and an early stop alike, with no "already printed" state between.
+# Every exit after step 1's switch passes through step 8, so that is the ONE place the whole run
+# is rendered — the summary's exit and an early stop alike, with no "already printed" state between.
 R8="$(line_of "$RW" '### 8. Restore the starting branch')"
 R8SUM="$(code_line_of "$RW" '{{IMPLEMENT_LIB}} review-loop summary --pr "$PR_NUM" {{STATE_DIR}}; WRC=$?')"
-order "11 the resolver renders the whole run in step 8, which every exit of the skill ends in" "$R8" "$R8SUM"
+order "11 the resolver renders the whole run in step 8, which every exit after the branch switch ends in" "$R8" "$R8SUM"
 order "11 …before the branch is restored" "$R8SUM" "$(code_line_of "$RW" 'echo "Restored working tree to')"
 eq "$(grep -c 'review-loop summary --pr' "$RW")" 1 "11 …and nowhere else, so no exit can print it twice or miss it"
 hasnt "$(cat "$RW")" "SUMMARY_EMITTED" "11 …with no printed-already flag for a later round to inherit"

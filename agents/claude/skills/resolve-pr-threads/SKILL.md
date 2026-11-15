@@ -1099,7 +1099,7 @@ timed out or failed as the failed pass it was.
 Branch on its code with `/implement-issue` step 9's table — `0` converged · `34` read the findings
 (`read-artifact review`) and end each one, below; when anything was fixed: gate, commit, pass again ·
 `36` pass again · `27` commit, pass again ·
-`33` carry each REQUIRED finding not declined or deferred (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35`/`38` report — after a pass with REQUIRED findings the loop is exhausted, so carry them first · `37` report. Under `"until-clean"` `33`, `37` and `38` cannot happen. `carry`, `decline`, `defer` and `report` take the same
+`33` carry each REQUIRED finding not declined or deferred (with its `--site`, and `--occurrence 2`… for a second identical one), then report · `35`/`38` report — after a pass with REQUIRED findings the loop is exhausted, so carry them first · `37` report. Under `"until-clean"` `33`, `37` and `38` cannot happen, and `35` after a pass exhausts nothing: `carry` is refused (17) and `report` blocks (39) until a reviewer is usable again. `carry`, `decline`, `defer` and `report` take the same
 `--pr "$PR_NUM" --head "$SWEEP_HEAD"`.
 
 **Step 3's disposition bar applies to the local reviewer too (#618).** A REQUIRED finding of a
@@ -1288,11 +1288,11 @@ Emit a concise summary to the user:
 run that processed six rounds has six measurements to report — printing only the final one is how
 the trend stays invisible for exactly the multi-round loop it is meant to measure.
 
-**The local review is reported whole, not only per round (#618) — by step 8, on every exit.** Each
-round's row ends with that round's loop line. The run as a whole — `/implement-issue`'s passes
-when its record is still in this checkout and its run marker names this PR, then every round's,
-oldest first — is printed by step 8, the one step every exit of this skill passes through, so a
-round that stops early reports it as this summary's exit does.
+**The local review is reported whole, not only per round (#618) — by step 8.** Each round's row
+ends with that round's loop line. The run as a whole — `/implement-issue`'s passes when its record
+is still in this checkout and its run marker names this PR, then every round's, oldest first — is
+printed by step 8, which every exit after step 1's branch switch passes through, so a round that
+stops early reports it as this summary's exit does.
 
 **Each row carries the round's declines beside its findings (#438).** A round that declined
 everything reads `0 findings` with `declined: 6` under it, not as a round with nothing in it. The
@@ -1718,10 +1718,12 @@ exactly what put a later run on a now-merged branch (issue #17). Prefer the bran
 started on; fall back to the PR's **base** branch, then the repo default — never a
 hardcoded `main`.
 
-**Every exit reports the local review of the whole run (#618).** This step is the one place every
-exit passes through — the summary's, and a stop anywhere before it: a blocked local review, a
-failed push, a PR that closed, a read that failed — and the loop records are run state that
-`/cleanup` sweeps. So the whole-run block is printed here, always, and nowhere else: total
+**Every exit that reaches this step reports the local review of the whole run (#618).** That is
+every exit after step 1's branch switch — the summary's, and a stop anywhere after the switch: a
+blocked local review, a failed push, a PR that closed mid-round, a read that failed — and the loop
+records are run state that `/cleanup` sweeps. A preflight exit (reviewers disabled, a PR that
+cannot be read or is already closed) never gets here, and has nothing of its own to report: it ran
+no round. So the whole-run block is printed here, always, and nowhere else: total
 passes, each pass's REQUIRED count, and how each finding ended (fixed, superseded, declined with
 its reason, deferred with its issue, carried, or still open). It keeps no "already printed" state
 to go stale between rounds. Render it; never assemble it by hand:

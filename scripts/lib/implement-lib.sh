@@ -5662,9 +5662,7 @@ _IL_LOOP_LABEL_MARK=$'\001'
 _il_loop_snap() {
   local sz
   [ -f "$1" ] && [ ! -L "$1" ] && [ -r "$1" ] || return 20
-  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || return 20
-  sz="${sz//[!0-9]/}"
-  [ -n "$sz" ] || return 20
+  sz="$(_il_wc_bounded -c "$1")" || return 20
   [ "$sz" -le "$3" ] || return 18
   cp -- "$1" "$2" 2>/dev/null || return 20
 }
@@ -5861,7 +5859,7 @@ _il_loop_summary_render() {
     if [ "$slot" = run ]; then label="/implement-issue"; else label="round from $slot"; fi
     printf '%s' "${SM_ENDS[$slot]//"$_IL_LOOP_LABEL_MARK"/$label}"
   done
-  printf '  Counts are per pass: fixed = a later pass read a changed tree · superseded = a later pass re-read the same tree · open = the latest pass. A finding raised again is counted again.\n'
+  printf '  Counts are per finished pass: fixed = some later finished pass read a changed tree · superseded = every later finished pass re-read the same tree · open = no later pass finished. A finding raised again is counted again.\n'
   return 0
 }
 

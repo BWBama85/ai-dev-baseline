@@ -26,7 +26,8 @@ only by a release it upgrades to. These entries are the notes for both.
   total passes and ends with how the findings ended (`fixed`, each declined finding with its
   reason, each deferred one with its issue), on blocked lines too. A new `review-loop summary
   [--pr N]` prints a run whole, across `/implement-issue` and every resolver round, oldest first;
-  `/resolve-pr-threads` prints it in step 8, on every exit. Every REQUIRED finding is accounted for:
+  `/resolve-pr-threads` prints it in step 8, which every exit after its branch switch passes
+  through. Every REQUIRED finding is accounted for:
   beside the recorded outcomes, `fixed` (any later pass read a changed tree), `superseded` (later
   passes only re-read the same tree) and `open` (the latest pass) are derived per pass, and the
   outcomes add up to the sum of the passes' REQUIRED counts. Carried findings are now named on
