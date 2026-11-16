@@ -146,6 +146,15 @@ debug        = "claude"     # owns root-cause investigations.
 # zero or anything past 10 is a HARD ERROR, never the default. `ADB_LOCAL_REVIEW_PASSES` overrides
 # this for one run by the same rules — set but empty, it means "not overridden". When the budget runs out with findings left, a MEDIUM/LOW one may be pushed as
 # `carried: <n>` and named; a CRITICAL/HIGH one blocks the run.
+#
+# `"until-clean"` (#618) sets NO budget: the loop runs until a pass is clean or settled (below), so
+# no pass is ever the last and nothing is carried because a count ran out. Write it as the string
+# `local_passes = "until-clean"`; `ADB_LOCAL_REVIEW_PASSES=until-clean` is the one-run form. THE
+# TRADE: it removes the loop's only overall bound, so a reviewer that never comes back clean keeps
+# it going. Each pass keeps its own dispatch deadline, and a finding does not have to be fixed to
+# end: one that is not a reachable defect or a regression of this diff is declined with its reason,
+# and a real defect in code the diff neither changed nor made newly reachable is filed and
+# deferred — a pass whose every REQUIRED finding ended that way is settled.
 # local_passes = 3
 
 # Optional: let the loop REPAIR required-check drift, not merely detect it (#333).

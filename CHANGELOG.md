@@ -11,6 +11,43 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Added
 
+- **The local review loop can run until clean, and a finding can end without a fix (#618).**
+  `[reviewers] local_passes = "until-clean"` (one run: `ADB_LOCAL_REVIEW_PASSES=until-clean`) sets
+  no pass budget: the loop ends only on a clean or settled pass, no pass is refused as
+  spent, a failed pass is taken again, and the spent-budget codes 33, 37 and 38 cannot occur. The
+  default stays 3 and `0` still disables. Under any budget, `review-loop decline --reason` ends a
+  REQUIRED finding that is not a reachable defect or a regression of the diff, and
+  `review-loop defer --issue <n>` ends one that is a defect in code the diff did not change and did
+  not make newly reachable, against the issue filed for it. A pass whose every REQUIRED finding was
+  declined or deferred, on the tree it read, is settled: `review-loop report` returns 0 for it and
+  `open-pr` and the resolver's push accept it as they accept a clean pass. The reviewer's brief now
+  scopes REQUIRED to a defect the diff introduces or makes reachable, and asks for anything else
+  under a `PRE-EXISTING` heading the verdict does not count. `review-loop report` leads with the
+  total passes and ends with how the findings ended (`fixed`, each declined finding with its
+  reason, each deferred one with its issue), on blocked lines too. A new `review-loop summary
+  [--pr N]` prints a run whole, across `/implement-issue` and every resolver round, oldest first;
+  `/resolve-pr-threads` prints it in step 8, which every exit after its branch switch passes
+  through. Every REQUIRED finding is accounted for:
+  beside the recorded outcomes, `fixed` (any later pass read a changed tree), `superseded` (later
+  passes only re-read the same tree) and `open` (the latest pass) are derived per pass, and the
+  outcomes add up to the sum of the passes' REQUIRED counts. Carried findings are now named on
+  every line that follows them, a blocked or later converged one included. One finding (site,
+  occurrence, text) ends one way: a second carry of it at another severity is refused, where it
+  used to count twice. (A record written before this change that carries one finding at two
+  severities no longer reads, 18: delete the second row, or let `/cleanup` sweep the run.) A pass is reserved only when the record has room for its result as well.
+  Under `"until-clean"` a reviewer that becomes unusable after a pass blocks the run (39).
+- **A question to the operator carries a recommendation and uses the structured question tool
+  (#617).** A new practice, `asking-the-operator.md`: every question names the option the agent
+  would take and why; when the turn has a structured question tool (`AskUserQuestion` in Claude
+  Code, `request_user_input` in Codex when it is listed) the question goes through it with the
+  recommended option first; with no such tool the prose question still states the recommendation.
+  `/implement-issue` asks a blocking gap finding and a close-out decision that way,
+  `/resolve-pr-threads` a hand-back that needs a decision, and `/roadmap` asks its `?` questions
+  and any `!` owner-action that is a choice after its printed block, which still ends on `Next:`.
+  A `/roadmap` `?` line now carries `Recommend: <answer> — <why>` before `Record:`, so it states
+  a recommendation where there is no tool to ask through.
+  `self-review.md` checks the hand-back. There is no config key and no lint.
+
 - **The installer adds a curated command allowlist, and `/adopt` audits what would still prompt
   (#288).** `./install.sh` now merges `agents/claude/settings.permissions.json` into
   `permissions.allow` in `~/.claude/settings.json`: verb-scoped `git` and `gh` rules, `jq`, bare

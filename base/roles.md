@@ -248,7 +248,8 @@ bots = ["chatgpt-codex-connector", "gemini-code-assist", "copilot"]
 max_rounds = 6
 
 # The local convergence loop's pass budget, before either workflow pushes fix code. Optional.
-#   unset → the built-in 3;  0 → the loop is disabled;  ADB_LOCAL_REVIEW_PASSES overrides; max 10
+#   unset → the built-in 3;  0 → the loop is disabled;  ADB_LOCAL_REVIEW_PASSES overrides; max 10;
+#   "until-clean" → no budget, the loop ends only on a clean or settled pass
 local_passes = 3
 ```
 
@@ -329,9 +330,38 @@ findings left, each is carried with the severity step 9's triage gives it: MEDIU
 final pass blocks the run.
 
 `0` disables the loop and every summary says so. An empty `local_passes`, a leading zero, a
-non-integer and anything past **10** are hard errors, never the built-in **3**.
+non-integer other than the string `"until-clean"` (below) and anything past **10** are hard errors,
+never the built-in **3**.
 `ADB_LOCAL_REVIEW_PASSES` overrides for one run under the same rules, except that an empty or unset
 variable means "not overridden"; the key layers repo → global. `role-dispatch.sh local-passes` reads it.
+
+**`"until-clean"` sets no budget (#618).** Written `local_passes = "until-clean"` in a manifest
+and `ADB_LOCAL_REVIEW_PASSES=until-clean` for one run, it makes the loop run until a pass is clean
+(zero REQUIRED findings) or settled (below): no pass is refused as spent and none is the last, so nothing is carried
+because a count ran out, and a failed pass is simply taken again. It removes the loop's only
+overall bound; each pass keeps its dispatch deadline, and a reviewer that becomes unusable after a
+pass blocks the run rather than ending the loop.
+
+**A REQUIRED finding does not have to be fixed to end (#618)**, under any budget. The bar is
+`/resolve-pr-threads` step 3's. A finding that is a defect the diff introduced or made reachable is
+fixed. One that is neither a reachable defect nor a regression of the diff is **declined**
+(`review-loop decline --reason`). One that is a real defect in code the diff did not change and did
+not make newly reachable is filed and **deferred** (`review-loop defer --issue <n>`). A pass whose
+every REQUIRED finding was declined or deferred, on the tree it read, is **settled** and certifies
+that tree as a clean pass does. The reviewer's brief asks for the same split up front: REQUIRED is
+a defect the diff introduces or makes reachable, and anything else it finds in code the diff only
+calls goes under a `PRE-EXISTING` heading that the verdict does not count.
+
+`review-loop report` prints one record's line — the total passes, each pass's REQUIRED count, the
+verdict, and how the findings ended — and `review-loop summary [--pr N]` prints the run whole,
+across `/implement-issue` and every resolver round. Every REQUIRED finding is accounted for. A
+finding with a row is **declined**, **deferred** or **carried**, and the line names each one, on a
+blocked line too. The rest are derived from the passes, never recorded: **fixed** when any later
+pass read a changed tree, **superseded** when later passes only re-read the same tree (that
+pass's count no longer stands), and **open** when the pass is the latest. The counts are per
+pass, so a finding raised again is counted again; together they add up to the sum of every
+pass's REQUIRED count. One finding — its site, occurrence and text — ends one way: it cannot be
+carried twice at two severities, or both carried and deferred.
 
 ## Scope: bespoke orchestration stays project-scoped
 

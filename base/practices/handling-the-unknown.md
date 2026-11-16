@@ -34,7 +34,7 @@ Classify the unknown into **exactly one** bucket, then act as that bucket prescr
    **recorded explicitly** as a `DEVIATION` with `{baseline-rule, reason}`. Never a silent
    fork.
 4. **Ambiguous / can't classify confidently** — → **STOP and ask the owner** a concrete
-   question. Improvisation is how two projects diverge; escalation is the release valve
+   question, as `asking-the-operator.md` says to ask one. Improvisation is how two projects diverge; escalation is the release valve
    that keeps the set honest (the completion-contract discipline, applied to *organization*).
 <!-- adb:procedure -->
 

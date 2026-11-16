@@ -426,7 +426,7 @@ ceiling entirely and so is never reached (#420). The waiting itself spends no mo
 a `sleep` loop with no model in it — provided the caller dispatches it as a background task rather
 than chunking it across foreground shell calls, which is #417 and is specified in the skill's step
 0b. Before each round's push, a **local convergence loop** (#491, `[reviewers] local_passes`,
-built-in 3, `0` disables) re-reviews that round's fixes and ledger commit with `review`'s reviewer,
+built-in 3, `0` disables, `"until-clean"` sets no budget — #618) re-reviews that round's fixes and ledger commit with `review`'s reviewer,
 so the async reviewer is the last sample rather than the first; `/implement-issue` runs the same
 loop between step 9's triage and step 10's push. Since #448 the watcher also reads the head's
 **CI**: every verdict about an open pull request carries one line about it, and at the loop's terminal exit the resolver waits

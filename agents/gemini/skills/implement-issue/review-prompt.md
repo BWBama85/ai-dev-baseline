@@ -13,7 +13,18 @@ An ordered checklist with named categories, an explicit required-vs-optional spl
 check — the shape Codex's published guidance asks for (it is the shipped default reviewer), and
 independently what makes a reply triageable in step 9 rather than a wall of prose. The same
 prompt goes to whichever agent fills the slot. Every finding carries a `file:line` and a
-REQUIRED/OPTIONAL mark. The six lenses:
+REQUIRED/OPTIONAL mark.
+
+**REQUIRED is scoped to the diff (#618).** The prompt defines it as a defect the diff *introduces*
+or *makes reachable*. A defect in code the diff does not change and only calls — there before it,
+not newly reachable through it — goes under a separate `PRE-EXISTING` heading, with its
+`file:line`, and counts toward neither total in the trailer. That is what keeps the local loop
+from spending passes on, and the driver from editing, shared code the PR did not break: a
+`PRE-EXISTING` item is triaged against the issue-filing bar, never fixed in place. A reviewer that
+cannot tell which side a defect is on is told to mark it REQUIRED and say so; the driver then
+decides (step 9: fix, `decline`, or `defer`).
+
+The six lenses:
 
 1. **Correctness / edge cases** — empty, single, zero, negative, max, unicode; escaping wherever
    a value crosses a syntax boundary; off-by-one; idempotency; resource leaks.

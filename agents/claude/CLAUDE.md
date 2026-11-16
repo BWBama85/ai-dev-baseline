@@ -16,6 +16,28 @@ missing).
 
 ---
 
+# Questions to the operator
+
+**A question to the operator carries your recommendation, and goes through the harness's
+structured question tool when this turn has one.**
+
+- **Recommend, every time.** Name the option you would take and say why in one line. A question
+  with no recommendation hands back a decision you were positioned to inform.
+- **Use the structured question tool when the turn offers one**, with the recommended option
+  first and marked as recommended. Never end a turn on a question written only as prose while
+  that tool is available.
+- **Make it stand alone.** The dialog may be all the operator sees: name the repository, the PR
+  or issue number, the file — whatever the question is about.
+- **No such tool this turn → ask in prose**, recommendation first, the options named.
+
+This governs *how* to ask, never *whether*. A question the request, the repository or a sensible
+default already answers is not asked at all.
+
+**Procedure:** `~/.claude/ai-dev-baseline/reference/asking-the-operator.md` — read it when this practice applies.
+
+
+---
+
 # CI discipline
 
 **A failing CI job is a signal to diagnose, not a button to re-press.**
@@ -205,7 +227,7 @@ Classify the unknown into **exactly one** bucket, then act as that bucket prescr
    **recorded explicitly** as a `DEVIATION` with `{baseline-rule, reason}`. Never a silent
    fork.
 4. **Ambiguous / can't classify confidently** — → **STOP and ask the owner** a concrete
-   question. Improvisation is how two projects diverge; escalation is the release valve
+   question, as `asking-the-operator.md` says to ask one. Improvisation is how two projects diverge; escalation is the release valve
    that keeps the set honest (the completion-contract discipline, applied to *organization*).
 
 **Procedure:** `~/.claude/ai-dev-baseline/reference/handling-the-unknown.md` — read it when this practice applies.
@@ -305,6 +327,10 @@ separate from writing the code, and separate from any independent reviewer.
 List each finding explicitly and either fix it or consciously disposition it with
 a reason — before proceeding to push. "I read it over and it looks fine" is not a
 self-review; naming what you checked is.
+
+**Review the hand-back too.** A turn that ends on a question to the operator is checked
+against `asking-the-operator.md`: asked through the structured question tool when the
+turn has one, and carrying a recommendation.
 
 ## A new guard is not done until it has been observed failing
 
