@@ -431,8 +431,8 @@ if [ "$MODE" = mutation ]; then
   # THE LABEL ARM (#638): each way a labelled pull request goes back to starting every harness, or
   # stops saying what it left out, or turns a fail-closed answer into a failed or an empty run.
   shmutant_mut nightly-label-reads-steps \
-    'matrix="$(ADB_MUTATION_RUN_ALL='"''"' bash scripts/mutation-gate.sh touched --matrix --shards "$SHARDS" --summary)"; rc=$?' \
-    'matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")"; rc=$?' \
+    'matrix="$(ADB_MUTATION_RUN_ALL='"''"' bash scripts/mutation-gate.sh touched --matrix --shards "$SHARDS" --summary)" || rc=$?' \
+    'matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")" || rc=$?' \
     'PUBLISHES exactly that harness'
   shmutant_mut nightly-label-override-inherited \
     'ADB_MUTATION_RUN_ALL='"''"' bash scripts/mutation-gate.sh touched' \
@@ -462,6 +462,11 @@ if [ "$MODE" = mutation ]; then
     '11) echo "label run: the diff' \
     '11) exit 1; echo "label run: the diff' \
     'starts every harness when the diff cannot be established'
+  # A `run:` step is `bash -e`: a status read after the semicolon is never reached.
+  shmutant_mut nightly-label-status-lost-to-errexit \
+    '--summary)" || rc=$?' \
+    '--summary)"; rc=$?' \
+    'does not fail'
   shmutant_mut nightly-label-failure-published \
     'no matrix is published"; exit 1 ;;' \
     'no matrix is published" ;;' \
@@ -1275,6 +1280,9 @@ wf_step_text() {  # wf_step_text <file> <job-key> <ERE> — the step of that job
   done
   return 1
 }
+# A BODY IS RUN AS THE RUNNER RUNS IT: `bash -e`, the shell GitHub gives a `run:` step that names
+# none. Without `-e` here, a body that reads a status after a failed command passes this suite and
+# ends the step on the runner.
 wf_run_body() {  # stdin: one step's text — prints its `run: |` body, de-indented by its own depth
   awk '
     !b && /^[[:space:]]*run:[[:space:]]*\|[[:space:]]*$/ { match($0, /^ */); ind = RLENGTH + 2; b = 1; next }
@@ -1291,7 +1299,7 @@ macos_args() {
   body="$(printf '%s\n' "$macos_body" | sed 's#bash scripts/selfcheck\.sh#printf "SELFCHECK-ARG:%s\\n"#')"
   ( cd "$ROOT" || exit 1
     if [ "$1" = - ]; then unset GITHUB_EVENT_NAME; else export GITHUB_EVENT_NAME="$1"; fi
-    RUNNER_TEMP="$work" bash -c "$body" 2>/dev/null ) | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}'
+    RUNNER_TEMP="$work" bash -e -c "$body" 2>/dev/null ) | awk '/^SELFCHECK-ARG:/{sub(/^SELFCHECK-ARG:/,""); print}'
 }
 recv="$(macos_args pull_request)"
 eq "$(printf '%s\n' "$recv" | head -1)" "--skip" "the macOS suite step calls selfcheck with --skip"
@@ -1400,7 +1408,7 @@ if [ -f "$NIGHTLY" ]; then
     local event=schedule
     [ -z "$1" ] || event=workflow_dispatch
     : > "$work/plan-output"
-    (cd "$ROOT" && ONLY="$1" SHARDS="$plan_shards" GITHUB_EVENT_NAME="$event" ADB_MUTATION_BASE="" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
+    (cd "$ROOT" && ONLY="$1" SHARDS="$plan_shards" GITHUB_EVENT_NAME="$event" ADB_MUTATION_BASE="" GITHUB_OUTPUT="$work/plan-output" bash -e -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
     PLAN_OUT="$(sed -n 's/^matrix=//p' "$work/plan-output")"
   }
   run_plan ""
@@ -1441,7 +1449,7 @@ if [ -f "$NIGHTLY" ]; then
     : > "$work/lbl-output"; : > "$work/lbl-summary"
     LBL_LOG="$(cd "$repo" && env ONLY="" SHARDS="$shards" GITHUB_EVENT_NAME=pull_request ADB_MUTATION_RUN_ALL=1 \
       ADB_MUTATION_BASE=origin/main GITHUB_OUTPUT="$work/lbl-output" GITHUB_STEP_SUMMARY="$work/lbl-summary" "$@" \
-      bash -c "$plan_body" 2>&1)"; LBL_RC=$?
+      bash -e -c "$plan_body" 2>&1)"; LBL_RC=$?
     LBL_OUT="$(sed -n 's/^matrix=//p' "$work/lbl-output")"
     LBL_SUM="$(cat "$work/lbl-summary")"
   }
@@ -1492,7 +1500,7 @@ if [ -f "$NIGHTLY" ]; then
   for _ev in schedule workflow_dispatch; do
     : > "$work/lbl-output"
     (cd "$R" && ONLY="" SHARDS="gated-mutation=2" GITHUB_EVENT_NAME="$_ev" ADB_MUTATION_RUN_ALL=1 ADB_MUTATION_BASE="" \
-      GITHUB_OUTPUT="$work/lbl-output" GITHUB_STEP_SUMMARY="$work/lbl-summary" bash -c "$plan_body") >/dev/null 2>&1
+      GITHUB_OUTPUT="$work/lbl-output" GITHUB_STEP_SUMMARY="$work/lbl-summary" bash -e -c "$plan_body") >/dev/null 2>&1
     eq "$(sed -n 's/^matrix=//p' "$work/lbl-output")" "$fx_all" "under [$_ev] the plan carries every harness whatever the change touches"
   done
   # What the script cannot show, because GitHub evaluates it: the history the diff needs, and the

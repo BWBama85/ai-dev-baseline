@@ -9712,6 +9712,16 @@ survive is the part a later reader needs.
              decision line, because a RUN line names files from the diff and the summary
              renders Markdown. The same count and names end the plan's log.
 
+             What the plan's full-history checkout costs: the same checkout took 5 s in
+             `ci.yml`'s `fact-drift` and 6 s in `selfcheck-macos` on run 43942344693
+             (2026-11-16), against the plan job's 10-minute bound, which is unchanged.
+
+             The first review found that the plan read `touched`'s status after a semicolon.
+             A `run:` step with no `shell` is `bash -e`, so the fail-closed 11 would have ended
+             the step before the matrix was published: no harness, where the rule is every
+             harness. The status is now taken with `|| rc=$?`, and the suite runs every
+             workflow body it extracts under `bash -e`, which is what had hidden it.
+
              Not provable offline: that `actions/checkout` with a commit as `ref` and
              `fetch-depth: 0` leaves `origin/<base branch>` in the clone. Its README says depth 0
              fetches all history for all branches and tags. If the ref were absent the gate

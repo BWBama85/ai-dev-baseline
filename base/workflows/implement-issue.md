@@ -776,8 +776,9 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   on the PR, remove and re-add it (`gh pr edit <N> --remove-label run-mutations`, then
   `--add-label`), because a label that stays on does not run again; correlate that run the same way
   with `--event pull_request`. Its plan job's summary names the harnesses it selected and the ones
-  it did not start; a listed step with no job in that run is **not started**, and gets its own
-  dispatch. The label path needs the label to EXIST (`gh label list --search
+  it did not start; a listed step with no job in that run is **not started**: dispatch it on its
+  own where the branch is this repository's, and report it under **Needs attention** on a fork's
+  PR. The label path needs the label to EXIST (`gh label list --search
   run-mutations`) and the PR to be free of merge conflicts, and a label applied with Actions'
   `GITHUB_TOKEN` starts no workflow — none of those is a dispatch failure; with no label, fall back
   to one dispatch per step and say why. A PR from a fork takes the label path: a dispatch can only

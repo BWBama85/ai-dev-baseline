@@ -82,8 +82,7 @@ jobs:
     if: >-
       github.repository == 'BWBama85/ai-dev-baseline'
       && (github.event_name != 'pull_request' || github.event.label.name == 'run-mutations')
-    # The checkout below fetches full history (#638). The same checkout took 5-6 s in ci.yml's
-    # `fact-drift` and `selfcheck-macos` on run 43942344693 (2026-11-16).
+    # Covers the full-history checkout below (#638); D126 has what that checkout costs.
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -130,7 +129,10 @@ jobs:
           if [ -n "$ONLY" ]; then
             matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS" --only "$ONLY")" || exit 1
           elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
-            matrix="$(ADB_MUTATION_RUN_ALL='' bash scripts/mutation-gate.sh touched --matrix --shards "$SHARDS" --summary)"; rc=$?
+            # `|| rc=$?`, never `; rc=$?`: a `run:` step is `bash -e`, so a failed assignment would
+            # end the step before the fail-closed 11 is read.
+            rc=0
+            matrix="$(ADB_MUTATION_RUN_ALL='' bash scripts/mutation-gate.sh touched --matrix --shards "$SHARDS" --summary)" || rc=$?
             case "$rc" in
               0)  echo "label run: the harnesses this change touches, against $ADB_MUTATION_BASE" ;;
               11) echo "label run: the diff against $ADB_MUTATION_BASE could not be established, so EVERY harness starts (fail-closed)" ;;
