@@ -135,12 +135,12 @@ if [ "$MODE" = mutation ]; then
     '    return 10   # row-mb-unresolved' \
     'a base that does not resolve: RUN on the fail-closed code (11), never skip'
   shmutant_mut override-ignored \
-    'if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-step-override' \
-    'if [ -n "${ADB_MUTATION_RUN_ALL_NEVER:-}" ]; then   # row-step-override' \
+    'if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then return 12; fi   # row-step-override' \
+    'if [ -n "${ADB_MUTATION_RUN_ALL_NEVER:-}" ]; then return 12; fi   # row-step-override' \
     'ADB_MUTATION_RUN_ALL=1: run, on its own distinct code (12)'
   shmutant_mut skip-line-unstated-base \
-    '"$step" "${GATE_BASE_NAME:-$base}" "${mb:0:12}" "$nchanged" "$inputs"' \
-    '"$step" "(unstated)" "${mb:0:12}" "$nchanged" "$inputs"' \
+    '"$step" "$GATE_BASE" "${GATE_MB:0:12}" "$nchanged" "$inputs"' \
+    '"$step" "(unstated)" "${GATE_MB:0:12}" "$nchanged" "$inputs"' \
     '…and names the base it compared against'
   shmutant_mut untracked-ignored \
     'for f in "${tracked[@]}" "${untracked[@]}"; do' \
@@ -206,8 +206,8 @@ if [ "$MODE" = mutation ]; then
     '      [ -n "$found" ] || [ -n "$only" ] || {' \
     'steps --only <unknown>: refused (2)'
   shmutant_mut touched-failclosed-lists-none \
-    '        11|12) run_names+=("$step"); [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
-    '        11|12) [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
+    '        *)  run_names+=("$step") ;;   # row-touched-listed' \
+    '        *)  : ;;   # row-touched-listed' \
     '…and lists EVERY harness, never none'
   shmutant_mut touched-reads-past-inputs \
     "    while IFS=\$'\\t' read -r step _ _ _ inputs _; do   # row-touched-field5" \
@@ -274,21 +274,21 @@ if [ "$MODE" = mutation ]; then
     'list=""   # row-summary-held' \
     'names every harness it did not select'
   shmutant_mut touched-summary-unescaped \
-    '$(adb_md_escape "${cmp_why:-merge-base unavailable}")' \
-    '${cmp_why:-merge-base unavailable}' \
+    '$(adb_md_escape "${GATE_WHY:-diff unavailable}")' \
+    '${GATE_WHY:-diff unavailable}' \
     'reaches the summary escaped'
   shmutant_mut touched-reason-multiline \
-    "printf 'base %s does not resolve to a commit\\n' \"\$(adb_display_value \"\$name\")\"" \
-    "printf 'base %s does not resolve to a commit\\n' \"\$name\"" \
+    "printf 'base %s does not resolve to a commit\\n' \"\$(adb_display_value \"\$base\")\"" \
+    "printf 'base %s does not resolve to a commit\\n' \"\$base\"" \
     'cannot add a line to the summary'
-  shmutant_mut touched-failclosed-partial \
-    'run_names=("${all_names[@]}"); held_names=()   # row-touched-promote' \
-    ':   # row-touched-promote' \
-    'lists EVERY harness, the ones that decided SKIP included'
-  shmutant_mut touched-base-unpinned \
-    'pinned="$sha"   # row-touched-pin' \
-    ':   # row-touched-pin' \
-    'compared against the commit it resolved first'
+  shmutant_mut touched-diff-failure-skips \
+    'GATE_WHY="${GATE_ERR:-diff unavailable}"; return 11   # row-diff-failed' \
+    'GATE_WHY="${GATE_ERR:-diff unavailable}"; return 0   # row-diff-failed' \
+    'a diff that fails lists EVERY harness'
+  shmutant_mut touched-compares-per-step \
+    'line="$(gate_verdict "$worst" "$step" "${inarr[@]}")"; rc=$?   # row-touched-one-comparison' \
+    'line="$(gate_decide "$step" "$basearg" "${inarr[@]}")"; rc=$?   # row-touched-one-comparison' \
+    'makes ONE comparison'
   check_shmutant_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
 
   # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
@@ -1081,44 +1081,39 @@ eq "$(printf '%s\n' "$T_SUM" | grep -c '^#')" "1" "touched --summary: a multi-li
 eq "$(printf '%s\n' "$T_SUM" | grep -c '^- selected: ')" "1" "touched --summary: …nor a second list of selected harnesses"
 has "$T_SUM" "does not resolve to a commit" "touched --summary: …and the reason is still given"
 
-# FAIL CLOSED IS THE WHOLE REGISTRY: one step whose decision cannot be made lists every harness,
-# so exit 11 means what its caller reads it as. A `git` in front of the real one fails the FIRST
-# `diff` it is asked for and passes everything else through: one step answers 11, the rest decide
-# SKIP on a clean tree.
+# ONE COMPARISON SERVES THE WHOLE REGISTRY: one merge-base and one diff, however many harnesses
+# are registered, so nothing a step is decided on can change between two steps of one run. A `git`
+# in front of the real one logs every call it is handed, and can fail the first `diff`.
 gitshim="$work/gitshim"; mkdir -p "$gitshim"; realgit="$(command -v git)"
 { printf '#!/usr/bin/env bash\n'
+  printf '[ -z "${GITSHIM_LOG:-}" ] || printf "%%s\\n" " $* " >> "$GITSHIM_LOG"\n'
   printf 'case " $* " in *" diff "*)\n'
-  printf '  if [ ! -e "$GITSHIM_ONCE" ]; then : > "$GITSHIM_ONCE"\n'
-  printf '    case "$GITSHIM_MODE" in\n'
-  printf '      fail-first-diff) exit 1 ;;\n'
-  printf '      move-base) %q -C "$GITSHIM_REPO" update-ref refs/remotes/origin/main "$GITSHIM_TO" ;;\n' "$realgit"
-  printf '    esac\n'
-  printf '  fi ;;\n'
+  printf '  if [ -n "${GITSHIM_FAIL_ONCE:-}" ] && [ ! -e "$GITSHIM_FAIL_ONCE" ]; then : > "$GITSHIM_FAIL_ONCE"; exit 1; fi ;;\n'
   printf 'esac\n'
   printf 'exec %q "$@"\n' "$realgit"; } > "$gitshim/git"
 chmod +x "$gitshim/git"
+: > "$work/git-log"
+T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_LOG="$work/git-log" bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC:$T_OUT" "0:" "touched: the logged run decided, and listed nothing on a clean tree"
+eq "$(grep -c ' merge-base ' "$work/git-log")/$(grep -c ' diff ' "$work/git-log")" "1/1" \
+   "touched makes ONE comparison for every harness: one merge-base and one diff"
+# …and a base that does not resolve is asked for once: no step tries it again, so a ref that
+# appears part-way through cannot turn a fail-closed run into a selection.
+: > "$work/git-log"
+T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_LOG="$work/git-log" bash scripts/mutation-gate.sh touched --base no-such-ref 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "11" "touched: the logged run with an unresolvable base fails closed"
+eq "$(grep -c 'no-such-ref' "$work/git-log")" "1" "touched asks git for a base that does not resolve exactly once"
+# A DIFF THAT FAILS is the same answer: the comparison could not be established, so 11 and the
+# whole registry — on a clean tree, where every step would otherwise have decided SKIP.
 rm -f "$work/shim-once"
-T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_MODE=fail-first-diff GITSHIM_ONCE="$work/shim-once" bash scripts/mutation-gate.sh touched 2>"$work/t-err")"; T_RC=$?
-eq "$T_RC" "11" "touched: one step whose diff fails → exit 11"
-has "$(cat "$work/t-err")" "SKIP: " "touched: …while other steps decided SKIP on the same clean tree (the case is the mixed one)"
+T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_FAIL_ONCE="$work/shim-once" bash scripts/mutation-gate.sh touched 2>"$work/t-err")"; T_RC=$?
+eq "$T_RC" "11" "touched: a diff that fails → exit 11"
+has "$(cat "$work/t-err")" "git diff against" "touched: …naming the failed diff as the reason"
 eq "$(printf '%s\n' "$T_OUT" | tr '\n' ' ')" "$(cd "$R" && bash scripts/mutation-gate.sh steps | tr '\n' ' ')" \
-   "touched: a decision that could not be made lists EVERY harness, the ones that decided SKIP included"
+   "touched: a diff that fails lists EVERY harness, never the ones a later read would have chosen"
 rm -f "$work/shim-once"
-T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_MODE=fail-first-diff GITSHIM_ONCE="$work/shim-once" bash scripts/mutation-gate.sh touched --matrix 2>/dev/null)"; T_RC=$?
+T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_FAIL_ONCE="$work/shim-once" bash scripts/mutation-gate.sh touched --matrix 2>/dev/null)"; T_RC=$?
 eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix)" "touched --matrix: …and so the matrix is every harness"
-
-# ONE COMPARISON: the base is resolved to a commit once. Here `origin/main` is moved to the
-# fixture's first commit while the first step is being decided; steps decided after it would see
-# every later change if they resolved the name again.
-base_was="$(git -C "$R" rev-parse origin/main)"
-rm -f "$work/shim-once"; : > "$work/t-summary"
-T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_MODE=move-base GITSHIM_ONCE="$work/shim-once" GITSHIM_REPO="$R" \
-  GITSHIM_TO="$(git -C "$R" rev-list --max-parents=0 HEAD | head -1)" GITHUB_STEP_SUMMARY="$work/t-summary" \
-  bash scripts/mutation-gate.sh touched --summary 2>/dev/null)"; T_RC=$?
-no "$([ "$(git -C "$R" rev-parse origin/main)" = "$base_was" ] && echo 0 || echo 1)" "fixture: the base ref did move during the run"
-eq "$T_RC:$T_OUT" "0:" "touched: every step is compared against the commit it resolved first, whatever the ref does meanwhile"
-has "$(cat "$work/t-summary")" "merge-base \`${base_was:0:12}\`" "touched --summary: …and the summary names that comparison, not a later reading of the ref"
-check_git "$R" update-ref refs/remotes/origin/main "$base_was" >/dev/null 2>&1 || bad "fixture: could not restore origin/main"
 T_OUT="$(cd "$R" && : > "$work/t-summary" && ADB_MUTATION_RUN_ALL=1 GITHUB_STEP_SUMMARY="$work/t-summary" bash scripts/mutation-gate.sh touched --matrix --summary 2>/dev/null)"; T_RC=$?
 eq "$T_RC" "12" "touched --matrix: ADB_MUTATION_RUN_ALL → exit 12"
 eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix)" "touched --matrix: …and the matrix is every harness"
@@ -1546,12 +1541,12 @@ if [ -f "$NIGHTLY" ]; then
   has "$LBL_LOG" "base origin/no-such-branch does not resolve to a commit" "the fail-closed label run gives the reason in the log"
   has "$LBL_LOG" "EVERY harness starts (fail-closed)" "the fail-closed label run says every harness starts"
   has "$LBL_SUM" "The diff could not be established" "the fail-closed label run says so in the job summary"
-  # …and when only ONE harness's decision fails, the plan still publishes the whole registry: its
-  # "EVERY harness starts" is read off exit 11, so 11 has to mean it.
+  # …and the same when the base resolves and the DIFF fails: the plan's "EVERY harness starts" is
+  # read off exit 11, so 11 has to mean the whole registry.
   rm -f "$work/shim-once"
-  run_label "$R" gated-mutation=2 PATH="$gitshim:$PATH" GITSHIM_MODE=fail-first-diff GITSHIM_ONCE="$work/shim-once"
-  eq "$LBL_OUT" "$fx_all" "the label arm publishes EVERY registered harness when one decision could not be made"
-  has "$LBL_LOG" "EVERY harness starts (fail-closed)" "the label arm says so for a single failed decision too"
+  run_label "$R" gated-mutation=2 PATH="$gitshim:$PATH" GITSHIM_FAIL_ONCE="$work/shim-once"
+  eq "$LBL_OUT" "$fx_all" "the label arm publishes EVERY registered harness when the diff itself fails"
+  has "$LBL_LOG" "EVERY harness starts (fail-closed)" "the label arm says so for a failed diff too"
   # A FAILURE publishes nothing: an unreadable registry, and a shard list that names no harness.
   run_label "$NR" gated-mutation=2
   no "$LBL_RC" "the label arm fails on a registry it cannot read"

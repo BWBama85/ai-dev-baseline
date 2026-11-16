@@ -160,9 +160,10 @@ only by a release it upgrades to. These entries are the notes for both.
   The scheduled run and a dispatch are unchanged, so every harness is still available by
   dispatching the workflow with no `step` input on a branch of this repository; a fork's branch
   cannot be dispatched. `mutation-gate.sh touched` gains `--matrix [--shards …]` and `--summary`,
-  and now ends its log with a count and the steps it left out. Its exit 11 now lists every
-  harness: one step whose decision could not be made used to be listed alone, beside steps that
-  had decided to skip. It resolves the base to a commit once and compares every step against it.
+  and now ends its log with a count and the steps it left out. It now makes one comparison
+  for the whole registry (one merge-base, one diff) where it made one per harness, so its exit
+  11 lists every harness: a `git diff` that failed for one harness used to list that one alone,
+  beside harnesses that had decided to skip.
 
 - **A plain selfcheck runs the steps your change touches, and so does the macOS leg of a pull
   request (#629).** Every registry step now declares the paths its verdict depends on (the fifth

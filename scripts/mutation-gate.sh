@@ -77,10 +77,9 @@
 #       stdout; each step's decision line goes to stderr, then one line counting them and naming
 #       the steps not listed. Exits 0 (decided — possibly nothing), 11
 #       (the diff could not be established: every step is listed, fail-closed), 12 (the override is
-#       set: every step listed), 3 (the registry could not be read). 11 and 12 list EVERY step:
-#       one step whose decision could not be made lists them all, the ones that decided SKIP
-#       included. The base is resolved to a commit once, so every step is compared against the
-#       same one. Since #456 no harness runs per
+#       set: every step listed), 3 (the registry could not be read). ONE COMPARISON serves
+#       every step: one merge-base and one changed-path set, read once. So 11 and 12 list EVERY
+#       step, and a ref that moves while this runs changes no step's answer. Since #456 no harness runs per
 #       pull request, so this is how `/implement-issue`'s close-out learns which ones to dispatch.
 #
 #       `--matrix` (#638) prints those steps as the matrix `steps --matrix` prints instead, on the
@@ -156,7 +155,7 @@ gate_base() {
   printf 'origin/%s\n' "$(adb_default_branch "$ROOT")"
 }
 
-# gate_mb <base> [name] — the merge-base of <base> and HEAD, printed. Non-zero with a one-line reason on
+# gate_mb <base> [head] — the merge-base of <base> and [head] (default HEAD), printed. Non-zero with a one-line reason on
 # stderr when there is none: not a repository, a base that does not resolve, unrelated histories
 # (which is what a shallow clone looks like). Every one of those is a RUN for the callers.
 #
@@ -167,15 +166,14 @@ gate_base() {
 # THE REASON IS ONE LINE, whatever the base is: it is printed through `adb_display_value`, which
 # renders a newline as text. A base is an argument or an environment value, and a reason that
 # carried its newlines would add lines to whatever it is written into (`touched --summary`).
-# [name] is what the reason calls the base, when the caller resolved <base> to a commit itself.
 gate_mb() {
-  local base="$1" name="${2:-$1}" mb
+  local base="$1" head="${2:-HEAD}" mb
   git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { printf 'not a git repository\n' >&2; return 1; }
   git -C "$ROOT" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 \
-    || { printf 'base %s does not resolve to a commit\n' "$(adb_display_value "$name")" >&2; return 1; }
-  mb="$(git -C "$ROOT" merge-base "$base" HEAD 2>/dev/null)" && [ -n "$mb" ] \
-    || { printf 'no merge-base between %s and HEAD (shallow clone?)\n' "$(adb_display_value "$name")" >&2; return 1; }
+    || { printf 'base %s does not resolve to a commit\n' "$(adb_display_value "$base")" >&2; return 1; }
+  mb="$(git -C "$ROOT" merge-base "$base" "$head" 2>/dev/null)" && [ -n "$mb" ] \
+    || { printf 'no merge-base between %s and HEAD (shallow clone?)\n' "$(adb_display_value "$base")" >&2; return 1; }
   printf '%s\n' "$mb"
 }
 
@@ -230,31 +228,46 @@ gate_match() {
   done
 }
 
-# gate_decide <step> <base-arg> <input>… — the whole decision. Prints the one line; returns
-# 0 (run: inputs changed), 10 (skip), 11 (run: fail-closed, no diff), 12 (run: override).
-# GATE_BASE_NAME, when the caller set it, is what the line calls the base: `touched` hands every
-# step one commit it resolved itself, and the line still names the ref that commit came from.
-GATE_BASE_NAME=""
-gate_decide() {
-  local step="$1" basearg="$2" base mb hits nhits nchanged inputs
+# gate_compare <base-arg> — establish THE comparison, once, in the caller's shell: the base as
+# named, the commit HEAD is, their merge-base, and the changed-path set (gate_changed). Everything
+# a decision reads afterwards is one of these four, so a ref or a HEAD that moves later cannot
+# give two steps of one run different answers. Sets GATE_BASE, GATE_HEAD, GATE_MB and GATE_CHANGED;
+# on a failure GATE_WHY, one line. Returns 0 (established), 11 (it could not be: fail-closed for
+# every step that asks), 12 (ADB_MUTATION_RUN_ALL: nothing was compared).
+GATE_BASE="" GATE_HEAD="" GATE_MB="" GATE_WHY=""
+gate_compare() {
+  local mb
+  GATE_BASE="" GATE_HEAD="" GATE_MB="" GATE_WHY=""; GATE_CHANGED=()
+  if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then return 12; fi   # row-step-override
+  GATE_BASE="$(gate_base "$1")"
+  GATE_HEAD="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || GATE_HEAD=""
+  # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
+  # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
+  if ! mb="$(gate_mb "$GATE_BASE" "${GATE_HEAD:-HEAD}" 2>&1)"; then
+    GATE_WHY="${mb:-merge-base unavailable}"; return 11
+  fi
+  GATE_MB="$mb"
+  if ! gate_changed "$GATE_MB"; then
+    GATE_WHY="${GATE_ERR:-diff unavailable}"; return 11   # row-diff-failed
+  fi
+  return 0
+}
+
+# gate_verdict <compare-status> <step> <input>… — one step's line, from the comparison
+# gate_compare established and the status it returned. Reads nothing from git. Prints the one line;
+# returns 0 (run: inputs changed), 10 (skip), 11 (run: fail-closed, no diff), 12 (run: override).
+gate_verdict() {
+  local crc="$1" step="$2" hits nhits nchanged inputs
   shift 2
   inputs="$(printf '%s, ' "$@")"; inputs="${inputs%, }"
-  if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-step-override
+  if [ "$crc" -eq 12 ]; then
     printf 'RUN: %s — ADB_MUTATION_RUN_ALL is set; the gate is overridden and every gated step runs\n' "$step"
     return 12
   fi
-  base="$(gate_base "$basearg")"
-  # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
-  # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
-  if ! mb="$(gate_mb "$base" "${GATE_BASE_NAME:-$base}" 2>&1)"; then
+  if [ "$crc" -ne 0 ]; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
-      "$step" "${mb:-merge-base unavailable}"
+      "$step" "${GATE_WHY:-diff unavailable}"
     return 11   # row-mb-unresolved
-  fi
-  if ! gate_changed "$mb"; then
-    printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
-      "$step" "${GATE_ERR:-diff unavailable}"
-    return 11
   fi
   hits="$(gate_match "$@")"
   nchanged="${#GATE_CHANGED[@]}"
@@ -265,14 +278,23 @@ gate_decide() {
     return 0
   fi
   printf 'SKIP: %s — inputs unchanged against %s (merge-base %s; %s changed file(s) compared; inputs: %s)\n' \
-    "$step" "${GATE_BASE_NAME:-$base}" "${mb:0:12}" "$nchanged" "$inputs"
+    "$step" "$GATE_BASE" "${GATE_MB:0:12}" "$nchanged" "$inputs"
   return 10
+}
+
+# gate_decide <step> <base-arg> <input>… — the whole decision for ONE step: the comparison, then
+# its verdict. Prints the one line; returns gate_verdict's status.
+gate_decide() {
+  local step="$1" basearg="$2" crc=0
+  shift 2
+  gate_compare "$basearg" || crc=$?
+  gate_verdict "$crc" "$step" "$@"
 }
 
 # `check-mutation-gate.sh`'s mutation rows name their sites by literal, and shmutant refuses a
 # literal that starts at more than one position (D125). A site whose line recurs therefore carries a
-# `# row-*` marker the row's literal includes — the ones below, and `gate_decide`'s
-# `row-step-override` and `row-mb-unresolved`. Keep each marker on its line.
+# `# row-*` marker the row's literal includes — the ones below, and `gate_compare`'s and
+# `gate_verdict`'s above. Keep each marker on its line.
 
 # gate_registry_row <selector> <kind> — print the whole registry row for the step named by
 # <selector> (kind `step`) or for the step whose command is `bash <selector> --mutation` (kind
@@ -382,8 +404,9 @@ gate_matrix_print() {
 }
 
 # gate_touched_summary <worst> <registered-count> — append `touched`'s answer to the file
-# GITHUB_STEP_SUMMARY names, from the caller's run_names and held_names and from the comparison it
-# made (cmp_base, cmp_mb, cmp_head, cmp_why), never a second reading of the refs.
+# GITHUB_STEP_SUMMARY names, from the caller's run_names and held_names and from the comparison
+# gate_compare established (GATE_BASE, GATE_MB, GATE_HEAD, GATE_WHY), never a second reading of
+# the refs.
 #
 # WHAT REACHES MARKDOWN: registered step names (the registry's own grammar, so a code span holds
 # them), commit ids, the base ref, and gate_mb's reason. The ref and the reason go through
@@ -397,11 +420,10 @@ gate_touched_summary() {
   case "$worst" in
     12) why="\`ADB_MUTATION_RUN_ALL\` is set, so the gate is overridden and every harness is selected." ;;
     *)
-      if [ -n "$cmp_mb" ]; then
-        why="Compared against $(adb_md_escape "$cmp_base") (merge-base \`${cmp_mb:0:12}\`), at commit \`${cmp_head:0:12}\`."
-        [ "$worst" -eq 0 ] || why="$why The decision could not be made for at least one harness, so every harness is selected (fail-closed); the reason is in this job's log."
+      if [ "$worst" -eq 0 ]; then
+        why="Compared against $(adb_md_escape "$GATE_BASE") (merge-base \`${GATE_MB:0:12}\`), at commit \`${GATE_HEAD:0:12}\`."
       else
-        why="The diff could not be established — $(adb_md_escape "${cmp_why:-merge-base unavailable}") — so every harness is selected (fail-closed)."
+        why="The diff could not be established — $(adb_md_escape "${GATE_WHY:-diff unavailable}") — so every harness is selected (fail-closed)."
       fi ;;
   esac
   {
@@ -623,19 +645,11 @@ case "$sub" in
     wait "$!" || { printf '%s: touched: could not read the step names from the registry rows\n' "$ME" >&2; exit 3; }
     # Before any decision, so a refused shard list prints no matrix and no decision line.
     [ -z "$shards_set" ] || gate_shards_read touched "$shards" "${all_names[@]}"
-    # ONE COMPARISON, for every step and for the summary: the base is resolved to a commit here,
-    # each decision is handed that commit, and the summary renders these values. A ref that moves
-    # mid-run cannot then give two steps, or the selection and its summary, different answers.
-    # A base that does not resolve is handed on as it is, and every decision fails closed on it.
-    cmp_base="$(gate_base "$basearg")"
-    pinned="$cmp_base" cmp_mb="" cmp_why="" cmp_head=""
-    if sha="$(git -C "$ROOT" rev-parse --verify --quiet "$cmp_base^{commit}" 2>/dev/null)" && [ -n "$sha" ]; then
-      pinned="$sha"   # row-touched-pin
-    fi
-    GATE_BASE_NAME="$cmp_base"
-    if ! cmp_mb="$(gate_mb "$pinned" "$cmp_base" 2>&1)"; then cmp_why="$cmp_mb"; cmp_mb=""; fi
-    cmp_head="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || cmp_head=""
+    # ONE COMPARISON for every step and for the summary (gate_compare): one merge-base and one
+    # changed-path set. A comparison that could not be established is 11 for every step, so the
+    # whole registry is listed and no step is left out on a diff nobody read.
     worst=0
+    gate_compare "$basearg" || worst=$?
     run_names=() held_names=()
     # Field 5 and no further: `read` gives its LAST name the rest of the line, so without the
     # trailing `_` the tier (field 6) would ride on the last input and that input would match nothing.
@@ -644,24 +658,13 @@ case "$sub" in
         # A harness that declares nothing cannot be gated, so it always has something to say.
         printf 'RUN: %s — the step declares no inputs\n' "$step" >&2; run_names+=("$step"); continue; }
       IFS=',' read -r -a inarr <<< "$inputs"
-      line="$(gate_decide "$step" "$pinned" "${inarr[@]}")"; rc=$?
+      line="$(gate_verdict "$worst" "$step" "${inarr[@]}")"; rc=$?   # row-touched-one-comparison
       printf '%s\n' "$line" >&2
       case "$rc" in
         10) held_names+=("$step") ;;
-        0)  run_names+=("$step") ;;
-        11|12) run_names+=("$step"); [ "$rc" -gt "$worst" ] && worst="$rc" ;;
-        *)  printf '%s: touched %s: the decision failed (rc %s) — listing it, never guessing a skip\n' "$ME" "$step" "$rc" >&2
-            run_names+=("$step"); worst=11 ;;
+        *)  run_names+=("$step") ;;   # row-touched-listed
       esac
     done <<< "$rows"
-    # FAIL CLOSED IS THE WHOLE REGISTRY. One step whose decision could not be made means this run
-    # cannot vouch for the diff, so no other step is left out on the strength of it — and 11 then
-    # means what a caller reads it as: every step is listed.
-    if [ "$worst" -ne 0 ] && [ "${#held_names[@]}" -gt 0 ]; then
-      printf '%s: touched: a decision could not be made, so EVERY harness is listed (fail-closed), the %d that decided SKIP included\n' \
-        "$ME" "${#held_names[@]}" >&2
-      run_names=("${all_names[@]}"); held_names=()   # row-touched-promote
-    fi
     # The count and the steps not listed, once, after the per-step lines: a reader of the log
     # learns what was left out without reading every decision.
     printf '%s: touched: %d of %d harness(es) listed; not listed (inputs unchanged): %s\n' "$ME" \

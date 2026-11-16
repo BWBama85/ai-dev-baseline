@@ -372,7 +372,8 @@ shards took 66, 77 and 110 minutes for 99, 98 and 98 rows.
   not resolve) every harness starts and the plan says why; a registry it cannot read fails the
   plan. Every harness is still available by dispatching the workflow with no `step` input, on a
   branch of this repository: a fork's branch cannot be dispatched, so for a fork's PR the full
-  set is the next scheduled run after the merge. The trigger is `pull_request` narrowed to `types: [labeled]`:
+  set is the next scheduled run after it merges into the default branch, which is the only
+  branch the schedule runs on. The trigger is `pull_request` narrowed to `types: [labeled]`:
   never `pull_request_target`, so a fork's code runs with the read-only token, and without `opened`
   and `synchronize` it is a trigger `repo-settings.sh` discovery skips, so nothing in that file can
   become a required context. `check-mutation-gate.sh` asks discovery itself rather than trusting this.

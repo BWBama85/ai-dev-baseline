@@ -9695,7 +9695,8 @@ survive is the part a later reader needs.
              Decided here, not by the owner. (1) NO SECOND LABEL. #638 asks that everything stay
              available "by `workflow_dispatch`, or by a second label"; the dispatch already
              exists, so no label was added. What that leaves out is a fork's pull request, whose
-             branch cannot be dispatched: its full set is the next scheduled run after the merge.
+             branch cannot be dispatched: its full set is the next scheduled run after it merges
+             into the default branch, the only branch the schedule runs on.
              (2) THE BASE is `origin/<base branch>`, the ref `ci.yml` hands the gate, not the
              event's `pull_request.base.sha`: one rule for both workflows, and the merge-base
              with the branch's current tip is the diff the pull request shows. The plan's
@@ -9717,16 +9718,22 @@ survive is the part a later reader needs.
              `ci.yml`'s `fact-drift` and 6 s in `selfcheck-macos` on run 43942344693
              (2026-11-16), against the plan job's 10-minute bound, which is unchanged.
 
-             The local review's first pass found two more, both in `touched`. (7) EXIT 11 NOW
-             MEANS EVERY HARNESS. A step whose own decision failed was listed and the steps that
-             had decided SKIP were not, so a single failed `git diff` gave a partial list on the
-             code the plan reads as "every harness". One failed decision now lists the whole
-             registry, in the list of names as in the matrix. (8) ONE COMPARISON. `touched`
-             resolves the base to a commit once, hands every step that commit, and renders the
-             summary from the same values, so a ref that moves mid-run cannot give two steps, or
-             the selection and its summary, different answers. The reason a base does not
-             resolve is printed as one line (`adb_display_value`), so a base carrying newlines
-             cannot add a heading or a list to the summary.
+             The local review's first two passes found the same class three ways, all in
+             `touched`: it asked the gate's whole decision once per harness, so each harness
+             resolved the base, took a merge-base and read the working tree for itself. A single
+             failed `git diff` gave a partial list on the code the plan reads as "every harness";
+             a ref or a HEAD that moved mid-run gave two harnesses different comparisons; and the
+             summary read the refs a further time. Pinning the base to a commit closed one of
+             those windows and left the others, so the structure changed instead. (7) ONE
+             COMPARISON. `gate_compare` resolves the base, records the commit HEAD is, takes one
+             merge-base and one changed-path set; `gate_verdict` decides a step from those and
+             reads nothing from git; `gate_decide`, which `should-run` and `run` use for one step,
+             is the two in sequence. `touched` compares once and asks a verdict per harness, and
+             its summary renders the same four values. (8) EXIT 11 THEREFORE MEANS EVERY
+             HARNESS: a comparison that could not be established is one answer for all of them,
+             in the list of names as in the matrix. The reason a base does not resolve is
+             printed as one line (`adb_display_value`), so a base carrying newlines cannot add a
+             heading or a list to the summary.
 
              The first review found that the plan read `touched`'s status after a semicolon.
              A `run:` step with no `shell` is `bash -e`, so the fail-closed 11 would have ended
