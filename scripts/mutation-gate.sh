@@ -77,7 +77,10 @@
 #       stdout; each step's decision line goes to stderr, then one line counting them and naming
 #       the steps not listed. Exits 0 (decided — possibly nothing), 11
 #       (the diff could not be established: every step is listed, fail-closed), 12 (the override is
-#       set: every step listed), 3 (the registry could not be read). Since #456 no harness runs per
+#       set: every step listed), 3 (the registry could not be read). 11 and 12 list EVERY step:
+#       one step whose decision could not be made lists them all, the ones that decided SKIP
+#       included. The base is resolved to a commit once, so every step is compared against the
+#       same one. Since #456 no harness runs per
 #       pull request, so this is how `/implement-issue`'s close-out learns which ones to dispatch.
 #
 #       `--matrix` (#638) prints those steps as the matrix `steps --matrix` prints instead, on the
@@ -153,21 +156,26 @@ gate_base() {
   printf 'origin/%s\n' "$(adb_default_branch "$ROOT")"
 }
 
-# gate_mb <base> — the merge-base of <base> and HEAD, printed. Non-zero with a one-line reason on
+# gate_mb <base> [name] — the merge-base of <base> and HEAD, printed. Non-zero with a one-line reason on
 # stderr when there is none: not a repository, a base that does not resolve, unrelated histories
 # (which is what a shallow clone looks like). Every one of those is a RUN for the callers.
 #
 # PRINTED, NOT ASSIGNED: these run inside `$(…)`, where an assignment to a global is lost with the
 # subshell. The first cut of this file set GATE_MB here and every SKIP line named an empty
 # merge-base; its own suite caught it.
+#
+# THE REASON IS ONE LINE, whatever the base is: it is printed through `adb_display_value`, which
+# renders a newline as text. A base is an argument or an environment value, and a reason that
+# carried its newlines would add lines to whatever it is written into (`touched --summary`).
+# [name] is what the reason calls the base, when the caller resolved <base> to a commit itself.
 gate_mb() {
-  local base="$1" mb
+  local base="$1" name="${2:-$1}" mb
   git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { printf 'not a git repository\n' >&2; return 1; }
   git -C "$ROOT" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 \
-    || { printf 'base %s does not resolve to a commit\n' "$base" >&2; return 1; }
+    || { printf 'base %s does not resolve to a commit\n' "$(adb_display_value "$name")" >&2; return 1; }
   mb="$(git -C "$ROOT" merge-base "$base" HEAD 2>/dev/null)" && [ -n "$mb" ] \
-    || { printf 'no merge-base between %s and HEAD (shallow clone?)\n' "$base" >&2; return 1; }
+    || { printf 'no merge-base between %s and HEAD (shallow clone?)\n' "$(adb_display_value "$name")" >&2; return 1; }
   printf '%s\n' "$mb"
 }
 
@@ -224,6 +232,9 @@ gate_match() {
 
 # gate_decide <step> <base-arg> <input>… — the whole decision. Prints the one line; returns
 # 0 (run: inputs changed), 10 (skip), 11 (run: fail-closed, no diff), 12 (run: override).
+# GATE_BASE_NAME, when the caller set it, is what the line calls the base: `touched` hands every
+# step one commit it resolved itself, and the line still names the ref that commit came from.
+GATE_BASE_NAME=""
 gate_decide() {
   local step="$1" basearg="$2" base mb hits nhits nchanged inputs
   shift 2
@@ -235,7 +246,7 @@ gate_decide() {
   base="$(gate_base "$basearg")"
   # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
   # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
-  if ! mb="$(gate_mb "$base" 2>&1)"; then
+  if ! mb="$(gate_mb "$base" "${GATE_BASE_NAME:-$base}" 2>&1)"; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
       "$step" "${mb:-merge-base unavailable}"
     return 11   # row-mb-unresolved
@@ -254,7 +265,7 @@ gate_decide() {
     return 0
   fi
   printf 'SKIP: %s — inputs unchanged against %s (merge-base %s; %s changed file(s) compared; inputs: %s)\n' \
-    "$step" "$base" "${mb:0:12}" "$nchanged" "$inputs"
+    "$step" "${GATE_BASE_NAME:-$base}" "${mb:0:12}" "$nchanged" "$inputs"
   return 10
 }
 
@@ -370,28 +381,27 @@ gate_matrix_print() {
   printf ']}\n'
 }
 
-# gate_touched_summary <worst> <base-arg> <registered-count> — append `touched`'s answer to the
-# file GITHUB_STEP_SUMMARY names, from the caller's run_names and held_names.
+# gate_touched_summary <worst> <registered-count> — append `touched`'s answer to the file
+# GITHUB_STEP_SUMMARY names, from the caller's run_names and held_names and from the comparison it
+# made (cmp_base, cmp_mb, cmp_head, cmp_why), never a second reading of the refs.
 #
-# REPO-CONTROLLED TEXT ONLY, because the summary renders Markdown: registered step names (the
-# registry's own grammar, so a code span holds them), the base ref, and gate_mb's reason, which
-# quotes that ref and nothing else. A decision line is never copied here — a RUN line names files
-# from the diff, which is text the pull request's author chose.
+# WHAT REACHES MARKDOWN: registered step names (the registry's own grammar, so a code span holds
+# them), commit ids, the base ref, and gate_mb's reason. The ref and the reason go through
+# `adb_md_escape`; the reason is already one line (gate_mb). A decision line is never copied
+# here — a RUN line names files from the diff, which is text the pull request's author chose.
 gate_touched_summary() {
-  local worst="$1" basearg="$2" total="$3" base mb head why list nm
+  local worst="$1" total="$2" why list nm
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] || {
     printf '%s: touched: --summary was given and GITHUB_STEP_SUMMARY is not set — nothing was appended (the decisions are stated above)\n' "$ME" >&2
     return 0; }
   case "$worst" in
-    12) why="\`ADB_MUTATION_RUN_ALL\` is set, so the gate is overridden and every harness is listed." ;;
+    12) why="\`ADB_MUTATION_RUN_ALL\` is set, so the gate is overridden and every harness is selected." ;;
     *)
-      base="$(gate_base "$basearg")"
-      if mb="$(gate_mb "$base" 2>&1)"; then
-        head="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || head=""
-        why="Compared against $(adb_md_escape "$base") (merge-base \`${mb:0:12}\`), at commit \`${head:0:12}\`."
-        [ "$worst" -eq 0 ] || why="$why A harness whose decision could not be made is listed (fail-closed); its line is in this job's log."
+      if [ -n "$cmp_mb" ]; then
+        why="Compared against $(adb_md_escape "$cmp_base") (merge-base \`${cmp_mb:0:12}\`), at commit \`${cmp_head:0:12}\`."
+        [ "$worst" -eq 0 ] || why="$why The decision could not be made for at least one harness, so every harness is selected (fail-closed); the reason is in this job's log."
       else
-        why="The diff could not be established — $(adb_md_escape "${mb:-merge-base unavailable}") — so every harness is listed (fail-closed)."
+        why="The diff could not be established — $(adb_md_escape "${cmp_why:-merge-base unavailable}") — so every harness is selected (fail-closed)."
       fi ;;
   esac
   {
@@ -613,6 +623,18 @@ case "$sub" in
     wait "$!" || { printf '%s: touched: could not read the step names from the registry rows\n' "$ME" >&2; exit 3; }
     # Before any decision, so a refused shard list prints no matrix and no decision line.
     [ -z "$shards_set" ] || gate_shards_read touched "$shards" "${all_names[@]}"
+    # ONE COMPARISON, for every step and for the summary: the base is resolved to a commit here,
+    # each decision is handed that commit, and the summary renders these values. A ref that moves
+    # mid-run cannot then give two steps, or the selection and its summary, different answers.
+    # A base that does not resolve is handed on as it is, and every decision fails closed on it.
+    cmp_base="$(gate_base "$basearg")"
+    pinned="$cmp_base" cmp_mb="" cmp_why="" cmp_head=""
+    if sha="$(git -C "$ROOT" rev-parse --verify --quiet "$cmp_base^{commit}" 2>/dev/null)" && [ -n "$sha" ]; then
+      pinned="$sha"   # row-touched-pin
+    fi
+    GATE_BASE_NAME="$cmp_base"
+    if ! cmp_mb="$(gate_mb "$pinned" "$cmp_base" 2>&1)"; then cmp_why="$cmp_mb"; cmp_mb=""; fi
+    cmp_head="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || cmp_head=""
     worst=0
     run_names=() held_names=()
     # Field 5 and no further: `read` gives its LAST name the rest of the line, so without the
@@ -622,7 +644,7 @@ case "$sub" in
         # A harness that declares nothing cannot be gated, so it always has something to say.
         printf 'RUN: %s — the step declares no inputs\n' "$step" >&2; run_names+=("$step"); continue; }
       IFS=',' read -r -a inarr <<< "$inputs"
-      line="$(gate_decide "$step" "$basearg" "${inarr[@]}")"; rc=$?
+      line="$(gate_decide "$step" "$pinned" "${inarr[@]}")"; rc=$?
       printf '%s\n' "$line" >&2
       case "$rc" in
         10) held_names+=("$step") ;;
@@ -632,6 +654,14 @@ case "$sub" in
             run_names+=("$step"); worst=11 ;;
       esac
     done <<< "$rows"
+    # FAIL CLOSED IS THE WHOLE REGISTRY. One step whose decision could not be made means this run
+    # cannot vouch for the diff, so no other step is left out on the strength of it — and 11 then
+    # means what a caller reads it as: every step is listed.
+    if [ "$worst" -ne 0 ] && [ "${#held_names[@]}" -gt 0 ]; then
+      printf '%s: touched: a decision could not be made, so EVERY harness is listed (fail-closed), the %d that decided SKIP included\n' \
+        "$ME" "${#held_names[@]}" >&2
+      run_names=("${all_names[@]}"); held_names=()   # row-touched-promote
+    fi
     # The count and the steps not listed, once, after the per-step lines: a reader of the log
     # learns what was left out without reading every decision.
     printf '%s: touched: %d of %d harness(es) listed; not listed (inputs unchanged): %s\n' "$ME" \
@@ -642,7 +672,7 @@ case "$sub" in
     elif [ "${#run_names[@]}" -gt 0 ]; then
       printf '%s\n' "${run_names[@]}"
     fi
-    [ -z "$summary" ] || gate_touched_summary "$worst" "$basearg" "${#all_names[@]}"
+    [ -z "$summary" ] || gate_touched_summary "$worst" "${#all_names[@]}"
     exit "$worst" ;;
 
   should-run)

@@ -9689,7 +9689,8 @@ survive is the part a later reader needs.
              18 jobs, 877 job-minutes, 184 minutes of wall time, as #638 records). Its plan now
              asks `mutation-gate.sh touched --matrix` and starts the harnesses that declare an
              input the pull request changed since its merge-base with its base branch. The
-             schedule and a dispatch are unchanged and still carry every harness.
+             schedule and a dispatch are unchanged: the schedule, and a dispatch with no `step`
+             input, still carry every harness.
 
              Decided here, not by the owner. (1) NO SECOND LABEL. #638 asks that everything stay
              available "by `workflow_dispatch`, or by a second label"; the dispatch already
@@ -9715,6 +9716,17 @@ survive is the part a later reader needs.
              What the plan's full-history checkout costs: the same checkout took 5 s in
              `ci.yml`'s `fact-drift` and 6 s in `selfcheck-macos` on run 43942344693
              (2026-11-16), against the plan job's 10-minute bound, which is unchanged.
+
+             The local review's first pass found two more, both in `touched`. (7) EXIT 11 NOW
+             MEANS EVERY HARNESS. A step whose own decision failed was listed and the steps that
+             had decided SKIP were not, so a single failed `git diff` gave a partial list on the
+             code the plan reads as "every harness". One failed decision now lists the whole
+             registry, in the list of names as in the matrix. (8) ONE COMPARISON. `touched`
+             resolves the base to a commit once, hands every step that commit, and renders the
+             summary from the same values, so a ref that moves mid-run cannot give two steps, or
+             the selection and its summary, different answers. The reason a base does not
+             resolve is printed as one line (`adb_display_value`), so a base carrying newlines
+             cannot add a heading or a list to the summary.
 
              The first review found that the plan read `touched`'s status after a semicolon.
              A `run:` step with no `shell` is `bash -e`, so the fail-closed 11 would have ended

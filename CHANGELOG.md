@@ -159,8 +159,10 @@ only by a release it upgrades to. These entries are the notes for both.
   harness job. When the diff cannot be established, every harness starts and the plan says why.
   The scheduled run and a dispatch are unchanged, so every harness is still available by
   dispatching the workflow with no `step` input on a branch of this repository; a fork's branch
-  cannot be dispatched. `mutation-gate.sh touched` gains `--matrix [--shards …]` and `--summary`;
-  its list of names is unchanged, and it now ends its log with a count and the steps it left out.
+  cannot be dispatched. `mutation-gate.sh touched` gains `--matrix [--shards …]` and `--summary`,
+  and now ends its log with a count and the steps it left out. Its exit 11 now lists every
+  harness: one step whose decision could not be made used to be listed alone, beside steps that
+  had decided to skip. It resolves the base to a commit once and compares every step against it.
 
 - **A plain selfcheck runs the steps your change touches, and so does the macOS leg of a pull
   request (#629).** Every registry step now declares the paths its verdict depends on (the fifth

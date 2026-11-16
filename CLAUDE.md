@@ -224,7 +224,8 @@ those. The rules below are specific to this repo's code.
    (#638: `mutation-gate.sh touched --matrix`, against the merge-base with the PR's base branch),
    at the PR's head commit, once per labelling. That run names the harnesses it did not start, in
    the plan job's log and summary, and starts every harness when it cannot establish the diff;
-   every harness is still one dispatch away. Every PR's `common-lib` job states the last *scheduled* run's verdict
+   every harness is still one dispatch away on a branch of this repository (a fork's branch
+   cannot be dispatched). Every PR's `common-lib` job states the last *scheduled* run's verdict
    and age (`scripts/mutation-nightly-status.sh`) — STALE past 48h, unreadable distinct from absent,
    and never a gate. **The trade, said plainly:** a guard a PR breaks is caught by the next nightly
    or an on-demand run, not by that PR's CI. `/implement-issue`'s close-out asks
