@@ -10,8 +10,12 @@ name: Mutation nightly
 #   - ON DEMAND, by `workflow_dispatch`: no input runs every harness; `step: <name>` runs exactly
 #     that one, on the ref chosen at dispatch. The name is validated by `mutation-gate.sh steps
 #     --only` before the matrix exists, so a typo fails the plan job instead of running nothing.
-#   - ON A PULL REQUEST LABELLED `run-mutations`: every harness against the PR's HEAD commit (not the
-#     merge commit `pull_request` checks out by default). Once per labelling — a later push does not
+#   - ON A PULL REQUEST LABELLED `run-mutations`: the harnesses the change TOUCHES (#638), against the
+#     PR's HEAD commit (not the merge commit `pull_request` checks out by default). The plan asks
+#     `mutation-gate.sh touched` which harnesses declare an input the PR changed since its
+#     merge-base with the base branch, starts those, and names the rest in its log and job summary.
+#     A diff it cannot establish starts every harness and says why. Every harness is still one
+#     dispatch away, on a branch of this repository. Once per labelling — a later push does not
 #     re-run it; remove and re-add the label to run again. `pull_request`, never
 #     `pull_request_target`: a fork's code runs with the read-only token, as every other PR check does.
 #
@@ -22,8 +26,9 @@ name: Mutation nightly
 # itself, rather than trusting this comment.
 #
 # THE MATRIX IS THE REGISTRY, by construction: the plan job reads it from `selfcheck.sh --list`
-# through `mutation-gate.sh steps --matrix`, so no list of harnesses lives in this file to drift.
-# `check-mutation-gate.sh` pins that wiring.
+# through `mutation-gate.sh steps --matrix` — or, for a labelled PR, `touched --matrix`, which reads
+# the same registry and keeps the steps the change touches — so no list of harnesses lives in this
+# file to drift. `check-mutation-gate.sh` pins that wiring.
 #
 # A HARNESS TOO BIG FOR ONE JOB IS SHARDED BY ROW (#532, D142). The plan's `SHARDS` names it and a
 # count K; the matrix then carries K jobs for it, and job k hands `k/K` to the harness as
@@ -58,7 +63,9 @@ permissions:
   contents: read
 
 env:
-  # The whole point of this file: the gate is overridden and every harness runs.
+  # Every harness job this file starts runs its harness whole: the gate is overridden, so no step
+  # and no row is held back inside a job. WHICH jobs start is the plan's question; its label arm
+  # clears this for the one call that asks it.
   ADB_MUTATION_RUN_ALL: '1'
   # ...and every per-test row is scored against the WHOLE suite, not only its declared block (#468).
   ADB_MUTATION_FULL_SUITE: '1'
@@ -66,7 +73,8 @@ env:
 jobs:
   # THE PLAN: which harnesses this run carries, read from the registry. Runs on the default branch's
   # schedule, on a dispatch, and on a PR only when the label just added is `run-mutations` (any
-  # other label is a no-op run whose matrix job never starts).
+  # other label is a no-op run whose matrix job never starts). The schedule and a dispatch with no
+  # input carry every harness; a labelled PR carries the ones its change touches (#638).
   plan:
     name: mutation-nightly (plan)
     runs-on: ubuntu-26.04
@@ -74,6 +82,8 @@ jobs:
     if: >-
       github.repository == 'BWBama85/ai-dev-baseline'
       && (github.event_name != 'pull_request' || github.event.label.name == 'run-mutations')
+    # The checkout below fetches full history (#638). The same checkout took 5-6 s in ci.yml's
+    # `fact-drift` and `selfcheck-macos` on run 43942344693 (2026-11-16).
     timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -89,6 +99,10 @@ jobs:
         with:
           # The labelled PR's own HEAD, so the registry read is the PR's registry.
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || '' }}   # row-plan-ref
+          # ALL history (#638): the label arm diffs the PR against its merge-base with the base
+          # branch, and the default one-commit clone has neither. Without it the gate fails closed
+          # and every harness starts.
+          fetch-depth: 0   # row-plan-depth
 
       - name: bash floor — prove this job's interpreter clears 5.3 (#257)
         run: bash scripts/check-bash-floor.sh --runtime
@@ -96,16 +110,33 @@ jobs:
       # The input reaches the shell through `env`, never interpolated into the script, and
       # `--only` refuses (2) anything that is not a registered *-mutation step. A dispatch of one
       # sharded step runs all of its shards.
+      #
+      # THE LABEL ARM (#638) asks `touched` instead of `steps`: the harnesses that declare an input
+      # the PR changed since its merge-base with the base branch. The override this file sets is
+      # cleared for that one call, or every harness would be listed. `touched` answers 0 (decided,
+      # possibly no harness) or 11 (the diff could not be established: every harness, fail-closed,
+      # the reason on each line it prints); anything else publishes nothing and fails the plan. It
+      # names the harnesses it left out in this step's log and in the job summary.
       - name: Read the harness list from the registry
         id: plan
         env:
           ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.step || '' }}
           # <step>=<shards>, comma-separated: each harness here outgrew one job's bound (#532).
           SHARDS: 'settings-fragment-mutation=3'
+          # What a labelled PR is compared against: its base branch, the ref ci.yml gives the gate.
+          ADB_MUTATION_BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
         run: |
           set -uo pipefail
           if [ -n "$ONLY" ]; then
             matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS" --only "$ONLY")" || exit 1
+          elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+            matrix="$(ADB_MUTATION_RUN_ALL='' bash scripts/mutation-gate.sh touched --matrix --shards "$SHARDS" --summary)"; rc=$?
+            case "$rc" in
+              0)  echo "label run: the harnesses this change touches, against $ADB_MUTATION_BASE" ;;
+              11) echo "label run: the diff against $ADB_MUTATION_BASE could not be established, so EVERY harness starts (fail-closed)" ;;
+              *)  echo "label run: mutation-gate.sh touched failed (rc $rc) — no matrix is published"; exit 1 ;;
+            esac
+            printf '\nThe selected harnesses are the jobs of this run; the others were not started. Every harness is still available: run this workflow by `workflow_dispatch` with no `step` input, on a branch of this repository.\n' >> "$GITHUB_STEP_SUMMARY"
           else
             matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")" || exit 1
           fi
@@ -116,6 +147,9 @@ jobs:
     # An unsharded harness keeps the plain name, which is what `/implement-issue` correlates on.
     name: mutation-nightly (${{ matrix.step }}${{ matrix.shards > 1 && format(', shard {0} of {1}', matrix.shard, matrix.shards) || '' }})
     needs: plan
+    # A labelled PR that touches no harness publishes a matrix with no job in it (#638). The job is
+    # skipped then: GitHub evaluates a job's `if:` before it reads the matrix.
+    if: ${{ needs.plan.outputs.matrix != '{"include":[]}' }}
     runs-on: ubuntu-26.04
     # 360 is GitHub's hosted-job maximum. Unsharded, full-suite `settings-fragment-mutation` ranged
     # 179-316 minutes at 289-294 rows (#532), too close to it. Sharded three ways at 295 rows, its

@@ -34,8 +34,12 @@
 #      gated, and its macOS leg skips the registry's `*-mutation` set read at run time; the
 #      scheduled workflow's matrix is read from the registry by its plan job, a dispatched `step`
 #      is validated there, and its label trigger adds no required context (asked of discovery);
+#      a labelled pull request's plan (#638) is RUN in a fixture repository and must publish
+#      exactly the harnesses the change touches, name the rest in its log and its job summary,
+#      start every harness when the diff cannot be established, and publish nothing on a failure;
 #   7. `steps` and `touched` (#456): the registry's harness list in every format and its refusals,
-#      and the per-change answer of which harnesses to dispatch;
+#      and the per-change answer of which harnesses to dispatch — as names, as a matrix (#638)
+#      and as a job-summary report that carries no text from the diff;
 #   8. `scripts/mutation-nightly-status.sh` (#456): every shape of the last nightly's verdict is
 #      stated, none gates, and nothing unvalidated reaches the Markdown summary.
 #
@@ -202,7 +206,7 @@ if [ "$MODE" = mutation ]; then
     '      [ -n "$found" ] || [ -n "$only" ] || {' \
     'steps --only <unknown>: refused (2)'
   shmutant_mut touched-failclosed-lists-none \
-    '        11|12) printf '"'"'%s\n'"'"' "$step"; [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
+    '        11|12) run_names+=("$step"); [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '        11|12) [ "$rc" -gt "$worst" ] && worst="$rc" ;;' \
     '…and lists EVERY harness, never none'
   shmutant_mut touched-reads-past-inputs \
@@ -220,8 +224,8 @@ if [ "$MODE" = mutation ]; then
     'for (( k = 1; k < of; k++ )); do' \
     'carries every shard 1..K'
   shmutant_mut shards-unknown-step-accepted \
-    '        if [ -z "$found" ]; then' \
-    '        if false; then' \
+    '    if [ -z "$found" ]; then' \
+    '    if false; then' \
     "steps --matrix --shards 'no-such-mutation=2': refused (2)"
   shmutant_mut shards-step-named-twice \
     '[ -z "${shard_of[$sname]:-}" ] || {' \
@@ -255,6 +259,24 @@ if [ "$MODE" = mutation ]; then
     '--only) [ "$#" -ge 2 ] && [ -n "$2" ] || usage;' \
     '--only) [ "$#" -ge 2 ] || usage;' \
     'never widened to every harness'
+  # --- `touched --matrix` and `--summary` (#638): a wrong answer here is a labelled pull request
+  # that starts every harness again, or a run that does not say which ones it left out.
+  shmutant_mut touched-matrix-prints-every-step \
+    'gate_matrix_print "${run_names[@]}"   # row-touched-matrix' \
+    'gate_matrix_print "${all_names[@]}"   # row-touched-matrix' \
+    'exactly that harness, every one of its shards'
+  shmutant_mut touched-shards-outside-matrix \
+    '[ -z "$shards_set" ] || [ -n "$as_matrix" ] || usage   # row-touched-shards' \
+    ':   # row-touched-shards' \
+    'touched --shards without --matrix: usage'
+  shmutant_mut touched-summary-held-unnamed \
+    'list=""; for nm in "${held_names[@]}"; do list="$list, \`$nm\`"; done   # row-summary-held' \
+    'list=""   # row-summary-held' \
+    'names every harness it did not select'
+  shmutant_mut touched-summary-unescaped \
+    '$(adb_md_escape "${mb:-merge-base unavailable}")' \
+    '${mb:-merge-base unavailable}' \
+    'reaches the summary escaped'
   check_shmutant_pool "check-mutation-gate (gate)" "$work/gate" mut_prepare mut_run 4
 
   # THE WIRING PINS are observed failing too, against mutated copies of the two workflow files —
@@ -406,6 +428,44 @@ if [ "$MODE" = mutation ]; then
     '  schedule:' \
     '  schedul3:' \
     'has no schedule'
+  # THE LABEL ARM (#638): each way a labelled pull request goes back to starting every harness, or
+  # stops saying what it left out, or turns a fail-closed answer into a failed or an empty run.
+  shmutant_mut nightly-label-reads-steps \
+    'matrix="$(ADB_MUTATION_RUN_ALL='"''"' bash scripts/mutation-gate.sh touched --matrix --shards "$SHARDS" --summary)"; rc=$?' \
+    'matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")"; rc=$?' \
+    'PUBLISHES exactly that harness'
+  shmutant_mut nightly-label-override-inherited \
+    'ADB_MUTATION_RUN_ALL='"''"' bash scripts/mutation-gate.sh touched' \
+    'bash scripts/mutation-gate.sh touched' \
+    'under the override this workflow sets'
+  shmutant_mut nightly-label-arm-everywhere \
+    'elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then' \
+    'elif true; then' \
+    'carries every harness whatever the change touches'
+  shmutant_mut nightly-plan-shallow \
+    'fetch-depth: 0   # row-plan-depth' \
+    'fetch-depth: 1   # row-plan-depth' \
+    'does not fetch full history'
+  shmutant_mut nightly-label-base-unbound \
+    "ADB_MUTATION_BASE: \${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}" \
+    "ADB_MUTATION_BASE: ''" \
+    "does not bind the gate's base"
+  shmutant_mut nightly-empty-matrix-expanded \
+    "    if: \${{ needs.plan.outputs.matrix != '{\"include\":[]}' }}" \
+    '    if: ${{ true }}' \
+    'is not skipped on the empty matrix'
+  shmutant_mut nightly-label-summary-dropped \
+    '--shards "$SHARDS" --summary)"' \
+    '--shards "$SHARDS")"' \
+    'did not start in the job summary'
+  shmutant_mut nightly-label-failclosed-fails \
+    '11) echo "label run: the diff' \
+    '11) exit 1; echo "label run: the diff' \
+    'starts every harness when the diff cannot be established'
+  shmutant_mut nightly-label-failure-published \
+    'no matrix is published"; exit 1 ;;' \
+    'no matrix is published" ;;' \
+    'fails on a registry it cannot read'
   check_shmutant_pool "check-mutation-gate (nightly)" "$work/nightly" mut_prepare mut_run 4
 
   # THE LAST-NIGHTLY LINE (#456): each rule whose failure is a misleading line on every PR.
@@ -934,6 +994,90 @@ T_OUT="$(cd "$R" && ADB_MUTATION_RUN_ALL=1 bash scripts/mutation-gate.sh touched
 eq "$T_RC" "12" "touched: ADB_MUTATION_RUN_ALL → exit 12"
 eq "$(printf '%s\n' "$T_OUT" | grep -c .)" "$(cd "$R" && bash scripts/mutation-gate.sh steps | grep -c .)" "touched: …listing every harness"
 
+# `touched --matrix` (#638): the same decision, printed as the matrix `steps --matrix` prints —
+# what a labelled pull request's plan publishes. tm <args…> runs it in the fixture with the three
+# things it writes kept apart: T_OUT (stdout, the matrix), T_ERR (the log), T_SUM (the summary).
+N_ALL="$(cd "$R" && bash scripts/mutation-gate.sh steps | grep -c .)"
+tm() {
+  : > "$work/t-summary"
+  T_OUT="$(cd "$R" && GITHUB_STEP_SUMMARY="$work/t-summary" bash scripts/mutation-gate.sh touched "$@" 2>"$work/t-err")"; T_RC=$?
+  T_ERR="$(cat "$work/t-err")"; T_SUM="$(cat "$work/t-summary")"
+  T_TALLY="$(printf '%s\n' "$T_ERR" | grep 'harness(es) listed' || true)"
+}
+tm --matrix
+eq "$T_RC" "0" "touched --matrix: a clean change → exit 0 (decided)"
+eq "$T_OUT" '{"include":[]}' "touched --matrix: …and a matrix with no job in it"
+has "$T_TALLY" "0 of $N_ALL harness(es) listed" "touched: the log counts the harnesses it listed"
+has "$T_TALLY" "gated-mutation" "touched: …and names the ones it did not"
+eq "$T_SUM" "" "touched --matrix without --summary: nothing is appended to the job summary"
+printf 'dirty\n' >> "$R/scripts/check-gated.sh"
+tm --matrix --shards gated-mutation=2,rows-mutation=5 --summary
+eq "$T_RC" "0" "touched --matrix: a change on one harness's input → exit 0"
+eq "$(printf '%s' "$T_OUT" | jq -c '[.include[] | [.step, .shard, .shards]]')" '[["gated-mutation",1,2],["gated-mutation",2,2]]' \
+   "touched --matrix: a change on one harness's input → exactly that harness, every one of its shards"
+has "$T_TALLY" "1 of $N_ALL harness(es) listed" "touched: the log counts the one harness listed"
+hasnt "$T_TALLY" "gated-mutation" "touched: …and does not name it among the ones left out"
+has "$T_TALLY" "rows-mutation" "touched: …which it does name"
+# THE SUMMARY names both sets by step name and nothing from the diff: a RUN line names the changed
+# files, which is text the pull request's author chose, and the summary renders Markdown.
+has "$T_SUM" "**1 of $N_ALL harness(es) selected.**" "touched --summary: counts what it selected"
+has "$T_SUM" "Compared against origin/main (merge-base \`$(git -C "$R" rev-parse origin/main | cut -c1-12)\`), at commit \`$(git -C "$R" rev-parse HEAD | cut -c1-12)\`." \
+   "touched --summary: names the base, the merge-base and the commit it compared"
+eq "$(printf '%s\n' "$T_SUM" | grep -c '^- selected: `gated-mutation`$')" "1" "touched --summary: names the harness it selected, and only that one"
+eq "$(printf '%s\n' "$T_SUM" | grep -c '^- not selected, .*`rows-mutation`')" "1" "touched --summary: names every harness it did not select"
+eq "$(printf '%s\n' "$T_SUM" | grep -o '`[A-Za-z0-9_-]*-mutation`' | LC_ALL=C sort -u | grep -c .)" "$N_ALL" \
+   "touched --summary: every registered harness is in one of the two lists"
+hasnt "$T_SUM" "check-gated.sh" "touched --summary: no file name from the diff reaches the summary"
+hasnt "$T_SUM" "RUN:" "touched --summary: …and no decision line does"
+# Not being able to write the summary changes nothing else: the matrix and the exit code stand.
+T_OUT="$(cd "$R" && env -u GITHUB_STEP_SUMMARY bash scripts/mutation-gate.sh touched --matrix --summary 2>"$work/t-err")"; T_RC=$?
+eq "$T_RC" "0" "touched --summary with no GITHUB_STEP_SUMMARY: still exit 0"
+has "$(cat "$work/t-err")" "GITHUB_STEP_SUMMARY is not set" "touched --summary: …and says nothing was appended"
+T_OUT="$(cd "$R" && GITHUB_STEP_SUMMARY="$work" bash scripts/mutation-gate.sh touched --matrix --summary 2>"$work/t-err")"; T_RC=$?
+eq "$T_RC" "0" "touched --summary with a summary it cannot write: still exit 0"
+eq "$(printf '%s' "$T_OUT" | jq -c '[.include[].step]')" '["gated-mutation"]' "touched --summary: …and the matrix is still printed"
+has "$(cat "$work/t-err")" "could not append to GITHUB_STEP_SUMMARY" "touched --summary: …and the failed write is said"
+check_git "$R" checkout -q -- scripts/check-gated.sh
+# A shared input selects every harness that declares it, in registry order.
+printf 'dirty\n' >> "$R/scripts/lib/stub.sh"
+tm --matrix
+eq "$(printf '%s' "$T_OUT" | jq -c '[.include[].step]')" '["gated-mutation","rows-mutation"]' \
+   "touched --matrix: a change on an input two harnesses declare selects both"
+check_git "$R" checkout -q -- scripts/lib/stub.sh
+# Fail-closed and override: the matrix is every harness, on the same codes as the list of names.
+tm --matrix --shards gated-mutation=2 --summary --base no-such-ref
+eq "$T_RC" "11" "touched --matrix: an unresolvable base → exit 11 (fail-closed)"
+eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix --shards gated-mutation=2)" \
+   "touched --matrix: …and the matrix is EVERY harness, the one steps --matrix prints"
+has "$T_SUM" "The diff could not be established" "touched --summary: a fail-closed answer says so"
+has "$T_SUM" "base no-such-ref does not resolve to a commit" "touched --summary: …and gives the reason"
+has "$T_SUM" "**$N_ALL of $N_ALL harness(es) selected.**" "touched --summary: …and that every harness is selected"
+has "$T_SUM" "not selected, because the change touches none of their declared inputs: none" "touched --summary: …and that none was left out"
+# The reason quotes the base ref, which reaches Markdown: markup in it is neutralized.
+tm --matrix --summary --base '<b>[x](y)'
+has "$T_SUM" '&lt;b&gt;\[x\](y)' "touched --summary: a base ref that carries markup reaches the summary escaped"
+T_OUT="$(cd "$R" && : > "$work/t-summary" && ADB_MUTATION_RUN_ALL=1 GITHUB_STEP_SUMMARY="$work/t-summary" bash scripts/mutation-gate.sh touched --matrix --summary 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "12" "touched --matrix: ADB_MUTATION_RUN_ALL → exit 12"
+eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix)" "touched --matrix: …and the matrix is every harness"
+has "$(cat "$work/t-summary")" "ADB_MUTATION_RUN_ALL\` is set" "touched --summary: an overridden gate says so"
+# Refusals: nothing is decided and no matrix is printed.
+tm --shards gated-mutation=2
+eq "$T_RC" "2" "touched --shards without --matrix: usage — shard counts mean nothing to a list of names"
+tm --matrix --shards no-such-mutation=2
+eq "$T_RC" "2" "touched --matrix --shards <unknown step>: refused (2)"
+eq "$T_OUT" "" "touched --matrix --shards <unknown step>: …no matrix is printed"
+hasnt "$T_ERR" "SKIP:" "touched --matrix --shards <unknown step>: …and nothing was decided"
+# The 256-job limit is counted on the matrix as printed: every harness (fail-closed) is over it,
+# and the same shard list fits when the change selects nothing.
+tm --matrix --shards "gated-mutation=$(( 257 - _others ))" --base no-such-ref
+eq "$T_RC" "2" "touched --matrix: a matrix of 257 jobs is refused (2), fail-closed or not"
+eq "$T_OUT" "" "touched --matrix: …and is not printed"
+tm --matrix --shards "gated-mutation=$(( 257 - _others ))"
+eq "$T_RC" "0" "touched --matrix: the limit is counted on the matrix as printed, after the decision"
+T_OUT="$(cd "$NR" && bash scripts/mutation-gate.sh touched --matrix 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "3" "touched --matrix: an unreadable registry → exit 3"
+eq "$T_OUT" "" "touched --matrix: …and no matrix, never an empty one"
+
 # ============================== 8. mutation-nightly-status.sh (#456) =============================
 # Driven through a stub `gh` on PATH; the clock is pinned with ADB_NIGHTLY_NOW. The script runs from
 # the shipped tree (it reads nothing there but the default branch).
@@ -1253,8 +1397,10 @@ if [ -f "$NIGHTLY" ]; then
   plan_shards="$(sed -n "s/^          SHARDS: '\(.*\)'\$/\1/p" "$NIGHTLY")"
   [ -n "$plan_shards" ] && ok || bad "could not read the plan step's SHARDS list from the scheduled workflow"
   run_plan() {  # run_plan <ONLY> — sets PLAN_RC and PLAN_OUT (the published `matrix=` value)
+    local event=schedule
+    [ -z "$1" ] || event=workflow_dispatch
     : > "$work/plan-output"
-    (cd "$ROOT" && ONLY="$1" SHARDS="$plan_shards" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
+    (cd "$ROOT" && ONLY="$1" SHARDS="$plan_shards" GITHUB_EVENT_NAME="$event" ADB_MUTATION_BASE="" GITHUB_OUTPUT="$work/plan-output" bash -c "$plan_body") >/dev/null 2>&1; PLAN_RC=$?
     PLAN_OUT="$(sed -n 's/^matrix=//p' "$work/plan-output")"
   }
   run_plan ""
@@ -1283,6 +1429,80 @@ if [ -f "$NIGHTLY" ]; then
   if grep -nE '^[[:space:]]*(run:|[a-z]).*\$\{\{ *(inputs|github\.event\.inputs)\.step' "$NIGHTLY" | grep -vE '^[0-9]+:[[:space:]]*ONLY:' | grep -q .; then
     bad "the dispatch input is interpolated outside the plan step's env (script injection)"
   else ok; fi
+  # …and so does everything else the plan's script reads: its body carries no expression at all.
+  case "$plan_body" in *'${{'*) bad "the plan step's script interpolates a workflow expression — event values reach it through env" ;; *) ok ;; esac
+
+  # THE LABEL ARM (#638): a labelled pull request starts the harnesses its change touches, not the
+  # registry. Asked by RUNNING the plan's own script where a diff exists — the registry fixture of
+  # section 4 — as the runner hands it over: the event name, the base branch, and the override this
+  # workflow sets for every job, which the arm has to clear for its own question.
+  run_label() {  # run_label <repo> <SHARDS> [NAME=value…] — sets LBL_RC, LBL_OUT (the published matrix), LBL_LOG, LBL_SUM
+    local repo="$1" shards="$2"; shift 2
+    : > "$work/lbl-output"; : > "$work/lbl-summary"
+    LBL_LOG="$(cd "$repo" && env ONLY="" SHARDS="$shards" GITHUB_EVENT_NAME=pull_request ADB_MUTATION_RUN_ALL=1 \
+      ADB_MUTATION_BASE=origin/main GITHUB_OUTPUT="$work/lbl-output" GITHUB_STEP_SUMMARY="$work/lbl-summary" "$@" \
+      bash -c "$plan_body" 2>&1)"; LBL_RC=$?
+    LBL_OUT="$(sed -n 's/^matrix=//p' "$work/lbl-output")"
+    LBL_SUM="$(cat "$work/lbl-summary")"
+  }
+  fx_all="$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix --shards gated-mutation=2)"
+  # Nothing touched: a green plan, a matrix with no job in it, and a matrix job that is skipped
+  # on exactly that value — read from what the plan published, never from a literal here.
+  run_label "$R" gated-mutation=2
+  eq "$LBL_RC" "0" "the label arm succeeds when the change touches no harness"
+  eq "$LBL_OUT" '{"include":[]}' "the label arm then publishes a matrix with no job in it"
+  grep -qF "    if: \${{ needs.plan.outputs.matrix != '$LBL_OUT' }}" "$NIGHTLY" && ok \
+    || bad "the matrix job is not skipped on the empty matrix the label arm publishes ($LBL_OUT), which has no job to expand"
+  has "$LBL_LOG" "SKIP: gated-mutation" "the label run with nothing touched names each harness it left out in the plan's log"
+  # One harness touched: exactly that harness and every shard of it, with the rest named.
+  printf 'dirty\n' >> "$R/scripts/check-gated.sh"
+  run_label "$R" gated-mutation=2
+  eq "$LBL_RC" "0" "the label arm succeeds under the override this workflow sets for every job (it clears it for its own question)"
+  eq "$(printf '%s' "$LBL_OUT" | jq -c '[.include[] | [.step, .shard, .shards]]')" '[["gated-mutation",1,2],["gated-mutation",2,2]]' \
+     "a labelled PR that touches one harness PUBLISHES exactly that harness and each of its shards"
+  has "$LBL_LOG" "SKIP: rows-mutation" "the label run names a harness it did not start in the plan's log"
+  eq "$(printf '%s\n' "$LBL_SUM" | grep -c '^- not selected, .*`rows-mutation`')" "1" \
+     "the label run names the harnesses it did not start in the job summary"
+  has "$LBL_SUM" "workflow_dispatch" "the label run's summary says every harness is still available by dispatch"
+  hasnt "$LBL_SUM" "check-gated.sh" "the label run's summary carries no file name from the diff"
+  check_git "$R" checkout -q -- scripts/check-gated.sh
+  # A PR against another branch is compared against THAT branch: here one whose tip is the fixture's
+  # first commit, so everything since counts — `rows-mutation`'s input among it.
+  check_git "$R" update-ref refs/remotes/origin/release "$(git -C "$R" rev-list --max-parents=0 HEAD | head -1)" >/dev/null 2>&1 \
+    || bad "fixture setup: could not create origin/release"
+  run_label "$R" gated-mutation=2 ADB_MUTATION_BASE=origin/release
+  eq "$(printf '%s' "$LBL_OUT" | jq -c '[.include[].step] | index("rows-mutation") != null')" "true" \
+     "the label arm compares against the base it is handed (ADB_MUTATION_BASE), not the default branch"
+  # FAIL CLOSED: a diff that cannot be established starts every harness, on a GREEN plan that says why.
+  run_label "$R" gated-mutation=2 ADB_MUTATION_BASE=origin/no-such-branch
+  eq "$LBL_RC" "0" "the label arm starts every harness when the diff cannot be established, and does not fail"
+  eq "$LBL_OUT" "$fx_all" "the label arm then publishes EVERY registered harness"
+  has "$LBL_LOG" "base origin/no-such-branch does not resolve to a commit" "the fail-closed label run gives the reason in the log"
+  has "$LBL_LOG" "EVERY harness starts (fail-closed)" "the fail-closed label run says every harness starts"
+  has "$LBL_SUM" "The diff could not be established" "the fail-closed label run says so in the job summary"
+  # A FAILURE publishes nothing: an unreadable registry, and a shard list that names no harness.
+  run_label "$NR" gated-mutation=2
+  no "$LBL_RC" "the label arm fails on a registry it cannot read"
+  eq "$LBL_OUT" "" "the label arm publishes nothing for a registry it cannot read"
+  run_label "$R" no-such-mutation=2
+  no "$LBL_RC" "the label arm fails on a shard list that names no registered harness"
+  eq "$LBL_OUT" "" "the label arm publishes nothing for a refused shard list"
+  # EVERY OTHER EVENT still carries the registry, whatever the change touches: the same fixture,
+  # nothing touched, where the label arm published no job.
+  for _ev in schedule workflow_dispatch; do
+    : > "$work/lbl-output"
+    (cd "$R" && ONLY="" SHARDS="gated-mutation=2" GITHUB_EVENT_NAME="$_ev" ADB_MUTATION_RUN_ALL=1 ADB_MUTATION_BASE="" \
+      GITHUB_OUTPUT="$work/lbl-output" GITHUB_STEP_SUMMARY="$work/lbl-summary" bash -c "$plan_body") >/dev/null 2>&1
+    eq "$(sed -n 's/^matrix=//p' "$work/lbl-output")" "$fx_all" "under [$_ev] the plan carries every harness whatever the change touches"
+  done
+  # What the script cannot show, because GitHub evaluates it: the history the diff needs, and the
+  # base the gate is handed. Each asked of the plan job's own step.
+  plan_co="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*uses: actions/checkout@')"
+  printf '%s\n' "$plan_co" | grep -qE '^          fetch-depth: 0( |$)' && ok \
+    || bad "the plan job's checkout does not fetch full history (fetch-depth: 0), so a labelled PR has no merge-base and every harness starts"
+  plan_step="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*- name: Read the harness list from the registry$')"
+  printf '%s\n' "$plan_step" | grep -qF "          ADB_MUTATION_BASE: \${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}" && ok \
+    || bad "the plan step does not bind the gate's base to the labelled PR's base branch (ADB_MUTATION_BASE)"
   # THE LABEL TRIGGER (#456): `pull_request` narrowed to `labeled` alone — never
   # `pull_request_target`, never `opened`/`synchronize` — and the plan runs only for `run-mutations`.
   grep -qE '^[^#]*pull_request_target' "$NIGHTLY" && bad "the scheduled workflow must not use pull_request_target (it would run a fork's code with a write token)" || ok
