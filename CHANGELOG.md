@@ -150,6 +150,21 @@ only by a release it upgrades to. These entries are the notes for both.
   and `/adopt` no longer advises writing one. The docs now state Claude's precedence correctly: a
   personal skill runs over a same-named project one (#540).
 
+- **The `run-mutations` label runs the harnesses the change touches (#638).** A pull request
+  labelled `run-mutations` used to start every mutation harness. The plan job of
+  `mutation-nightly.yml` now asks `mutation-gate.sh touched --matrix` which harnesses declare an
+  input the pull request changed since its merge-base with its base branch, and starts those,
+  with every shard of a sharded one. It names the harnesses it did not start in its log and in
+  the job summary. A pull request that touches no harness's inputs gets a green plan and no
+  harness job. When the diff cannot be established, every harness starts and the plan says why.
+  The scheduled run and a dispatch are unchanged, so every harness is still available by
+  dispatching the workflow with no `step` input on a branch of this repository; a fork's branch
+  cannot be dispatched. `mutation-gate.sh touched` gains `--matrix [--shards …]` and `--summary`,
+  and now ends its log with a count and the steps it left out. It now makes one comparison
+  for the whole registry (one merge-base, one diff) where it made one per harness, so its exit
+  11 lists every harness: a `git diff` that failed for one harness used to list that one alone,
+  beside harnesses that had decided to skip.
+
 - **A plain selfcheck runs the steps your change touches, and so does the macOS leg of a pull
   request (#629).** Every registry step now declares the paths its verdict depends on (the fifth
   field of `bash scripts/selfcheck.sh --list`), and a plain step runs only when the change under

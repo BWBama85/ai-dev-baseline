@@ -153,7 +153,8 @@ declared places, and `--only` / `--skip` can leave any of them out.
 step, and the macOS leg skips every `*-mutation` step by a list read from the registry at run time
 (`skip="$(bash scripts/mutation-gate.sh steps --csv)"`, then `selfcheck.sh --skip "$skip"`). They
 run in `.github/workflows/mutation-nightly.yml` — daily against `main`, by `workflow_dispatch`
-(`step=<name>` for one harness), or on a PR you label `run-mutations` — and every PR's `common-lib`
+(`step=<name>` for one harness), or on a PR you label `run-mutations`, which runs the harnesses
+the change touches and names the rest in the plan job's summary (#638) — and every PR's `common-lib`
 job summary states the last scheduled run's verdict and age. **If your change edits a guard or a
 library a harness mutates, run that harness on demand** (`bash scripts/mutation-gate.sh touched`
 names them; `gh workflow run mutation-nightly.yml --ref <branch> -f step=<name>`) and link the run

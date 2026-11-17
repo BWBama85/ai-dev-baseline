@@ -445,8 +445,9 @@ jobs:
         run: bash scripts/check-step-inputs.sh --self-test
 
       # THE MUTATION HARNESSES' LAST VERDICT, on every PR (#456, D126). No `--mutation` harness runs
-      # per pull request any more — `mutation-nightly.yml` runs them all on a schedule, by dispatch
-      # (`step=<name>` for one) or on a PR labelled `run-mutations` — so this states where the
+      # per pull request any more — `mutation-nightly.yml` runs them all on a schedule and by
+      # dispatch (`step=<name>` for one), and the ones a PR touches when it is labelled
+      # `run-mutations` (#638) — so this states where the
       # verdict went: the last SCHEDULED run on the default branch, its conclusion and its age, STALE
       # past 48h, `no nightly result found` or `unreadable (…)` rather than silence. It REPORTS and
       # never gates: the script exits 0 on every one of those. It rides this job rather than adding

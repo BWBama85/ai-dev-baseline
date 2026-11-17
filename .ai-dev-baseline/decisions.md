@@ -9684,6 +9684,87 @@ survive is the part a later reader needs.
              armed auto-merge, and the runs are correlated (head SHA, creation time, the job's harness
              name) and linked, not waited on.
 - baseline-issue: n/a
+- amended:   2026-11-16 (#638). "The plan runs for `run-mutations` alone" still holds; what that
+             run CARRIES changed. A labelled pull request used to start every harness (PR #628:
+             18 jobs, 877 job-minutes, 184 minutes of wall time, as #638 records). Its plan now
+             asks `mutation-gate.sh touched --matrix` and starts the harnesses that declare an
+             input the pull request changed since its merge-base with its base branch. The
+             schedule and a dispatch are unchanged: the schedule, and a dispatch with no `step`
+             input, still carry every harness.
+
+             Decided here, not by the owner. (1) NO SECOND LABEL. #638 asks that everything stay
+             available "by `workflow_dispatch`, or by a second label"; the dispatch already
+             exists, so no label was added. What that leaves out is a fork's pull request, whose
+             branch cannot be dispatched: its full set is the next scheduled run after it merges
+             into the default branch, the only branch the schedule runs on.
+             (2) THE BASE is `origin/<base branch>`, the ref `ci.yml` hands the gate, not the
+             event's `pull_request.base.sha`: one rule for both workflows, and the merge-base
+             with the branch's current tip is the diff the pull request shows. The plan's
+             checkout therefore fetches full history. (3) THE OVERRIDE IS CLEARED FOR THE ONE
+             CALL THAT SELECTS. `ADB_MUTATION_RUN_ALL` and `ADB_MUTATION_FULL_SUITE` stay set for
+             every harness job, so a selected harness runs every row against the whole suite:
+             the scope is which jobs start, and a row filter stays out of scope. (4) NOTHING
+             TOUCHED is a green plan, a matrix with no job in it, and a matrix job skipped by a
+             job-level `if:`, which GitHub evaluates before it reads the matrix. (5) FAIL CLOSED
+             as the gate does: a diff that cannot be established starts every harness on a
+             green plan that states the reason; a registry that cannot be read, or a refused
+             shard list, fails the plan and publishes nothing. (6) THE JOB SUMMARY names the
+             selected harnesses and the ones not started by step name, with the base, the
+             merge-base and the commit. It is written by `touched --summary` and never copies a
+             decision line, because a RUN line names files from the diff and the summary
+             renders Markdown. The same count and names are the last line `touched` writes to
+             the plan's log, before the plan's own line and the matrix.
+
+             What the plan's full-history checkout costs: the same checkout took 5 s in
+             `ci.yml`'s `fact-drift` and 6 s in `selfcheck-macos` on run 43942344693
+             (2026-11-16), against the plan job's 10-minute bound, which is unchanged.
+
+             The local review's first two passes found the same class three ways, all in
+             `touched`: it asked the gate's whole decision once per harness, so each harness
+             resolved the base, took a merge-base and read the working tree for itself. A single
+             failed `git diff` gave a partial list on the code the plan reads as "every harness";
+             a ref or a HEAD that moved mid-run gave two harnesses different comparisons; and the
+             summary read the refs a further time. Pinning the base to a commit closed one of
+             those windows and left the others, so the structure changed instead. (7) ONE
+             COMPARISON. `gate_compare` resolves the base, records the commit HEAD is, takes one
+             merge-base and one changed-path set; `gate_verdict` decides a step from those and
+             reads nothing from git; `gate_decide`, which `should-run` and `run` use for one step,
+             is the two in sequence. `touched` compares once and asks a verdict per harness, and
+             its summary renders the same four values. (8) EXIT 11 THEREFORE MEANS EVERY
+             HARNESS: a comparison that could not be established is one answer for all of them,
+             in the list of names as in the matrix. A HEAD that cannot be read as a commit is
+             one of those failures, even when the merge-base still resolves. (9) THE BASE IS
+             PRINTED AS ONE LINE (`adb_display_value`) wherever it is shown: in the reason it
+             does not resolve, and in the summary and every SKIP line when it does. Git resolves
+             a revision that carries newlines (`HEAD^{/a|<newline>b}`), so resolving is not
+             evidence of a single line; the third pass showed that by adding a heading to the
+             summary. (10) THE BASE REACHES GIT AS IT WAS GIVEN. `gate_base` printed the ref and
+             every caller captured it, which drops trailing newlines, so `HEAD<newline>`, a
+             revision git refuses, was compared as `HEAD`. That predates this change; the fifth
+             pass found it in the lines the refactor kept. `gate_base` now assigns, for `touched`,
+             `should-run`, `run`, `rows` and `base` alike. **Owner decision 2026-11-16:** that third pass was the last of the three
+             budgeted and still found two findings, so the budget for this run was raised
+             (`ADB_LOCAL_REVIEW_PASSES=6`) and both were fixed rather than carried.
+
+             The first review found that the plan read `touched`'s status after a semicolon.
+             A `run:` step with no `shell` is `bash -e`, so the fail-closed 11 would have ended
+             the step before the matrix was published: no harness, where the rule is every
+             harness. The status is now taken with `|| rc=$?`, and the suite runs every
+             workflow body it extracts under `bash -e`, which is what had hidden it.
+
+             Not provable offline: that `actions/checkout` with a commit as `ref` and
+             `fetch-depth: 0` leaves `origin/<base branch>` in the clone. Its README says depth 0
+             fetches all history for all branches and tags. If the ref were absent the gate
+             answers 11 and every harness starts, so the failure is a full run that says why,
+             never a skipped harness. `check-mutation-gate.sh` runs the plan's own script in a
+             fixture repository for each case above and pins the two things only GitHub
+             evaluates, the fetch depth and the base binding, by their spelling.
+             Placement: `.github/workflows/mutation-nightly.yml` (the plan and the matrix job's
+             `if:`); `scripts/mutation-gate.sh` (`touched --matrix`, `--shards`, `--summary`; the
+             shard reader and matrix printer shared with `steps`); `scripts/check-mutation-gate.sh`
+             (sections 6 and 7, and their `--mutation` rows); `base/workflows/implement-issue.md`
+             §11 and its renders; `CLAUDE.md`, `CONTRIBUTING.md`, `docs/ci-runners.md`,
+             `CHANGELOG.md`.
 
 ## D127 — #455: the shell lint is one script, one shellcheck per file across a pool, at all three sites
 - date:      2026-10-10

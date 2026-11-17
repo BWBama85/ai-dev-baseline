@@ -768,10 +768,14 @@ for anything not ✅, a **Follow-up issues filed** block (milestone + rationale)
   matches (another dispatch of the same step at the same head), link every match and say the
   evidence is ambiguous rather than picking one. A run that does not register within a few minutes
   is reported as **not started**, never assumed. More than three steps listed: label the PR `run-mutations`
-  instead, which runs every harness against its head once per labelling — if the label is already
+  instead, which starts the harnesses the change touches against its head in one run (#638; a
+  workflow that predates it starts every harness), once per labelling — if the label is already
   on the PR, remove and re-add it (`gh pr edit <N> --remove-label run-mutations`, then
   `--add-label`), because a label that stays on does not run again; correlate that run the same way
-  with `--event pull_request`. The label path needs the label to EXIST (`gh label list --search
+  with `--event pull_request`. Its plan job's summary names the harnesses it selected and the ones
+  it did not start; a listed step with no job in that run is **not started**: dispatch it on its
+  own where the branch is this repository's, and report it under **Needs attention** on a fork's
+  PR. The label path needs the label to EXIST (`gh label list --search
   run-mutations`) and the PR to be free of merge conflicts, and a label applied with Actions'
   `GITHUB_TOKEN` starts no workflow — none of those is a dispatch failure; with no label, fall back
   to one dispatch per step and say why. A PR from a fork takes the label path: a dispatch can only

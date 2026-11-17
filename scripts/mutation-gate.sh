@@ -71,13 +71,25 @@
 #       per-matrix limit — the entries checked against the whole registry even under `--only`.
 #       Only rows scored by `check_mutation_rows` are split: a harness that never reaches it runs
 #       its whole table in each of its K jobs, which costs time and loses no row.
-#   mutation-gate.sh touched [--base <ref>]
+#   mutation-gate.sh touched [--base <ref>] [--matrix [--shards <step>=<count>[,…]]] [--summary]
 #       Which harnesses does this change give something new to say (#456)? Asks the same decision
 #       `run` asks, for every `*-mutation` step, and prints each step that would RUN, one per line on
-#       stdout; each step's decision line goes to stderr. Exits 0 (decided — possibly nothing), 11
+#       stdout; each step's decision line goes to stderr, then one line counting them and naming
+#       the steps not listed. Exits 0 (decided — possibly nothing), 11
 #       (the diff could not be established: every step is listed, fail-closed), 12 (the override is
-#       set: every step listed), 3 (the registry could not be read). Since #456 no harness runs per
+#       set: every step listed), 3 (the registry could not be read). ONE COMPARISON serves
+#       every step: one merge-base and one changed-path set, read once. So 11 and 12 list EVERY
+#       step, and a ref that moves while this runs changes no step's answer. Since #456 no harness runs per
 #       pull request, so this is how `/implement-issue`'s close-out learns which ones to dispatch.
+#
+#       `--matrix` (#638) prints those steps as the matrix `steps --matrix` prints instead, on the
+#       same exit codes: `{"include":[]}` when the change touches none. `--shards` is `steps`' own,
+#       read against the whole registry before anything is decided. `mutation-nightly.yml`'s plan
+#       builds a labelled pull request's matrix from this.
+#       `--summary` also appends the answer to the file `GITHUB_STEP_SUMMARY` names: how many
+#       steps are listed, why, and the name of every step listed and not listed. Step names, the
+#       base and the gate's own reason only — never a decision line, which can name a file from
+#       the diff. A summary that cannot be written is said on stderr and changes no exit code.
 #
 # Environment:
 #   ADB_MUTATION_RUN_ALL   non-empty → every decision is RUN, and the line says the override fired.
@@ -130,34 +142,43 @@ usage: bash scripts/$ME should-run <step> [--base <ref>] -- <input-path>...
        bash scripts/$ME base [--base <ref>]
        bash scripts/$ME steps [--json|--csv|--lines] [--only <step>]
        bash scripts/$ME steps --matrix [--only <step>] [--shards <step>=<count>[,...]]
-       bash scripts/$ME touched [--base <ref>]
+       bash scripts/$ME touched [--base <ref>] [--matrix [--shards <step>=<count>[,...]]] [--summary]
 EOF
   exit 2
 }
 
-# gate_base [ref] — resolve the ref the diff is taken against, in precedence order: the argument,
-# ADB_MUTATION_BASE, origin/<default branch>. Prints the ref; never validates it (git does, below).
+# gate_base [ref] — name the ref the diff is taken against, in precedence order: the argument,
+# ADB_MUTATION_BASE, origin/<default branch>. Sets GATE_REF; never validates it (git does, below).
+#
+# ASSIGNED, NOT PRINTED: a caller that captured this with `$(…)` would lose the base's trailing
+# newlines before git ever saw them, and `HEAD<newline>`, which git refuses, would be compared as
+# `HEAD`. Call it in the shell that goes on to use GATE_REF.
+GATE_REF=""
 gate_base() {
-  if [ -n "${1:-}" ]; then printf '%s\n' "$1"; return 0; fi
-  if [ -n "${ADB_MUTATION_BASE:-}" ]; then printf '%s\n' "$ADB_MUTATION_BASE"; return 0; fi
-  printf 'origin/%s\n' "$(adb_default_branch "$ROOT")"
+  if [ -n "${1:-}" ]; then GATE_REF="$1"; return 0; fi
+  if [ -n "${ADB_MUTATION_BASE:-}" ]; then GATE_REF="$ADB_MUTATION_BASE"; return 0; fi
+  GATE_REF="origin/$(adb_default_branch "$ROOT")"
 }
 
-# gate_mb <base> — the merge-base of <base> and HEAD, printed. Non-zero with a one-line reason on
+# gate_mb <base> [head] — the merge-base of <base> and [head] (default HEAD), printed. Non-zero with a one-line reason on
 # stderr when there is none: not a repository, a base that does not resolve, unrelated histories
 # (which is what a shallow clone looks like). Every one of those is a RUN for the callers.
 #
 # PRINTED, NOT ASSIGNED: these run inside `$(…)`, where an assignment to a global is lost with the
 # subshell. The first cut of this file set GATE_MB here and every SKIP line named an empty
 # merge-base; its own suite caught it.
+#
+# THE REASON IS ONE LINE, whatever the base is: it is printed through `adb_display_value`, which
+# renders a newline as text. A base is an argument or an environment value, and a reason that
+# carried its newlines would add lines to whatever it is written into (`touched --summary`).
 gate_mb() {
-  local base="$1" mb
+  local base="$1" head="${2:-HEAD}" mb
   git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
     || { printf 'not a git repository\n' >&2; return 1; }
   git -C "$ROOT" rev-parse --verify --quiet "$base^{commit}" >/dev/null 2>&1 \
-    || { printf 'base %s does not resolve to a commit\n' "$base" >&2; return 1; }
-  mb="$(git -C "$ROOT" merge-base "$base" HEAD 2>/dev/null)" && [ -n "$mb" ] \
-    || { printf 'no merge-base between %s and HEAD (shallow clone?)\n' "$base" >&2; return 1; }
+    || { printf 'base %s does not resolve to a commit\n' "$(adb_display_value "$base")" >&2; return 1; }
+  mb="$(git -C "$ROOT" merge-base "$base" "$head" 2>/dev/null)" && [ -n "$mb" ] \
+    || { printf 'no merge-base between %s and HEAD (shallow clone?)\n' "$(adb_display_value "$base")" >&2; return 1; }
   printf '%s\n' "$mb"
 }
 
@@ -212,28 +233,55 @@ gate_match() {
   done
 }
 
-# gate_decide <step> <base-arg> <input>… — the whole decision. Prints the one line; returns
-# 0 (run: inputs changed), 10 (skip), 11 (run: fail-closed, no diff), 12 (run: override).
-gate_decide() {
-  local step="$1" basearg="$2" base mb hits nhits nchanged inputs
+# gate_compare <base-arg> — establish THE comparison, once, in the caller's shell: the base as
+# named, the commit HEAD is, their merge-base, and the changed-path set (gate_changed). Everything
+# a decision reads afterwards is one of these four, so a ref or a HEAD that moves later cannot
+# give two steps of one run different answers. Sets GATE_BASE, GATE_HEAD, GATE_MB and GATE_CHANGED;
+# on a failure GATE_WHY, one line. Returns 0 (established), 11 (it could not be: fail-closed for
+# every step that asks), 12 (ADB_MUTATION_RUN_ALL: nothing was compared).
+#
+# GATE_BASE_SHOWN is the base as every line and the summary print it: one line, whatever the base
+# is (`adb_display_value`). Git resolves a revision that carries newlines (`HEAD^{/a|<newline>b}`),
+# so a base that RESOLVES is no more a single line than one that does not.
+GATE_BASE="" GATE_BASE_SHOWN="" GATE_HEAD="" GATE_MB="" GATE_WHY=""
+gate_compare() {
+  local mb head
+  GATE_BASE="" GATE_BASE_SHOWN="" GATE_HEAD="" GATE_MB="" GATE_WHY=""; GATE_CHANGED=()
+  if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then return 12; fi   # row-step-override
+  gate_base "$1"; GATE_BASE="$GATE_REF"   # row-base-exact
+  GATE_BASE_SHOWN="$(adb_display_value "$GATE_BASE")"   # row-base-shown
+  head="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || head=""
+  # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
+  # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
+  # gate_mb goes first even when HEAD could not be read, because its reason is the specific one:
+  # outside a repository both reads fail, and "not a git repository" is why.
+  if ! mb="$(gate_mb "$GATE_BASE" "${head:-HEAD}" 2>&1)"; then
+    GATE_WHY="${mb:-merge-base unavailable}"; return 11
+  fi
+  # A merge-base taken against a HEAD this run could not name is not a comparison it can report.
+  [ -n "$head" ] || { GATE_WHY="HEAD could not be read as a commit"; return 11; }   # row-head-unread
+  GATE_HEAD="$head"; GATE_MB="$mb"
+  if ! gate_changed "$GATE_MB"; then
+    GATE_WHY="${GATE_ERR:-diff unavailable}"; return 11   # row-diff-failed
+  fi
+  return 0
+}
+
+# gate_verdict <compare-status> <step> <input>… — one step's line, from the comparison
+# gate_compare established and the status it returned. Reads nothing from git. Prints the one line;
+# returns 0 (run: inputs changed), 10 (skip), 11 (run: fail-closed, no diff), 12 (run: override).
+gate_verdict() {
+  local crc="$1" step="$2" hits nhits nchanged inputs
   shift 2
   inputs="$(printf '%s, ' "$@")"; inputs="${inputs%, }"
-  if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then   # row-step-override
+  if [ "$crc" -eq 12 ]; then
     printf 'RUN: %s — ADB_MUTATION_RUN_ALL is set; the gate is overridden and every gated step runs\n' "$step"
     return 12
   fi
-  base="$(gate_base "$basearg")"
-  # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
-  # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
-  if ! mb="$(gate_mb "$base" 2>&1)"; then
+  if [ "$crc" -ne 0 ]; then
     printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
-      "$step" "${mb:-merge-base unavailable}"
+      "$step" "${GATE_WHY:-diff unavailable}"
     return 11   # row-mb-unresolved
-  fi
-  if ! gate_changed "$mb"; then
-    printf 'RUN: %s — %s (fail-closed: the diff could not be established, so the step runs)\n' \
-      "$step" "${GATE_ERR:-diff unavailable}"
-    return 11
   fi
   hits="$(gate_match "$@")"
   nchanged="${#GATE_CHANGED[@]}"
@@ -244,14 +292,23 @@ gate_decide() {
     return 0
   fi
   printf 'SKIP: %s — inputs unchanged against %s (merge-base %s; %s changed file(s) compared; inputs: %s)\n' \
-    "$step" "$base" "${mb:0:12}" "$nchanged" "$inputs"
+    "$step" "$GATE_BASE_SHOWN" "${GATE_MB:0:12}" "$nchanged" "$inputs"
   return 10
+}
+
+# gate_decide <step> <base-arg> <input>… — the whole decision for ONE step: the comparison, then
+# its verdict. Prints the one line; returns gate_verdict's status.
+gate_decide() {
+  local step="$1" basearg="$2" crc=0
+  shift 2
+  gate_compare "$basearg" || crc=$?
+  gate_verdict "$crc" "$step" "$@"
 }
 
 # `check-mutation-gate.sh`'s mutation rows name their sites by literal, and shmutant refuses a
 # literal that starts at more than one position (D125). A site whose line recurs therefore carries a
-# `# row-*` marker the row's literal includes — the ones below, and `gate_decide`'s
-# `row-step-override` and `row-mb-unresolved`. Keep each marker on its line.
+# `# row-*` marker the row's literal includes — the ones below, and `gate_compare`'s and
+# `gate_verdict`'s above. Keep each marker on its line.
 
 # gate_registry_row <selector> <kind> — print the whole registry row for the step named by
 # <selector> (kind `step`) or for the step whose command is `bash <selector> --mutation` (kind
@@ -290,6 +347,111 @@ gate_mutation_rows() {
     || { printf 'the registry filter failed — refusing a list it may have cut short\n' >&2; return 1; }   # row-filter
   [ -n "$rows" ] || { printf 'the registry names no *-mutation step\n' >&2; return 1; }
   printf '%s\n' "$rows"
+}
+
+# --- the matrix (#532): one reader and one printer, for `steps --matrix` and `touched --matrix` ---
+# shard_of[<step>] is that step's shard count. A step with no entry is one shard of one.
+declare -A shard_of=()
+
+# gate_shards_read <subcommand> <list> <registered-step>… — read `<step>=<K>[,<step>=<K>…]` into
+# shard_of. Every entry is checked against ALL the registered steps given, whichever of them the
+# caller goes on to print, so a typo in another step's entry is still refused. Exits 2 on a
+# refusal: call it in the caller's own shell, never in a capture.
+gate_shards_read() {
+  local who="$1" shards="$2" spec sname scount found nm
+  local -a specs=()
+  shift 2
+  # THE WHOLE ARGUMENT, before it is split: `read -a` stops at a newline and drops a trailing
+  # empty field, so an entry after a newline or a stray comma would otherwise go unread.
+  case "$shards" in
+    *[!A-Za-z0-9_=,-]*|,*|*,|*,,*)
+      printf '%s: %s: the shard list must be <step>=<count>[,<step>=<count>...] with no empty entry, got %q\n' "$ME" "$who" "$shards" >&2; exit 2 ;;
+  esac
+  IFS=',' read -r -a specs <<< "$shards"
+  for spec in "${specs[@]}"; do
+    sname="${spec%%=*}" scount="${spec#*=}"
+    case "$spec" in *=*) : ;; *)
+      printf '%s: %s: shard entry %s is not <step>=<count>\n' "$ME" "$who" "${spec:-(empty)}" >&2; exit 2 ;;
+    esac
+    found=""
+    for nm in "$@"; do [ "$nm" = "$sname" ] && found=1; done
+    if [ -z "$found" ]; then
+      printf '%s: %s: shard entry names %s, which is not a registered *-mutation step\n' "$ME" "$who" "${sname:-(empty)}" >&2; exit 2
+    fi
+    [ -z "${shard_of[$sname]:-}" ] || {
+      printf '%s: %s: %s is given a shard count twice\n' "$ME" "$who" "$sname" >&2; exit 2; }
+    # A positive decimal with no leading zero, up to 256: GitHub's limit on the jobs one matrix
+    # may generate in a run, checked again by gate_matrix_fits for the whole matrix.
+    case "$scount" in [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) : ;; *) scount=0 ;; esac
+    if [ "$scount" -lt 1 ] || [ "$scount" -gt "$MATRIX_MAX" ]; then
+      printf '%s: %s: the shard count for %s must be an integer from 1 to %d, got %s\n' "$ME" "$who" "$sname" "$MATRIX_MAX" "${spec#*=}" >&2; exit 2
+    fi
+    shard_of[$sname]="$scount"
+  done
+}
+
+# gate_matrix_fits <subcommand> <step>… — THE MATRIX AS PRINTED must fit GitHub's limit, or the
+# workflow fails to start the jobs at all. Exits 2 when it does not.
+gate_matrix_fits() {
+  local who="$1" nm total=0
+  shift
+  for nm in "$@"; do total=$(( total + ${shard_of[$nm]:-1} )); done
+  if [ "$total" -gt "$MATRIX_MAX" ]; then
+    printf '%s: %s: the matrix would carry %d jobs, and GitHub runs at most %d per matrix\n' "$ME" "$who" "$total" "$MATRIX_MAX" >&2; exit 2
+  fi
+}
+
+# gate_matrix_print <step>… — ONE JOB PER (step, shard), shards 1..K for every step given, so the
+# jobs of one step partition its rows exactly once (check-lib.sh `_check_row_shard`). No step is
+# `{"include":[]}`. Every name matched ^[A-Za-z0-9_-]*-mutation$ in the registry read, so none
+# needs JSON escaping.
+gate_matrix_print() {
+  local nm of k sep=""
+  printf '{"include":['
+  for nm in "$@"; do
+    of="${shard_of[$nm]:-1}"
+    for (( k = 1; k <= of; k++ )); do
+      printf '%s{"step":"%s","shard":%d,"shards":%d}' "$sep" "$nm" "$k" "$of"; sep=","
+    done
+  done
+  printf ']}\n'
+}
+
+# gate_touched_summary <worst> <registered-count> — append `touched`'s answer to the file
+# GITHUB_STEP_SUMMARY names, from the caller's run_names and held_names and from the comparison
+# gate_compare established (GATE_BASE_SHOWN, GATE_MB, GATE_HEAD, GATE_WHY), never a second reading
+# of the refs.
+#
+# WHAT REACHES MARKDOWN: registered step names (the registry's own grammar, so a code span holds
+# them), commit ids, the base ref, and gate_mb's reason. The ref and the reason are each one line
+# before they get here (gate_compare, gate_mb) and go through `adb_md_escape`. A decision line is never copied
+# here — a RUN line names files from the diff, which is text the pull request's author chose.
+gate_touched_summary() {
+  local worst="$1" total="$2" why list nm
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || {
+    printf '%s: touched: --summary was given and GITHUB_STEP_SUMMARY is not set — nothing was appended (the decisions are stated above)\n' "$ME" >&2
+    return 0; }
+  case "$worst" in
+    12) why="\`ADB_MUTATION_RUN_ALL\` is set, so the gate is overridden and every harness is selected." ;;
+    *)
+      if [ "$worst" -eq 0 ]; then
+        why="Compared against $(adb_md_escape "$GATE_BASE_SHOWN") (merge-base \`${GATE_MB:0:12}\`), at commit \`${GATE_HEAD:0:12}\`."
+      else
+        why="The diff could not be established — $(adb_md_escape "${GATE_WHY:-diff unavailable}") — so every harness is selected (fail-closed)."
+      fi ;;
+  esac
+  {
+    printf '### Mutation harnesses this change touches\n\n'
+    printf '**%d of %d harness(es) selected.** %s\n\n' "${#run_names[@]}" "$total" "$why"
+    list=""; for nm in "${run_names[@]}"; do list="$list, \`$nm\`"; done
+    list="${list#, }"
+    printf -- '- selected: %s\n' "${list:-none}"
+    list=""; for nm in "${held_names[@]}"; do list="$list, \`$nm\`"; done   # row-summary-held
+    list="${list#, }"
+    printf -- '- not selected, because the change touches none of their declared inputs: %s\n' "${list:-none}"
+  } >> "$GITHUB_STEP_SUMMARY" \
+    || printf '%s: touched: could not append to GITHUB_STEP_SUMMARY (the decisions are still stated above)\n' "$ME" >&2
+  return 0
 }
 
 # gate_registry_inputs <selector> <kind> — that row's declared inputs (field 5), comma-joined.
@@ -370,7 +532,7 @@ gate_rows() {
   done
   shared="$(printf '%s, ' "${sharedarr[@]+"${sharedarr[@]}"}")"; shared="${shared%, }"
 
-  base="$(gate_base "$basearg")"
+  gate_base "$basearg"; base="$GATE_REF"   # row-rows-base-exact
   if ! mb="$(gate_mb "$base" 2>&1)"; then
     gate_rows_all "RUN-ALL: $suite — ${mb:-merge-base unavailable} (fail-closed: the diff could not be established, so every row runs)"
     return 11
@@ -410,7 +572,7 @@ case "$sub" in
         *) usage ;;
       esac
     done
-    base="$(gate_base "$basearg")"
+    gate_base "$basearg"; base="$GATE_REF"   # row-cmd-base-exact
     if out="$(gate_mb "$base" 2>&1)"; then
       printf '%s (merge-base %s)\n' "$base" "$out"
       exit 0
@@ -464,94 +626,70 @@ case "$sub" in
       }
       names=("$only")
     fi
-    # --shards <step>=<K>[,<step>=<K>…] (#532): read against the WHOLE registry, before `--only`
-    # narrowed it, so a dispatch of one step still refuses a typo in another step's entry.
-    declare -A shard_of=()
-    if [ -n "$shards_set" ]; then
-      # THE WHOLE ARGUMENT, before it is split: `read -a` stops at a newline and drops a trailing
-      # empty field, so an entry after a newline or a stray comma would otherwise go unread.
-      case "$shards" in
-        *[!A-Za-z0-9_=,-]*|,*|*,|*,,*)
-          printf '%s: steps: the shard list must be <step>=<count>[,<step>=<count>...] with no empty entry, got %q\n' "$ME" "$shards" >&2; exit 2 ;;
-      esac
-      IFS=',' read -r -a specs <<< "$shards"
-      for spec in "${specs[@]}"; do
-        sname="${spec%%=*}" scount="${spec#*=}"
-        case "$spec" in *=*) : ;; *)
-          printf '%s: steps: shard entry %s is not <step>=<count>\n' "$ME" "${spec:-(empty)}" >&2; exit 2 ;;
-        esac
-        found=""
-        for nm in "${all_names[@]}"; do [ "$nm" = "$sname" ] && found=1; done
-        if [ -z "$found" ]; then
-          printf '%s: steps: shard entry names %s, which is not a registered *-mutation step\n' "$ME" "${sname:-(empty)}" >&2; exit 2
-        fi
-        [ -z "${shard_of[$sname]:-}" ] || {
-          printf '%s: steps: %s is given a shard count twice\n' "$ME" "$sname" >&2; exit 2; }
-        # A positive decimal with no leading zero, up to 256: GitHub's limit on the jobs one matrix
-        # may generate in a run, checked again below for the whole matrix.
-        case "$scount" in [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) : ;; *) scount=0 ;; esac
-        if [ "$scount" -lt 1 ] || [ "$scount" -gt "$MATRIX_MAX" ]; then
-          printf '%s: steps: the shard count for %s must be an integer from 1 to %d, got %s\n' "$ME" "$sname" "$MATRIX_MAX" "${spec#*=}" >&2; exit 2
-        fi
-        shard_of[$sname]="$scount"
-      done
-    fi
-    # THE MATRIX AS EMITTED must fit GitHub's limit, or the workflow fails to start the jobs at all.
-    if [ "$fmt" = matrix ]; then
-      total=0
-      for nm in "${names[@]}"; do total=$(( total + ${shard_of[$nm]:-1} )); done
-      if [ "$total" -gt "$MATRIX_MAX" ]; then
-        printf '%s: steps: the matrix would carry %d jobs, and GitHub runs at most %d per matrix\n' "$ME" "$total" "$MATRIX_MAX" >&2; exit 2
-      fi
-    fi
+    # --shards (#532): read against the WHOLE registry, before `--only` narrowed it, so a dispatch
+    # of one step still refuses a typo in another step's entry.
+    [ -z "$shards_set" ] || gate_shards_read steps "$shards" "${all_names[@]}"
+    [ "$fmt" != matrix ] || gate_matrix_fits steps "${names[@]}"
     # Every name matched ^[A-Za-z0-9_-]*-mutation$ in the registry read, so none needs JSON escaping.
     case "$fmt" in
       lines) printf '%s\n' "${names[@]}" ;;
       csv)   (IFS=,; printf '%s\n' "${names[*]}") ;;
       json)  printf '['; sep=""; for nm in "${names[@]}"; do printf '%s"%s"' "$sep" "$nm"; sep=","; done; printf ']\n' ;;
-      # ONE JOB PER (step, shard), shards 1..K for every step, so the jobs of one step partition its
-      # rows exactly once (check-lib.sh `_check_row_shard`). A step with no entry is one shard of one.
-      matrix)
-        printf '{"include":['; sep=""
-        for nm in "${names[@]}"; do
-          of="${shard_of[$nm]:-1}"
-          for (( k = 1; k <= of; k++ )); do
-            printf '%s{"step":"%s","shard":%d,"shards":%d}' "$sep" "$nm" "$k" "$of"; sep=","
-          done
-        done
-        printf ']}\n' ;;
+      matrix) gate_matrix_print "${names[@]}" ;;
     esac
     exit 0 ;;
 
   touched)
-    basearg=""
+    basearg="" as_matrix="" shards="" shards_set="" summary=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --base) [ "$#" -ge 2 ] || usage; basearg="$2"; shift 2 ;;
+        --matrix) as_matrix=1; shift ;;
+        --shards) [ "$#" -ge 2 ] && [ -n "$2" ] || usage; shards="$2"; shards_set=1; shift 2 ;;
+        --summary) summary=1; shift ;;
         *) usage ;;
       esac
     done
+    # As for `steps`: shard counts describe matrix jobs, so they mean nothing to the list of names.
+    [ -z "$shards_set" ] || [ -n "$as_matrix" ] || usage   # row-touched-shards
     if ! rows="$(gate_mutation_rows 2>&1)"; then
       printf '%s: touched: %s\n' "$ME" "$rows" >&2; exit 3
     fi
+    mapfile -t all_names < <(printf '%s\n' "$rows" | cut -f1)
+    wait "$!" || { printf '%s: touched: could not read the step names from the registry rows\n' "$ME" >&2; exit 3; }
+    # Before any decision, so a refused shard list prints no matrix and no decision line.
+    [ -z "$shards_set" ] || gate_shards_read touched "$shards" "${all_names[@]}"
+    # ONE COMPARISON for every step and for the summary (gate_compare): one merge-base and one
+    # changed-path set. A comparison that could not be established is 11 for every step, so the
+    # whole registry is listed and no step is left out on a diff nobody read.
     worst=0
+    gate_compare "$basearg" || worst=$?
+    run_names=() held_names=()
     # Field 5 and no further: `read` gives its LAST name the rest of the line, so without the
     # trailing `_` the tier (field 6) would ride on the last input and that input would match nothing.
     while IFS=$'\t' read -r step _ _ _ inputs _; do   # row-touched-field5
       [ -n "$inputs" ] && [ "$inputs" != "-" ] || {
         # A harness that declares nothing cannot be gated, so it always has something to say.
-        printf 'RUN: %s — the step declares no inputs\n' "$step" >&2; printf '%s\n' "$step"; continue; }
+        printf 'RUN: %s — the step declares no inputs\n' "$step" >&2; run_names+=("$step"); continue; }
       IFS=',' read -r -a inarr <<< "$inputs"
-      line="$(gate_decide "$step" "$basearg" "${inarr[@]}")"; rc=$?
+      line="$(gate_verdict "$worst" "$step" "${inarr[@]}")"; rc=$?   # row-touched-one-comparison
       printf '%s\n' "$line" >&2
       case "$rc" in
-        10) : ;;
-        0)  printf '%s\n' "$step" ;;
-        11|12) printf '%s\n' "$step"; [ "$rc" -gt "$worst" ] && worst="$rc" ;;
-        *)  printf '%s: touched %s: the decision failed (rc %s) — listing it, never guessing a skip\n' "$ME" "$step" "$rc" >&2
-            printf '%s\n' "$step"; worst=11 ;;
+        10) held_names+=("$step") ;;
+        *)  run_names+=("$step") ;;   # row-touched-listed
       esac
     done <<< "$rows"
+    # The count and the steps not listed, once, after the per-step lines: a reader of the log
+    # learns what was left out without reading every decision.
+    printf '%s: touched: %d of %d harness(es) listed; not listed (inputs unchanged): %s\n' "$ME" \
+      "${#run_names[@]}" "${#all_names[@]}" "$(IFS=,; printf '%s' "${held_names[*]:-none}")" >&2
+    if [ -n "$as_matrix" ]; then
+      gate_matrix_fits touched "${run_names[@]}"
+      gate_matrix_print "${run_names[@]}"   # row-touched-matrix
+    elif [ "${#run_names[@]}" -gt 0 ]; then
+      printf '%s\n' "${run_names[@]}"
+    fi
+    [ -z "$summary" ] || gate_touched_summary "$worst" "${#all_names[@]}"
     exit "$worst" ;;
 
   should-run)

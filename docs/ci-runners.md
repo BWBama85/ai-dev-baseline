@@ -362,9 +362,18 @@ shards took 66, 77 and 110 minutes for 99, 98 and 98 rows.
   the matrix exists, so a typo fails there rather than producing a run of nothing.
 - **Labelled**: a pull request labelled `run-mutations` (the label must exist in the repository;
   GitHub starts no workflow for a label applied with Actions' own `GITHUB_TOKEN`, nor for a PR with
-  merge conflicts) runs every harness against its head commit
+  merge conflicts) runs the harnesses the change touches (#638), against its head commit
   (not the merge commit `pull_request` checks out by default) — once per labelling; remove and re-add
-  the label after a push to run again. The trigger is `pull_request` narrowed to `types: [labeled]`:
+  the label after a push to run again. The plan job asks `mutation-gate.sh touched --matrix` which
+  harnesses declare an input the PR changed since its merge-base with its base branch, so its
+  checkout fetches full history. It starts those, with every shard of a sharded one, and names
+  the others in its log and its job summary. A PR that touches no harness's inputs gets a green
+  plan and no harness job. When the diff cannot be established (no merge-base, a base that does
+  not resolve) every harness starts and the plan says why; a registry it cannot read fails the
+  plan. Every harness is still available by dispatching the workflow with no `step` input, on a
+  branch of this repository: a fork's branch cannot be dispatched, so for a fork's PR the full
+  set is the next scheduled run after it merges into the default branch, which is the only
+  branch the schedule runs on. The trigger is `pull_request` narrowed to `types: [labeled]`:
   never `pull_request_target`, so a fork's code runs with the read-only token, and without `opened`
   and `synchronize` it is a trigger `repo-settings.sh` discovery skips, so nothing in that file can
   become a required context. `check-mutation-gate.sh` asks discovery itself rather than trusting this.
