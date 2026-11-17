@@ -9731,9 +9731,15 @@ survive is the part a later reader needs.
              is the two in sequence. `touched` compares once and asks a verdict per harness, and
              its summary renders the same four values. (8) EXIT 11 THEREFORE MEANS EVERY
              HARNESS: a comparison that could not be established is one answer for all of them,
-             in the list of names as in the matrix. The reason a base does not resolve is
-             printed as one line (`adb_display_value`), so a base carrying newlines cannot add a
-             heading or a list to the summary.
+             in the list of names as in the matrix. A HEAD that cannot be read as a commit is
+             one of those failures, even when the merge-base still resolves. (9) THE BASE IS
+             PRINTED AS ONE LINE (`adb_display_value`) wherever it is shown: in the reason it
+             does not resolve, and in the summary and every SKIP line when it does. Git resolves
+             a revision that carries newlines (`HEAD^{/a|<newline>b}`), so resolving is not
+             evidence of a single line; the third pass showed that by adding a heading to the
+             summary. **Owner decision 2026-11-16:** that third pass was the last of the three
+             budgeted and still found two findings, so the budget for this run was raised
+             (`ADB_LOCAL_REVIEW_PASSES=6`) and both were fixed rather than carried.
 
              The first review found that the plan read `touched`'s status after a semicolon.
              A `run:` step with no `shell` is `bash -e`, so the fail-closed 11 would have ended

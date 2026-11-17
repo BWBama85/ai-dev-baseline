@@ -139,7 +139,7 @@ if [ "$MODE" = mutation ]; then
     'if [ -n "${ADB_MUTATION_RUN_ALL_NEVER:-}" ]; then return 12; fi   # row-step-override' \
     'ADB_MUTATION_RUN_ALL=1: run, on its own distinct code (12)'
   shmutant_mut skip-line-unstated-base \
-    '"$step" "$GATE_BASE" "${GATE_MB:0:12}" "$nchanged" "$inputs"' \
+    '"$step" "$GATE_BASE_SHOWN" "${GATE_MB:0:12}" "$nchanged" "$inputs"' \
     '"$step" "(unstated)" "${GATE_MB:0:12}" "$nchanged" "$inputs"' \
     '…and names the base it compared against'
   shmutant_mut untracked-ignored \
@@ -281,6 +281,18 @@ if [ "$MODE" = mutation ]; then
     "printf 'base %s does not resolve to a commit\\n' \"\$(adb_display_value \"\$base\")\"" \
     "printf 'base %s does not resolve to a commit\\n' \"\$base\"" \
     'cannot add a line to the summary'
+  shmutant_mut touched-resolved-base-multiline \
+    'GATE_BASE_SHOWN="$(adb_display_value "$GATE_BASE")"   # row-base-shown' \
+    'GATE_BASE_SHOWN="$GATE_BASE"   # row-base-shown' \
+    'a multi-line base that RESOLVES cannot add a line'
+  shmutant_mut touched-resolved-base-unescaped \
+    '$(adb_md_escape "$GATE_BASE_SHOWN")' \
+    '$GATE_BASE_SHOWN' \
+    'no raw markup from a base that resolves'
+  shmutant_mut touched-head-unread-skips \
+    '[ -n "$head" ] || { GATE_WHY="HEAD could not be read as a commit"; return 11; }   # row-head-unread' \
+    ':   # row-head-unread' \
+    'a HEAD that cannot be read lists EVERY harness'
   shmutant_mut touched-diff-failure-skips \
     'GATE_WHY="${GATE_ERR:-diff unavailable}"; return 11   # row-diff-failed' \
     'GATE_WHY="${GATE_ERR:-diff unavailable}"; return 0   # row-diff-failed' \
@@ -1080,6 +1092,14 @@ eq "$T_RC" "11" "touched --summary: a multi-line base that does not resolve → 
 eq "$(printf '%s\n' "$T_SUM" | grep -c '^#')" "1" "touched --summary: a multi-line base cannot add a line to the summary (one heading)"
 eq "$(printf '%s\n' "$T_SUM" | grep -c '^- selected: ')" "1" "touched --summary: …nor a second list of selected harnesses"
 has "$T_SUM" "does not resolve to a commit" "touched --summary: …and the reason is still given"
+# …and the same for a base that RESOLVES. Git accepts a revision that carries newlines: this one
+# is "the newest commit whose message matches anything", so the comparison succeeds against HEAD.
+tm --matrix --summary --base $'HEAD^{/.*|\n\n## forged <b>\n- selected: `gated-mutation`}'
+eq "$T_RC" "0" "touched: a multi-line base that resolves is a comparison like any other (exit 0)"
+eq "$(printf '%s\n' "$T_SUM" | grep -c '^#')/$(printf '%s\n' "$T_SUM" | grep -c '^- selected: ')" "1/1" \
+   "touched --summary: a multi-line base that RESOLVES cannot add a line to the summary (one heading, one selected list)"
+hasnt "$T_SUM" "<b>" "touched --summary: no raw markup from a base that resolves reaches the summary"
+eq "$(printf '%s\n' "$T_ERR" | grep -c '^## forged')" "0" "touched: …and every decision line it prints stays one line"
 
 # ONE COMPARISON SERVES THE WHOLE REGISTRY: one merge-base and one diff, however many harnesses
 # are registered, so nothing a step is decided on can change between two steps of one run. A `git`
@@ -1089,6 +1109,8 @@ gitshim="$work/gitshim"; mkdir -p "$gitshim"; realgit="$(command -v git)"
   printf '[ -z "${GITSHIM_LOG:-}" ] || printf "%%s\\n" " $* " >> "$GITSHIM_LOG"\n'
   printf 'case " $* " in *" diff "*)\n'
   printf '  if [ -n "${GITSHIM_FAIL_ONCE:-}" ] && [ ! -e "$GITSHIM_FAIL_ONCE" ]; then : > "$GITSHIM_FAIL_ONCE"; exit 1; fi ;;\n'
+  printf '*" rev-parse --verify --quiet HEAD "*)\n'
+  printf '  if [ -n "${GITSHIM_FAIL_HEAD:-}" ]; then exit 1; fi ;;\n'
   printf 'esac\n'
   printf 'exec %q "$@"\n' "$realgit"; } > "$gitshim/git"
 chmod +x "$gitshim/git"
@@ -1114,6 +1136,13 @@ eq "$(printf '%s\n' "$T_OUT" | tr '\n' ' ')" "$(cd "$R" && bash scripts/mutation
 rm -f "$work/shim-once"
 T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_FAIL_ONCE="$work/shim-once" bash scripts/mutation-gate.sh touched --matrix 2>/dev/null)"; T_RC=$?
 eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix)" "touched --matrix: …and so the matrix is every harness"
+# …and so is a HEAD that cannot be read as a commit while the merge-base still can: a comparison
+# against a commit nobody can name is not one to select on, or to report.
+T_OUT="$(cd "$R" && PATH="$gitshim:$PATH" GITSHIM_FAIL_HEAD=1 bash scripts/mutation-gate.sh touched 2>"$work/t-err")"; T_RC=$?
+eq "$T_RC" "11" "touched: a HEAD that cannot be read → exit 11"
+has "$(cat "$work/t-err")" "HEAD could not be read as a commit" "touched: …naming it as the reason"
+eq "$(printf '%s\n' "$T_OUT" | tr '\n' ' ')" "$(cd "$R" && bash scripts/mutation-gate.sh steps | tr '\n' ' ')" \
+   "touched: a HEAD that cannot be read lists EVERY harness, never a selection"
 T_OUT="$(cd "$R" && : > "$work/t-summary" && ADB_MUTATION_RUN_ALL=1 GITHUB_STEP_SUMMARY="$work/t-summary" bash scripts/mutation-gate.sh touched --matrix --summary 2>/dev/null)"; T_RC=$?
 eq "$T_RC" "12" "touched --matrix: ADB_MUTATION_RUN_ALL → exit 12"
 eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix)" "touched --matrix: …and the matrix is every harness"

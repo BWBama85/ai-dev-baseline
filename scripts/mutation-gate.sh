@@ -234,19 +234,28 @@ gate_match() {
 # give two steps of one run different answers. Sets GATE_BASE, GATE_HEAD, GATE_MB and GATE_CHANGED;
 # on a failure GATE_WHY, one line. Returns 0 (established), 11 (it could not be: fail-closed for
 # every step that asks), 12 (ADB_MUTATION_RUN_ALL: nothing was compared).
-GATE_BASE="" GATE_HEAD="" GATE_MB="" GATE_WHY=""
+#
+# GATE_BASE_SHOWN is the base as every line and the summary print it: one line, whatever the base
+# is (`adb_display_value`). Git resolves a revision that carries newlines (`HEAD^{/a|<newline>b}`),
+# so a base that RESOLVES is no more a single line than one that does not.
+GATE_BASE="" GATE_BASE_SHOWN="" GATE_HEAD="" GATE_MB="" GATE_WHY=""
 gate_compare() {
-  local mb
-  GATE_BASE="" GATE_HEAD="" GATE_MB="" GATE_WHY=""; GATE_CHANGED=()
+  local mb head
+  GATE_BASE="" GATE_BASE_SHOWN="" GATE_HEAD="" GATE_MB="" GATE_WHY=""; GATE_CHANGED=()
   if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then return 12; fi   # row-step-override
   GATE_BASE="$(gate_base "$1")"
-  GATE_HEAD="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || GATE_HEAD=""
+  GATE_BASE_SHOWN="$(adb_display_value "$GATE_BASE")"   # row-base-shown
+  head="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || head=""
   # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
   # call is silenced), and on failure the one line it writes IS the reason to print. No temp file.
-  if ! mb="$(gate_mb "$GATE_BASE" "${GATE_HEAD:-HEAD}" 2>&1)"; then
+  # gate_mb goes first even when HEAD could not be read, because its reason is the specific one:
+  # outside a repository both reads fail, and "not a git repository" is why.
+  if ! mb="$(gate_mb "$GATE_BASE" "${head:-HEAD}" 2>&1)"; then
     GATE_WHY="${mb:-merge-base unavailable}"; return 11
   fi
-  GATE_MB="$mb"
+  # A merge-base taken against a HEAD this run could not name is not a comparison it can report.
+  [ -n "$head" ] || { GATE_WHY="HEAD could not be read as a commit"; return 11; }   # row-head-unread
+  GATE_HEAD="$head"; GATE_MB="$mb"
   if ! gate_changed "$GATE_MB"; then
     GATE_WHY="${GATE_ERR:-diff unavailable}"; return 11   # row-diff-failed
   fi
@@ -278,7 +287,7 @@ gate_verdict() {
     return 0
   fi
   printf 'SKIP: %s — inputs unchanged against %s (merge-base %s; %s changed file(s) compared; inputs: %s)\n' \
-    "$step" "$GATE_BASE" "${GATE_MB:0:12}" "$nchanged" "$inputs"
+    "$step" "$GATE_BASE_SHOWN" "${GATE_MB:0:12}" "$nchanged" "$inputs"
   return 10
 }
 
@@ -405,12 +414,12 @@ gate_matrix_print() {
 
 # gate_touched_summary <worst> <registered-count> — append `touched`'s answer to the file
 # GITHUB_STEP_SUMMARY names, from the caller's run_names and held_names and from the comparison
-# gate_compare established (GATE_BASE, GATE_MB, GATE_HEAD, GATE_WHY), never a second reading of
-# the refs.
+# gate_compare established (GATE_BASE_SHOWN, GATE_MB, GATE_HEAD, GATE_WHY), never a second reading
+# of the refs.
 #
 # WHAT REACHES MARKDOWN: registered step names (the registry's own grammar, so a code span holds
-# them), commit ids, the base ref, and gate_mb's reason. The ref and the reason go through
-# `adb_md_escape`; the reason is already one line (gate_mb). A decision line is never copied
+# them), commit ids, the base ref, and gate_mb's reason. The ref and the reason are each one line
+# before they get here (gate_compare, gate_mb) and go through `adb_md_escape`. A decision line is never copied
 # here — a RUN line names files from the diff, which is text the pull request's author chose.
 gate_touched_summary() {
   local worst="$1" total="$2" why list nm
@@ -421,7 +430,7 @@ gate_touched_summary() {
     12) why="\`ADB_MUTATION_RUN_ALL\` is set, so the gate is overridden and every harness is selected." ;;
     *)
       if [ "$worst" -eq 0 ]; then
-        why="Compared against $(adb_md_escape "$GATE_BASE") (merge-base \`${GATE_MB:0:12}\`), at commit \`${GATE_HEAD:0:12}\`."
+        why="Compared against $(adb_md_escape "$GATE_BASE_SHOWN") (merge-base \`${GATE_MB:0:12}\`), at commit \`${GATE_HEAD:0:12}\`."
       else
         why="The diff could not be established — $(adb_md_escape "${GATE_WHY:-diff unavailable}") — so every harness is selected (fail-closed)."
       fi ;;
