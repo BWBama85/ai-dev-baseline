@@ -193,8 +193,19 @@ row against the whole suite. `ADB_CHECK_BLOCK=<id>` runs one block of such a sui
 together score every row once. A row outside the shard is counted but never scored as a pass, and a
 malformed value, k above K, or K above the row count is refused before anything is built. The
 nightly gives a harness too big for one job K shards through its plan step's `SHARDS`; a dispatch
-of that step runs every shard. Only `check_mutation_rows` reads the selector: a whole-suite pool in
-the same harness runs in full in every shard, which costs time but loses no row.
+of that step runs every shard. `check_shmutant_pool` reads the same selector (#631) and hands its
+pool shard k's rows only, so a step with several pools shards each of them by that `<k>/<K>` and K
+may not exceed its smallest table.
+
+**A shmutant pool can select by block too** (#631). Give `check_shmutant_pool` a sixth argument,
+the suite's path, and each row's fifth `shmutant_mut` argument names the block (or comma-separated
+blocks) that hold its witness. The pool then refuses a row whose block is missing, undeclared or
+does not carry its witness, runs the unmutated suite once on a prepared tree, and requires each
+selection to pass unmutated with the assertion count that run recorded, before any row runs. A
+control that fails stops the pool. The selection reaches the suite as `ADB_CHECK_BLOCK`, so the
+`run` callback is unchanged, and `ADB_MUTATION_FULL_SUITE=1` scores every row against the whole
+suite. `check-adopt.sh` is the first such harness. A label a loop builds from its variable is
+spelled out in a comment beside the loop, because the witness has to be in the block's source.
 
 **Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each
 block's control, the full control — is bounded by `ADB_MUTATION_ROW_TIMEOUT_SECS` (default 1800, a

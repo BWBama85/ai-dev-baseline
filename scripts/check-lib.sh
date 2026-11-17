@@ -472,9 +472,10 @@ check_register_pool() {
 #   SHMUTANT_TIMEOUT   the row deadline (ADB_MUTATION_ROW_TIMEOUT_SECS, default 1800, D122), not
 #                      shmutant's 300, which scores a slow suite's rows `timeout`;
 #   SHMUTANT_JOBS      adb_pool_size <cap> — the width the pool had, ADB_POOL_JOBS included;
-#   SHMUTANT_BASELINE  0 — the pools never ran an uninjected baseline. A suite that needs one keeps its
-#                      own control, and a suite that cannot select would otherwise pay one full run
-#                      per distinct witness (a selector defaults to its witness);
+#   SHMUTANT_BASELINE  0 — shmutant runs no uninjected baseline here. A suite that cannot select would
+#                      otherwise pay one full run per distinct witness (a selector defaults to its
+#                      witness), so it keeps its own control; a suite that selects by block gets
+#                      this file's controls instead (the sixth argument, below);
 #   SHMUTANT_STREAM    <workdir>.tsv, beside the workdir (shmutant refuses one inside it), so the
 #                      records never mix into the suite's own output;
 #   SHMUTANT_RED_STATUS / SHMUTANT_RED_PREFIX  1 and `FAIL: ` — check-lib's own red, pinned rather
@@ -506,11 +507,36 @@ check_register_pool() {
 #
 # Rows are declared BEFORE the call. shmutant also accepts rows declared inside `prepare`; this adapter
 # does not, because it reads the table's size first and checks the stream against it.
+#
+# ADB_MUTATION_SHARD=<k>/<K> keeps only shard k's rows (#631; `_check_row_shard`, the per-block rows'
+# own rule: row i, from 0, is shard k's when i % K == k - 1). The pool is handed those rows and no
+# others, so a row outside the shard is never cloned, never run and never scored here — another job
+# owns it — and both the shard line and the tally say how many were left. The caller's table is put
+# back whole once the pool returns. A step with several pools shards each by the same <k>/<K>, so K
+# may not exceed its smallest table.
+#
+# A SIXTH ARGUMENT, <suite-path> (relative to $ROOT), SAYS THE SELECTORS ARE BLOCKS (#631): each row's
+# fifth `shmutant_mut` argument names the block — or comma-separated blocks — of that suite whose
+# assertions must catch its defect, and a row then runs those blocks and their dependencies instead
+# of the whole suite. The selection reaches the suite as ADB_CHECK_BLOCK, set here around the
+# caller's <run-fn>, so that callback needs no knowledge of it. The guarantees are the per-block
+# rows' own (`check_mutation_rows`), proved before the pool starts:
+#   * every row of the WHOLE table, a sharded one included: its selector is not its witness (shmutant
+#     defaults an omitted fifth argument to the witness and does not record that it did), names
+#     declared blocks only, and those blocks' source carries the witness;
+#   * one full unmutated run of the prepared tree passes, and records each block's assertion count;
+#   * each distinct selection this run's rows name, unmutated, passes and reproduces that count
+#     (`_check_block_ctl`). A selection that fails stops the pool: every failure is named, no row runs.
+# ADB_MUTATION_FULL_SUITE=1 (the nightly's mode) runs every mutant against the whole suite and skips
+# the per-selection controls; the declarations and the full control are still required. The controls
+# work in `<workdir>.ctl`, beside the pool's workdir, and prepare one tree for each.
 check_shmutant_pool() {
-  local label="$1" wd="$2" prep="$3" run="$4" cap="$5"
+  local label="$1" wd="$2" prep="$3" run="$4" cap="$5" suite="${6:-}"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
   local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art="" arts i f0="$fail" whole=1 snap=""
-  local -a verdicts=() names=() details=()
+  local full=0 outside=0 nblocks=0 runfn="$4" mode="" total
+  local -a verdicts=() names=() details=() t_name=() t_file=() t_sel=()
+  local -a all_name=() all_file=() all_old=() all_new=() all_wit=() all_sel=()
   tab="$(printf '\t')"
   if ! command -v shmutant_pool >/dev/null 2>&1 || ! command -v _shmutant_esc >/dev/null 2>&1; then
     bad "$label --mutation: shmutant_pool is unavailable — the suite must source scripts/shmutant.sh before the pool"
@@ -532,6 +558,14 @@ check_shmutant_pool() {
   if [ "$n" -eq 0 ]; then
     bad "$label --mutation: the mutation table is EMPTY — this harness proves nothing"
     return 1
+  fi
+  total="$n"
+  _check_row_shard "$label" "$n" || return 1
+  [ "${ADB_MUTATION_FULL_SUITE:-0}" = 1 ] && full=1
+  # BLOCK MODE's declarations — the WHOLE table, before the shard narrows it and before anything is
+  # built, so every shard refuses the same broken row and full-suite mode cannot hide one.
+  if [ -n "$suite" ]; then
+    _check_shm_decls "$label" "$suite" || return 1
   fi
   if [ -n "${ADB_MUTATION_ARTIFACTS:-}" ]; then
     arts="$ADB_MUTATION_ARTIFACTS"
@@ -556,9 +590,46 @@ check_shmutant_pool() {
   check_register_pool "$wd"
   [ -o errexit ] && errexit=1
   set +e
-  shmutant_pool "$label" "$wd" "$prep" "$run" "$cap"
-  rc=$?
+  # THE SHARD: the table is narrowed to shard k's rows for the pool, and put back whole below.
+  if [ "$CHECK_SHARD_OF" -gt 0 ]; then
+    # shellcheck disable=SC2154  # SHMUTANT_ROWS_* is shmutant's table, declared by the caller's source
+    all_name=("${SHMUTANT_ROWS_NAME[@]}"); all_file=("${SHMUTANT_ROWS_FILE[@]}"); all_old=("${SHMUTANT_ROWS_OLD[@]}")
+    # shellcheck disable=SC2154
+    all_new=("${SHMUTANT_ROWS_NEW[@]}"); all_wit=("${SHMUTANT_ROWS_WIT[@]}"); all_sel=("${SHMUTANT_ROWS_SEL[@]}")
+    SHMUTANT_ROWS_NAME=(); SHMUTANT_ROWS_FILE=(); SHMUTANT_ROWS_OLD=()
+    SHMUTANT_ROWS_NEW=(); SHMUTANT_ROWS_WIT=(); SHMUTANT_ROWS_SEL=()
+    for (( i = 0; i < total; i++ )); do
+      [ $(( i % CHECK_SHARD_OF )) -eq $(( CHECK_SHARD_K - 1 )) ] || continue
+      SHMUTANT_ROWS_NAME+=("${all_name[$i]}"); SHMUTANT_ROWS_FILE+=("${all_file[$i]}"); SHMUTANT_ROWS_OLD+=("${all_old[$i]}")
+      SHMUTANT_ROWS_NEW+=("${all_new[$i]}"); SHMUTANT_ROWS_WIT+=("${all_wit[$i]}"); SHMUTANT_ROWS_SEL+=("${all_sel[$i]}")
+    done
+    n="${#SHMUTANT_ROWS_NAME[@]}"; outside=$((total - n))
+    printf '%s --mutation: shard %d/%d — %d of %d row(s) belong to it (row index mod %d = %d, from 0); the other %d are scored by the other shard(s), never here\n' \
+      "$label" "$CHECK_SHARD_K" "$CHECK_SHARD_OF" "$n" "$total" "$CHECK_SHARD_OF" "$((CHECK_SHARD_K - 1))" "$outside"
+  fi
+  # What the pool is handed, kept for the stream check below: the table itself is put back first.
+  t_name=("${SHMUTANT_ROWS_NAME[@]}"); t_file=("${SHMUTANT_ROWS_FILE[@]}"); t_sel=("${SHMUTANT_ROWS_SEL[@]}")
+  rc=0
+  if [ -n "$suite" ]; then
+    # BLOCK MODE's controls, on this run's rows; then the selection travels as ADB_CHECK_BLOCK.
+    CHECK_SHM_PREP="$prep"; CHECK_SHM_RUN="$run"; CHECK_SHM_FULL="$full"; runfn=_check_shm_row_run
+    _check_shm_controls "$label" "$wd.ctl" "$pool" "$full" || rc=3
+    nblocks="$CHECK_SHM_NBLOCKS"
+    if [ "$full" -eq 1 ]; then mode="; full suite per mutant"; else mode="; per-block, $nblocks block(s) controlled"; fi
+  fi
+  [ "$rc" -ne 0 ] || { shmutant_pool "$label" "$wd" "$prep" "$runfn" "$cap"; rc=$?; }
+  if [ "$CHECK_SHARD_OF" -gt 0 ]; then
+    SHMUTANT_ROWS_NAME=("${all_name[@]}"); SHMUTANT_ROWS_FILE=("${all_file[@]}"); SHMUTANT_ROWS_OLD=("${all_old[@]}")
+    SHMUTANT_ROWS_NEW=("${all_new[@]}"); SHMUTANT_ROWS_WIT=("${all_wit[@]}"); SHMUTANT_ROWS_SEL=("${all_sel[@]}")
+  fi
   [ "$errexit" -eq 0 ] || set -e
+  if [ "$rc" -eq 3 ]; then
+    # A CONTROL FAILED, and said why: no pool ran, so there is no stream to read and no row to score.
+    [ -z "$art" ] || printf '%s --mutation: the evidence of this failure — every control'"'"'s output — is kept in %s\n' "$label" "$art"
+    printf '\n%s --mutation: NO row was run — an unmutated control failed (shmutant; pool=%s requested; row deadline %ss)\n' \
+      "$label" "$pool" "$CHECK_ROW_SECS"
+    return 1
+  fi
   # An absent or empty stream carries no records (status 2 can leave either); anything else must be
   # whole — no NUL, a final newline, inside a bound no real table approaches. It is judged as ONE
   # bounded snapshot (`<workdir>.snap.*`, one byte past the bound), and the checks and the parse both
@@ -605,10 +676,10 @@ check_shmutant_pool() {
         name="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
         tgt="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
         sel="${rest%%"$tab"*}"; details+=("${rest#*"$tab"}"); names+=("$name")
-        if [ "$name" != "$(_shmutant_esc "${SHMUTANT_ROWS_NAME[$rows]-}")" ] \
-           || [ "$tgt" != "$(_shmutant_esc "${SHMUTANT_ROWS_FILE[$rows]-}")" ] \
-           || [ "$sel" != "$(_shmutant_esc "${SHMUTANT_ROWS_SEL[$rows]-}")" ]; then
-          bad "$label --mutation: row verdict $rows names '$name' on '$tgt' (selector '$sel'), which is not the table's row $rows ('${SHMUTANT_ROWS_NAME[$rows]-<none>}') — the stream is not this table's"
+        if [ "$name" != "$(_shmutant_esc "${t_name[$rows]-}")" ] \
+           || [ "$tgt" != "$(_shmutant_esc "${t_file[$rows]-}")" ] \
+           || [ "$sel" != "$(_shmutant_esc "${t_sel[$rows]-}")" ]; then
+          bad "$label --mutation: row verdict $rows names '$name' on '$tgt' (selector '$sel'), which is not the table's row $rows ('${t_name[$rows]-<none>}') — the stream is not this table's"
           whole=0
         fi
         [ "${verdicts[$rows]}" != killed ] || killed=$((killed + 1))
@@ -666,14 +737,134 @@ EOF
   fi
   # SAY THE WIDTH IT ACTUALLY USED, as the pool always did — read back from the stream once it is
   # trusted: a pool that degrades to one finishes with the same counts as a healthy one.
+  # A SHARD'S TALLY SAYS IT IS ONE: `n` is the shard's own row count, and the suffix names the rest.
+  [ "$outside" -eq 0 ] || mode="$mode; shard $CHECK_SHARD_K/$CHECK_SHARD_OF, $outside row(s) left to the other shard(s)"
   if [ "$whole" -eq 1 ]; then
-    printf '\n%s --mutation: %d/%d mutation(s) killed on their own witness (shmutant; pool=%s; row deadline %ss)\n' \
-      "$label" "$killed" "$n" "$sum_jobs" "$CHECK_ROW_SECS"
+    printf '\n%s --mutation: %d/%d mutation(s) killed on their own witness (shmutant; pool=%s%s; row deadline %ss)\n' \
+      "$label" "$killed" "$n" "$sum_jobs" "$mode" "$CHECK_ROW_SECS"
   else
-    printf '\n%s --mutation: the stream was NOT trusted — its %d kill(s) of %d are not counted (shmutant; pool=%s requested; row deadline %ss)\n' \
-      "$label" "$killed" "$n" "$pool" "$CHECK_ROW_SECS"
+    printf '\n%s --mutation: the stream was NOT trusted — its %d kill(s) of %d are not counted (shmutant; pool=%s requested%s; row deadline %ss)\n' \
+      "$label" "$killed" "$n" "$pool" "$mode" "$CHECK_ROW_SECS"
   fi
   [ "$fail" -eq "$f0" ]
+}
+
+# --- block mode's helpers for the shmutant pool (#631) -------------------------------------------
+# Set by check_shmutant_pool for the three callbacks below, which shmutant and `_check_block_ctl` call
+# with their own argument lists: the caller's prepare and run, and whether every mutant runs whole.
+CHECK_SHM_PREP=""; CHECK_SHM_RUN=""; CHECK_SHM_FULL=0; CHECK_SHM_NBLOCKS=0
+
+# _check_shm_decls <label> <suite-path> — every row of shmutant's table names declared blocks whose
+# source carries its witness. Returns 1, with every problem named, when any does not.
+_check_shm_decls() {
+  local label="$1" suite="$2" i errs=0 nm sel wit one seen dup
+  if ! _check_blocks_parse "${ROOT:-}/$suite"; then bad "$label --mutation: $CHECK_BLOCK_ERR"; return 1; fi
+  if [ "${#CHECK_PB_IDS[@]}" -eq 0 ]; then
+    bad "$label --mutation: $suite declares no blocks, so no row's selector can name one"; return 1
+  fi
+  for (( i = 0; i < ${#SHMUTANT_ROWS_NAME[@]}; i++ )); do
+    nm="${SHMUTANT_ROWS_NAME[$i]}"; sel="${SHMUTANT_ROWS_SEL[$i]-}"; wit="${SHMUTANT_ROWS_WIT[$i]-}"
+    # FIRST, and by equality: a witness that happens to spell a block id would pass every check below.
+    if [ "$sel" = "$wit" ]; then
+      bad "row '$nm': its selector equals its witness — shmutant_mut's fifth argument, the block, was not given"; errs=$((errs + 1)); continue
+    fi
+    if ! _check_blocks_text "$ROOT/$suite" "$sel"; then
+      bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$sel}' is not declared in $suite"; errs=$((errs + 1)); continue
+    fi
+    # A LIST THE SUITE ITSELF WOULD REFUSE (`check_blocks_init` exits 2 on an empty element or a block
+    # named twice) is refused here: in full-suite mode nothing else would ever read the selector.
+    case ",$sel," in
+      *,,*) bad "row '$nm': its selector '$sel' has an empty element — the suite refuses such a selection"; errs=$((errs + 1)); continue ;;
+    esac
+    seen=" "; dup=""
+    for one in ${sel//,/ }; do
+      case "$seen" in *" $one "*) dup="$one" ;; esac
+      seen="$seen$one "
+    done
+    if [ -n "$dup" ]; then
+      bad "row '$nm': its selector '$sel' names block '$dup' twice — the suite refuses such a selection"; errs=$((errs + 1)); continue
+    fi
+    case "$CHECK_BLOCK_TEXT" in
+      *"$wit"*) ;;
+      *) bad "row '$nm': witness '$wit' does not appear in block(s) '$sel' — selecting them could never show it"; errs=$((errs + 1)) ;;
+    esac
+  done
+  [ "$errs" -eq 0 ] || { bad "$label --mutation: $errs row declaration(s) are invalid — nothing was built or run"; return 1; }
+}
+
+# _check_shm_prep <dir> — shmutant's `prepare` contract (populate <dir>; optionally print the tree
+# root) as `_check_block_ctl` calls a prepare: make <dir>, build the tree there, print its root.
+_check_shm_prep() {
+  local root
+  mkdir -p "$1" 2>/dev/null || return 1
+  root="$("$CHECK_SHM_PREP" "$1")" || return 1
+  printf '%s' "${root:-$1}"
+}
+
+# _check_shm_ctl_run <root> — a control: its caller put the selection in ADB_CHECK_BLOCK already.
+_check_shm_ctl_run() { "$CHECK_SHM_RUN" "$1" "${ADB_CHECK_BLOCK:-}"; }
+
+# _check_shm_row_run <root> <select> — a mutant: shmutant passes the row's selector, which becomes
+# ADB_CHECK_BLOCK for the caller's run — or nothing at all in full-suite mode.
+_check_shm_row_run() {
+  if [ "$CHECK_SHM_FULL" -eq 1 ]; then
+    ADB_CHECK_BLOCK="" "$CHECK_SHM_RUN" "$1" ""
+  else
+    ADB_CHECK_BLOCK="$2" "$CHECK_SHM_RUN" "$1" "$2"
+  fi
+}
+
+# _check_shm_controls <label> <ctl-dir> <pool> <full> — the unmutated controls of a block-mode pool:
+# one full run, which must pass and records each block's assertion count, then (unless <full> is 1)
+# one run per distinct selector in shmutant's table, each on a tree of its own, which must pass and
+# reproduce that count. Sets CHECK_SHM_NBLOCKS to the selections controlled. Returns 1, with every
+# failure named, when the pool must not run.
+_check_shm_controls() {
+  local label="$1" cd="$2" pool="$3" full="$4" root rc i b why blocks=" " running=0 failed=0
+  CHECK_SHM_NBLOCKS=0
+  # FRESH: counts and verdicts are read back by name, so a previous run's files would be believed.
+  if [ -e "$cd" ] && [ -n "$(ls -A "$cd" 2>/dev/null)" ]; then
+    bad "$label --mutation: the controls' workdir '$cd' is not empty — a previous run's counts or verdicts would be read"; return 1
+  fi
+  if ! mkdir -p "$cd" 2>/dev/null; then
+    bad "$label --mutation: the controls' workdir '$cd' could not be created"; return 1
+  fi
+  check_register_pool "$cd"
+  if ! root="$(_check_shm_prep "$cd/control")" || [ -z "$root" ]; then
+    bad "$label --mutation: the control tree copy could not be built"; return 1
+  fi
+  : > "$cd/control.counts"
+  ADB_CHECK_BLOCK="" ADB_CHECK_BLOCK_COUNTS="$cd/control.counts" _check_run_bounded "$cd/control.out" _check_shm_ctl_run "$root"; rc=$?
+  if [ "$CHECK_RUN_HUNG" -eq 1 ]; then
+    bad "$label --mutation: the UNMUTATED suite did not finish within ${CHECK_ROW_SECS}s (the row deadline, ADB_MUTATION_ROW_TIMEOUT_SECS) — no row can be scored"; return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    bad "$label --mutation: the UNMUTATED suite failed (rc $rc) — no row can be scored against a red baseline"
+    grep '^FAIL: ' "$cd/control.out" 2>/dev/null | head -10 | sed 's/^/    | /' >&2
+    return 1
+  fi
+  # A control's TREE is not evidence — its output, counts and verdict are — so each goes once read.
+  rm -rf "$cd/control" 2>/dev/null
+  [ "$full" -eq 0 ] || return 0
+  # shellcheck disable=SC2154  # SHMUTANT_ROWS_SEL is shmutant's table, declared by the caller's source
+  for (( i = 0; i < ${#SHMUTANT_ROWS_SEL[@]}; i++ )); do
+    b="${SHMUTANT_ROWS_SEL[$i]}"
+    case "$blocks" in *" $b "*) continue ;; esac
+    blocks="$blocks$b "; CHECK_SHM_NBLOCKS=$((CHECK_SHM_NBLOCKS + 1))
+    _check_block_ctl "$cd" _check_shm_prep _check_shm_ctl_run "$b" &
+    running=$((running + 1))
+    if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
+  done
+  wait
+  for b in $blocks; do
+    why="$(cat "$cd/ctl-${b//,/+}.verdict" 2>/dev/null)"
+    [ "$why" != ok ] || continue
+    failed=$((failed + 1))
+    [ -n "$why" ] || why="bad|it produced NO verdict — its worker died without reporting"
+    bad "$label --mutation: control failed for block $b: ${why#bad|}"
+  done
+  for b in $blocks; do rm -rf "$cd/ctl-${b//,/+}" 2>/dev/null; done
+  [ "$failed" -eq 0 ]
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------
@@ -848,6 +1039,30 @@ _check_blocks_finish() {
     || bad "check-blocks: only $CHECK_BLOCK_NEXT of ${#CHECK_BLOCK_IDS[@]} declared blocks were reached — the suite ended early"
 }
 
+# _check_blocks_text <suite-file> <block>[,<block>...] — the SOURCE of the named blocks, concatenated,
+# into CHECK_BLOCK_TEXT: what a row's witness must appear in for selecting them to be able to show it.
+# Read after `_check_blocks_parse <suite-file>`, whose table it uses. Returns 1 when the list is empty
+# or names a block the suite does not declare (CHECK_BLOCK_UNDECL names the first such, when one does).
+CHECK_BLOCK_TEXT=""; CHECK_BLOCK_UNDECL=""
+_check_blocks_text() {
+  local f="$1" one bi j seen=0
+  CHECK_BLOCK_TEXT=""; CHECK_BLOCK_UNDECL=""
+  # Outside the id charset is not a block, and is refused before the unquoted split below could glob it.
+  case "$2" in *[!a-z0-9,-]*) CHECK_BLOCK_UNDECL="$2"; return 1 ;; esac
+  for one in ${2//,/ }; do
+    bi=-1
+    for (( j = 0; j < ${#CHECK_PB_IDS[@]}; j++ )); do [ "${CHECK_PB_IDS[$j]}" = "$one" ] && bi=$j; done
+    if [ "$bi" -lt 0 ]; then CHECK_BLOCK_UNDECL="$one"; return 1; fi
+    if [ $((bi + 1)) -lt "${#CHECK_PB_IDS[@]}" ]; then
+      CHECK_BLOCK_TEXT="$CHECK_BLOCK_TEXT$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_LINES[bi + 1] - 1 ))p" "$f")"
+    else
+      CHECK_BLOCK_TEXT="$CHECK_BLOCK_TEXT$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_END - 1 ))p" "$f")"
+    fi
+    seen=$((seen + 1))
+  done
+  [ "$seen" -gt 0 ]
+}
+
 # check_row <name> <target> <block> <old-literal> <new-literal> <witness> — append one PER-TEST row.
 # <target> is the file to mutate, relative to the tree root; <block> is the declared block — or a
 # comma-separated list of blocks — whose assertions must catch the defect; <witness> is the FAIL: text
@@ -950,7 +1165,7 @@ _check_block_ctl() {
 #      independent, and the nightly turns gating off with ADB_MUTATION_RUN_ALL rather than with this.
 check_mutation_rows() {
   local label="$1" wd="$2" suite="$3" prep="$4" run="$5" cap="$6"
-  local n i j pool running=0 errs=0 cnt rc b bi text wit full=0 root blocks=" " nblocks=0
+  local n i j pool running=0 errs=0 cnt rc b wit full=0 root blocks=" " nblocks=0
   local applied=0 red=0 scored=0 verdict why outside=0
   local gate_out gate_rc gate_line gi gd gate_bad=0 gated=0 gated_tgts=""
   local -a gate_dec=()
@@ -995,23 +1210,10 @@ check_mutation_rows() {
     elif [ "$cnt" -gt 1 ]; then
       bad "row '$nm': its literal occurs $cnt times in '$tg' — a first-match rewrite could mutate the wrong one (witness: $wit)"; errs=$((errs + 1)); continue
     fi
-    local one undeclared="" seen=0
-    text=""
-    for one in ${b//,/ }; do
-      bi=-1
-      for (( j = 0; j < ${#CHECK_PB_IDS[@]}; j++ )); do [ "${CHECK_PB_IDS[$j]}" = "$one" ] && bi=$j; done
-      if [ "$bi" -lt 0 ]; then undeclared="$one"; break; fi
-      if [ $((bi + 1)) -lt "${#CHECK_PB_IDS[@]}" ]; then
-        text="$text$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_LINES[bi + 1] - 1 ))p" "$ROOT/$suite")"
-      else
-        text="$text$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_END - 1 ))p" "$ROOT/$suite")"
-      fi
-      seen=$((seen + 1))
-    done
-    if [ -n "$undeclared" ] || [ "$seen" -eq 0 ]; then
-      bad "row '$nm': block '${undeclared:-$b}' is not declared in $suite"; errs=$((errs + 1)); continue
+    if ! _check_blocks_text "$ROOT/$suite" "$b"; then
+      bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$b}' is not declared in $suite"; errs=$((errs + 1)); continue
     fi
-    case "$text" in
+    case "$CHECK_BLOCK_TEXT" in
       *"$wit"*) ;;
       *) bad "row '$nm': witness '$wit' does not appear in block(s) '$b' — selecting them could never show it"; errs=$((errs + 1)); continue ;;
     esac

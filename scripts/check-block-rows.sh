@@ -579,8 +579,15 @@ if [ -n "${ADB_T_STUB:-}" ]; then
 fi
 [ -n "${ADB_T_NO_SHMUTANT:-}" ] || shmutant_target lib.sh
 eval "${ADB_T_ROWS:-}"
-check_shmutant_pool "fixture" "$ADB_T_WD" prep run 4
+# ADB_T_SUITE: the sixth argument — the selectors are blocks of that suite, read under ROOT.
+ROOT="$ADB_T_FIX"
+if [ -n "${ADB_T_SUITE:-}" ]; then
+  check_shmutant_pool "fixture" "$ADB_T_WD" prep run 4 "$ADB_T_SUITE"
+else
+  check_shmutant_pool "fixture" "$ADB_T_WD" prep run 4
+fi
 printf 'adapter-rc=%s\n' "$?"
+[ -n "${ADB_T_NO_SHMUTANT:-}" ] || printf 'table-after=%s\n' "${#SHMUTANT_ROWS_NAME[@]}"
 check_summary shm-driver
 EOF
 shm() {   # <name> <rows> [ENV=val...] — sets $out and $rc
@@ -840,5 +847,156 @@ rows shard-empty "$three" ADB_MUTATION_SHARD=
 eq "$rc" 0 "an empty selector runs the whole table"
 has "$out" "3/3 mutation(s) applied" "an empty selector shards nothing"
 lacks "$out" "shard " "an empty selector prints no shard line"
+
+# 12. BLOCK MODE FOR THE SHMUTANT POOL (#631): a sixth argument says the selectors are blocks. The
+# guarantees are the per-block rows' own, so each is driven here through a real pool over the same
+# fixture: the declarations, the full control, the per-selection controls, and the selection reaching
+# the suite. `copies` counts the trees a run built — one line per prepare.
+copies() { if [ -f "$work/prep-$1.log" ]; then wc -l < "$work/prep-$1.log" | tr -d ' '; else echo 0; fi; }
+shm_three="shmutant_mut add '\$1 + \$2' '\$1 - \$2' 'add-sum' base
+shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult
+shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper"
+shm blk "$shm_three" ADB_T_SUITE=suite.sh
+eq "$rc" 0 "shmutant blocks: rows that name their blocks pass"
+has "$out" "3/3 mutation(s) killed on their own witness (shmutant; pool=" "shmutant blocks: the tally counts every row"
+has "$out" "per-block, 3 block(s) controlled; row deadline" "shmutant blocks: the tally names the mode and the selections controlled"
+eq "$(copies blk)" 5 "shmutant blocks: one full control, one control per selection, one pool tree"
+[ -s "$work/shm-blk/pool.ctl/control.counts" ] && ok || bad "shmutant blocks: the full control recorded no per-block counts"
+[ -f "$work/shm-blk/pool.ctl/ctl-base.out" ] && [ ! -e "$work/shm-blk/pool.ctl/ctl-base" ] && [ ! -e "$work/shm-blk/pool.ctl/control" ] && ok \
+  || bad "shmutant blocks: a control keeps its output and removes its tree copy once it is read"
+# THE SELECTION REACHES THE SUITE. A defect only a LATER block detects stays green when its row
+# selects `base`, and goes red off-witness once every mutant runs the whole suite.
+shm_elsewhere="shmutant_mut elsewhere '\$1 * \$2' '\$1 + \$2' 'add-sum' base"
+shm blk-elsewhere "$shm_elsewhere" ADB_T_SUITE=suite.sh
+eq "$rc" 1 "shmutant blocks: a row whose block cannot see its defect fails"
+has "$out" "FAIL: mutation 'elsewhere': survived" "shmutant blocks: a row runs only the block it names"
+shm blk-elsewhere-full "$shm_elsewhere" ADB_T_SUITE=suite.sh ADB_MUTATION_FULL_SUITE=1
+has "$out" "FAIL: mutation 'elsewhere': accidental" "shmutant blocks: full-suite mode runs every block for the same row"
+shm blk-full "$shm_three" ADB_T_SUITE=suite.sh ADB_MUTATION_FULL_SUITE=1
+eq "$rc" 0 "shmutant blocks: valid rows pass in full-suite mode"
+has "$out" "3/3 mutation(s) killed on their own witness (shmutant; pool=" "shmutant blocks: full-suite mode tallies every row"
+has "$out" "full suite per mutant; row deadline" "shmutant blocks: full-suite mode is named"
+eq "$(copies blk-full)" 2 "shmutant blocks: full-suite mode builds the full control and the pool tree, and no selection's control"
+# WITHOUT the sixth argument nothing here applies: the selectors are whatever the caller made them.
+shm blk-off "$shm_three"
+eq "$rc" 0 "shmutant: rows with a fifth argument still pass a pool that is not in block mode"
+lacks "$out" "per-block" "shmutant: …and that pool's tally names no block mode"
+eq "$(copies blk-off)" 1 "shmutant: …and it runs no control"
+# THE DECLARATIONS, each refused before anything is built — in full-suite mode too, where the
+# selector is not used to run anything and a broken one would otherwise never be seen.
+for _c in "omitted|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value'|its selector equals its witness" \
+          "undeclared|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' nope|block 'nope' is not declared in suite.sh" \
+          "in-list|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper,nope|block 'nope' is not declared in suite.sh" \
+          "glob|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' '*'|block '*' is not declared in suite.sh" \
+          "repeated|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper,uses-helper|its selector 'uses-helper,uses-helper' names block 'uses-helper' twice" \
+          "with-a-gap|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper,,base|its selector 'uses-helper,,base' has an empty element" \
+          "ending-in-a-comma|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper,|its selector 'uses-helper,' has an empty element" \
+          "elsewhere|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' base|witness 'neg-value' does not appear in block(s) 'base'"; do
+  _m="${_c%%|*}"; _c="${_c#*|}"; _r="${_c%%|*}"; _w="${_c#*|}"
+  for _f in "" 1; do
+    shm "decl-$_m$_f" "$_r" ADB_T_SUITE=suite.sh "ADB_MUTATION_FULL_SUITE=$_f"
+    eq "$rc" 1 "shmutant blocks: a row with its block $_m fails the suite (full-suite '$_f')"
+    has "$out" "row 'neg': $_w" "shmutant blocks: …naming the row and why (full-suite '$_f')"
+    has "$out" "1 row declaration(s) are invalid — nothing was built or run" "shmutant blocks: …and that nothing ran (full-suite '$_f')"
+    eq "$(copies "decl-$_m$_f")" 0 "shmutant blocks: a refused declaration builds no tree (full-suite '$_f')"
+  done
+done
+# A witness that SPELLS a block id: the block's own declaration line carries it, so only the equality
+# rule can tell an omitted fifth argument from a real selector.
+shm decl-spelled "shmutant_mut neg '0 - \$1' '0 + \$1' 'uses-helper'" ADB_T_SUITE=suite.sh
+has "$out" "row 'neg': its selector equals its witness" "shmutant blocks: an omitted block is refused even when the witness spells a block id"
+shm decl-noblocks "$shm_three" ADB_T_SUITE=lib.sh
+eq "$rc" 1 "shmutant blocks: a suite that declares no blocks fails"
+has "$out" "lib.sh declares no blocks" "shmutant blocks: …saying so"
+shm decl-missing "$shm_three" ADB_T_SUITE=absent.sh
+has "$out" "cannot read" "shmutant blocks: a suite that cannot be read is refused"
+# THE CONTROLS. A red full control, a selection that fails on its own (an undeclared dependency), and
+# one that passes with another count each stop the pool: no pool tree is built and no row is scored.
+variant shm-red 's/^  eq "$(add 2 3)" 5 "add-sum"$/  eq "$(add 2 3)" 6 "add-sum"/'
+shm ctl-red "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-red"
+eq "$rc" 1 "shmutant blocks: a red full control fails the suite"
+has "$out" "the UNMUTATED suite failed (rc 1) — no row can be scored against a red baseline" "shmutant blocks: …named as the unmutated suite's failure"
+has "$out" "NO row was run — an unmutated control failed" "shmutant blocks: …and the tally says no row ran"
+lacks "$out" "mutation(s) killed" "shmutant blocks: a failed control prints no kill tally"
+eq "$(copies ctl-red)" 1 "shmutant blocks: a red full control builds nothing after it"
+variant shm-nodep 's/^if check_block uses-helper mult; then$/if check_block uses-helper; then/'
+shm ctl-nodep "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-nodep"
+eq "$rc" 1 "shmutant blocks: a selection that fails on its own fails the suite"
+has "$out" "control failed for block uses-helper: its unmutated control failed (rc 1)" "shmutant blocks: an undeclared dependency is named on its block"
+lacks "$out" "control failed for block base" "shmutant blocks: …and a selection that reproduces its block is not"
+has "$out" "adapter-rc=1" "shmutant blocks: …and the adapter returns non-zero"
+eq "$(copies ctl-nodep)" 4 "shmutant blocks: every selection is controlled before the verdict, and no pool tree is built"
+variant_after shm-count 'if check_block base; then' '  [ -z "${ADB_CHECK_BLOCK:-}" ] || ok'
+shm ctl-count "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-count"
+eq "$rc" 1 "shmutant blocks: a selection that runs another count fails the suite"
+has "$out" "control failed for block base: its unmutated control ran 2 assertion(s) where the full suite runs 1" "shmutant blocks: the count mismatch is named"
+shm ctl-count-full "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-count" ADB_MUTATION_FULL_SUITE=1
+eq "$rc" 0 "shmutant blocks: full-suite mode runs no selection, so it has none to control"
+variant_after shm-hang '  eq "$(sq 3)" 9 "sq-value"' "sleep ${HANG}9"
+_t0=$SECONDS
+shm ctl-hang "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-hang" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "shmutant blocks: a hung full control" "$_t0"
+has "$out" "the UNMUTATED suite did not finish within 3s" "shmutant blocks: a hung full control is named"
+no_survivor "shmutant blocks: a hung full control"
+# A controls directory left by an earlier run is refused: its counts and verdicts are read by name.
+mkdir -p "$work/shm-ctl-stale/pool.ctl"; printf 'ok\n' > "$work/shm-ctl-stale/pool.ctl/ctl-base.verdict"
+shm ctl-stale "$shm_three" ADB_T_SUITE=suite.sh
+eq "$rc" 1 "shmutant blocks: a controls workdir that is not empty fails the suite"
+has "$out" "is not empty — a previous run's counts or verdicts would be read" "shmutant blocks: …saying why"
+# A failed control's evidence is kept where CI uploads it, and the log says where.
+shm ctl-art "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-nodep" ADB_MUTATION_ARTIFACTS="$work/artifacts-ctl"
+_art="$(find "$work/artifacts-ctl" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"
+[ -n "$_art" ] && [ -f "$_art/pool.ctl/ctl-uses-helper.out" ] && ok || bad "shmutant blocks: a failed control's output was not kept under ADB_MUTATION_ARTIFACTS"
+has "$out" "every control's output — is kept in $_art" "shmutant blocks: …and the log says where"
+shm ctl-art-green "$shm_three" ADB_T_SUITE=suite.sh ADB_MUTATION_ARTIFACTS="$work/artifacts-ctl-green"
+eq "$(find "$work/artifacts-ctl-green" -mindepth 1 -maxdepth 1 -name 'fixture.*' 2>/dev/null | wc -l | tr -d ' ')" 0 \
+  "shmutant blocks: a green pool leaves no controls behind under ADB_MUTATION_ARTIFACTS"
+
+# 13. SHARDING THE SHMUTANT POOL (#631). The same rule as the per-block rows' (11): the shards cover
+# every row exactly once — asked of the row records each run's stream holds — a row outside the shard
+# is never run and never a pass, and the caller's table is whole again afterwards.
+shm_rows_run() {   # <name> — the row names this run's stream scored, one per line
+  awk -F'\t' '$3 == "row" { print $5 }' "$work/shm-$1/pool.tsv" 2>/dev/null
+}
+for _of in 1 2 3; do
+  : > "$work/shm-shard-union-$_of"
+  for (( _k = 1; _k <= _of; _k++ )); do
+    shm "shard-$_k-$_of" "$shm_three" "ADB_MUTATION_SHARD=$_k/$_of"
+    eq "$rc" 0 "shmutant: shard $_k/$_of of the table passes"
+    _mine=$(( (3 - _k) / _of + 1 ))
+    has "$out" "shard $_k/$_of — $_mine of 3 row(s) belong to it" "shmutant: shard $_k/$_of names its share of the table"
+    has "$out" "$_mine/$_mine mutation(s) killed on their own witness" "shmutant: shard $_k/$_of tallies only its own rows"
+    has "$out" "shm-driver: $_mine passed, 0 failed" "shmutant: shard $_k/$_of scores no row outside it as a pass"
+    has "$out" "table-after=3" "shmutant: shard $_k/$_of leaves the caller's table whole"
+    if [ "$_of" -eq 1 ]; then lacks "$out" "left to the other shard(s)" "shmutant: one shard of one leaves no row to another"
+    else has "$out" "shard $_k/$_of, $((3 - _mine)) row(s) left to the other shard(s); row deadline" "shmutant: shard $_k/$_of's tally counts the rows it left"; fi
+    shm_rows_run "shard-$_k-$_of" >> "$work/shm-shard-union-$_of"
+  done
+  eq "$(LC_ALL=C sort "$work/shm-shard-union-$_of" | tr '\n' ' ')" "add mul neg " "shmutant: the $_of shard(s) together score every row exactly once"
+done
+eq "$(shm_rows_run shard-2-3)" "mul" "shmutant: shard 2/3 is the row at index 1"
+# In block mode a shard controls only the selections its own rows name.
+shm shard-blk "$shm_three" ADB_T_SUITE=suite.sh ADB_MUTATION_SHARD=1/3
+eq "$rc" 0 "shmutant blocks: a shard passes"
+has "$out" "per-block, 1 block(s) controlled; shard 1/3, 2 row(s) left to the other shard(s)" "shmutant blocks: a shard's tally names its mode and its share"
+eq "$(copies shard-blk)" 3 "shmutant blocks: a shard builds the full control, its own row's control and the pool tree"
+# A broken declaration OUTSIDE the shard still refuses it: every shard validates the whole table.
+shm shard-decl "$shm_three
+shmutant_mut sq '\$1 * \$1' '\$1 + \$1' 'sq-value' nope" ADB_T_SUITE=suite.sh ADB_MUTATION_SHARD=1/4
+eq "$rc" 1 "shmutant blocks: a broken row outside the shard still fails the shard"
+has "$out" "row 'sq': block 'nope' is not declared" "shmutant blocks: …and is named"
+# THE SELECTOR, refused before anything is built — never read as "no shard".
+for _v in 0/3 4/3 1/0 x/3 1/ /3 1 1/2/3 "1 /3" -1/3; do
+  shm "badshard-${_v//[^0-9a-z]/_}" "$shm_three" "ADB_MUTATION_SHARD=$_v"
+  eq "$rc" 1 "shmutant: ADB_MUTATION_SHARD='$_v' fails the suite"
+  has "$out" "ADB_MUTATION_SHARD" "shmutant: ADB_MUTATION_SHARD='$_v' is named"
+  eq "$(copies "badshard-${_v//[^0-9a-z]/_}")" 0 "shmutant: ADB_MUTATION_SHARD='$_v' builds no tree"
+done
+shm shard-toomany "$shm_three" ADB_MUTATION_SHARD=1/4
+has "$out" "splits 3 row(s) into 4 shards, so a shard would hold no row" "shmutant: more shards than rows is refused"
+shm shard-empty "$shm_three" ADB_MUTATION_SHARD=
+eq "$rc" 0 "shmutant: an empty selector runs the whole table"
+has "$out" "3/3 mutation(s) killed" "shmutant: an empty selector shards nothing"
+lacks "$out" "shard " "shmutant: an empty selector prints no shard line"
 
 check_summary "block-rows"

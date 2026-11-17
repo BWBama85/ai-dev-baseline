@@ -783,8 +783,12 @@ inputs adopt               scripts/check-adopt.sh scripts/check-lib.sh .claude/s
 # ITS OWN NAMED ASSERTION. A mutation that goes red for the wrong reason is not evidence, so the
 # witness is matched against the failure text (#213's `fires:` contract). This replaces a commit
 # message's claim that mutations "were observed" with something the repo can re-run.
+# Each row runs the block that holds its witness and that block's dependencies (#631); the nightly
+# scores every row against the whole suite. THE INPUTS are `adopt`'s own, less what the harness's
+# tree copy does not carry (`.claude/`, `docs/`): a mutant runs the same suite, so a file that suite
+# reads inside the copy can change this step's verdict too.
 add adopt-mutation      bash scripts/check-adopt.sh --mutation
-inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh bin/agent-init scripts/lib/project-gates.sh scripts/build.sh scripts/skill-description.awk base/workflows base/practices templates agents install.sh uninstall.sh scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json
+inputs adopt-mutation           scripts/check-adopt.sh scripts/check-lib.sh scripts/shmutant.sh scripts/lib/common.sh scripts/lib/adopt-lib.sh scripts/lib/role-dispatch.sh bin/agent-init scripts/lib/project-gates.sh scripts/build.sh scripts/skill-description.awk base/workflows base/practices templates agents install.sh uninstall.sh scripts/lib/permissions-lib.sh agents/claude/settings.permissions.json bin/baseline scripts/lib/adopt-readiness.sh scripts/lib/pinned-install.sh scripts/lib/release-convention.sh scripts/lib/repo-settings.sh scripts/lib/roadmap-lib.sh scripts/lib/skill-compose.sh
 
 # The ADOPTION COMPLETION CONTRACT and its verifier (scripts/lib/adopt-readiness.sh, #81) — the
 # question /adopt's scan does not answer: is this project now ready to RUN the loop? A verifier's

@@ -341,15 +341,21 @@ plan job through `mutation-gate.sh steps --matrix`, so there is no list in that 
 
 **A harness too big for one job is sharded by row** (#532, D142). A hosted job may run at most 360
 minutes, and unsharded `settings-fragment-mutation` ranged 179-316 minutes. The plan step's
-`SHARDS` (`settings-fragment-mutation=3`) gives that harness K jobs, named
+`SHARDS` (`settings-fragment-mutation=3,adopt-mutation=5`) gives each harness it names K jobs, named
 `mutation-nightly (<step>, shard <k> of <K>)`; an unsharded harness keeps the plain
-`mutation-nightly (<step>)`. Job k sets `ADB_MUTATION_SHARD=<k>/<K>`, and `check_mutation_rows` then
+`mutation-nightly (<step>)`. Job k sets `ADB_MUTATION_SHARD=<k>/<K>`, and the harness then
 runs only the rows whose index modulo K is k-1, each still against the whole suite. Every shard
 validates the whole row table and runs its own unmutated control. A row outside the shard is
 counted in the summary line, never as a pass, and the K jobs together score every row exactly once.
 A dispatch of a sharded step runs all of its shards, and a shard that fails or is cancelled leaves
 the run without a success conclusion, as any harness does. Measured on run 40431642069, the three
 shards took 66, 77 and 110 minutes for 99, 98 and 98 rows.
+
+`adopt-mutation` is five shards since #631 (`adopt-mutation=5`): one job of it took 185 minutes at
+238 rows (run 43056694625). Its pool is the vendored shmutant's, and `check_shmutant_pool` applies
+the same `<k>/<K>` rule to the rows it hands that pool. Every shard of it checks the whole table's
+block declarations and runs its own unmutated control; whether a row's literal still occurs once in
+its target is checked by the shard that runs the row.
 
 - **Scheduled**, daily, every harness against `main`, with `ADB_MUTATION_RUN_ALL=1` (nothing gated)
   and `ADB_MUTATION_FULL_SUITE=1` (a per-test-row harness, #468 / D103, scores every row against
