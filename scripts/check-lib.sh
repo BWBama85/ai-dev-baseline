@@ -843,7 +843,7 @@ _check_shm_controls() {
     grep '^FAIL: ' "$cd/control.out" 2>/dev/null | head -10 | sed 's/^/    | /' >&2
     return 1
   fi
-  # A control's TREE is not evidence — its output, counts and verdict are — so each goes once read.
+  # A control's TREE is not evidence — its output, counts and verdict are — so it goes once read.
   rm -rf "$cd/control" 2>/dev/null
   [ "$full" -eq 0 ] || return 0
   # shellcheck disable=SC2154  # SHMUTANT_ROWS_SEL is shmutant's table, declared by the caller's source
@@ -851,7 +851,9 @@ _check_shm_controls() {
     b="${SHMUTANT_ROWS_SEL[$i]}"
     case "$blocks" in *" $b "*) continue ;; esac
     blocks="$blocks$b "; CHECK_SHM_NBLOCKS=$((CHECK_SHM_NBLOCKS + 1))
-    _check_block_ctl "$cd" _check_shm_prep _check_shm_ctl_run "$b" &
+    # The tree goes as soon as its control has a verdict, so the trees on disk at once are the pool's
+    # width, not one per selection.
+    { _check_block_ctl "$cd" _check_shm_prep _check_shm_ctl_run "$b"; rm -rf "$cd/ctl-${b//,/+}" 2>/dev/null; } &
     running=$((running + 1))
     if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
   done
@@ -862,8 +864,9 @@ _check_shm_controls() {
     failed=$((failed + 1))
     [ -n "$why" ] || why="bad|it produced NO verdict — its worker died without reporting"
     bad "$label --mutation: control failed for block $b: ${why#bad|}"
+    # What it failed ON, since the workdir is the suite's own and goes when the suite exits.
+    grep '^FAIL: ' "$cd/ctl-${b//,/+}.out" 2>/dev/null | head -5 | sed 's/^/    | /' >&2
   done
-  for b in $blocks; do rm -rf "$cd/ctl-${b//,/+}" 2>/dev/null; done
   [ "$failed" -eq 0 ]
 }
 

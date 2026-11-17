@@ -201,8 +201,9 @@ may not exceed its smallest table.
 the suite's path, and each row's fifth `shmutant_mut` argument names the block (or comma-separated
 blocks) that hold its witness. The pool then refuses a row whose block is missing, undeclared or
 does not carry its witness, runs the unmutated suite once on a prepared tree, and requires each
-selection to pass unmutated with the assertion count that run recorded, before any row runs. A
-control that fails stops the pool. The selection reaches the suite as `ADB_CHECK_BLOCK`, so the
+selection to pass unmutated with the assertion count that run recorded, before any row runs. Each
+control calls `prepare` for a tree of its own, so it runs more than once here. A control that
+fails stops the pool. The selection reaches the suite as `ADB_CHECK_BLOCK`, so the
 `run` callback is unchanged, and `ADB_MUTATION_FULL_SUITE=1` scores every row against the whole
 suite. `check-adopt.sh` is the first such harness. A label a loop builds from its variable is
 spelled out in a comment beside the loop, because the witness has to be in the block's source.

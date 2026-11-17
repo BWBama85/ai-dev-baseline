@@ -598,8 +598,10 @@ shm() {   # <name> <rows> [ENV=val...] — sets $out and $rc
   # `-u ADB_MUTATION_ARTIFACTS`: selfcheck-macos exports it to the whole suite, and a fixture that
   # inherited it would run its pool somewhere other than the path it asserts on. `-u
   # ADB_MUTATION_ROW_TIMEOUT_SECS`: an operator's raised row deadline would replace the default the
-  # cases below assert. A case that wants either passes it explicitly, after this.
-  out="$(env -u ADB_MUTATION_ARTIFACTS -u ADB_MUTATION_ROW_TIMEOUT_SECS ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
+  # cases below assert. `-u ADB_MUTATION_SHARD -u ADB_MUTATION_FULL_SUITE`: the adapter reads both
+  # (#631), and a shard or a mode inherited from the caller would change every tally below. A case
+  # that wants any of them passes it explicitly, after this.
+  out="$(env -u ADB_MUTATION_ARTIFACTS -u ADB_MUTATION_ROW_TIMEOUT_SECS -u ADB_MUTATION_SHARD -u ADB_MUTATION_FULL_SUITE ADB_T_LIB="$T_LIB" ADB_T_SHMUTANT="$ROOT/scripts/shmutant.sh" ADB_T_FIX="$fix" ADB_T_ROWS="$rws" \
            ADB_T_WD="$work/shm-$nm/pool" ADB_T_PREP_LOG="$work/prep-$nm.log" ADB_T_SEEN="$work/seen-$nm" \
            "$@" "$BASH" "$work/shm-driver.sh" 2>&1)"; rc=$?
 }
@@ -912,10 +914,11 @@ shm decl-missing "$shm_three" ADB_T_SUITE=absent.sh
 has "$out" "cannot read" "shmutant blocks: a suite that cannot be read is refused"
 # THE CONTROLS. A red full control, a selection that fails on its own (an undeclared dependency), and
 # one that passes with another count each stop the pool: no pool tree is built and no row is scored.
-variant shm-red 's/^  eq "$(add 2 3)" 5 "add-sum"$/  eq "$(add 2 3)" 6 "add-sum"/'
+variant_after shm-red 'if check_block base; then' '  eq 1 2 "forced-red"'
 shm ctl-red "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-red"
 eq "$rc" 1 "shmutant blocks: a red full control fails the suite"
 has "$out" "the UNMUTATED suite failed (rc 1) — no row can be scored against a red baseline" "shmutant blocks: …named as the unmutated suite's failure"
+has "$out" "    | FAIL: forced-red" "shmutant blocks: …with the assertion it failed on"
 has "$out" "NO row was run — an unmutated control failed" "shmutant blocks: …and the tally says no row ran"
 lacks "$out" "mutation(s) killed" "shmutant blocks: a failed control prints no kill tally"
 eq "$(copies ctl-red)" 1 "shmutant blocks: a red full control builds nothing after it"
@@ -923,6 +926,7 @@ variant shm-nodep 's/^if check_block uses-helper mult; then$/if check_block uses
 shm ctl-nodep "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-nodep"
 eq "$rc" 1 "shmutant blocks: a selection that fails on its own fails the suite"
 has "$out" "control failed for block uses-helper: its unmutated control failed (rc 1)" "shmutant blocks: an undeclared dependency is named on its block"
+has "$out" "    | FAIL: helper-set" "shmutant blocks: …with the assertion that control failed on"
 lacks "$out" "control failed for block base" "shmutant blocks: …and a selection that reproduces its block is not"
 has "$out" "adapter-rc=1" "shmutant blocks: …and the adapter returns non-zero"
 eq "$(copies ctl-nodep)" 4 "shmutant blocks: every selection is controlled before the verdict, and no pool tree is built"
