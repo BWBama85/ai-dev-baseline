@@ -123,9 +123,10 @@ if [ "$MODE" = mutation ]; then
     'if [ "$nhits" -gt 999999 ]; then' \
     'a COMMITTED change to an input since the base: exit 0 (run)'
   # A literal is matched within ONE line, and shmutant refuses one that starts at more than one
-  # position (its rewrite takes the first, which may not be the copy a row means). `gate_decide`'s
-  # merge-base `return 11` is a whole line that recurs below it, and its override test is a prefix
-  # of `rows`' own, so each of those two sites carries a `# row-*` marker the literal includes.
+  # position (its rewrite takes the first, which may not be the copy a row means). `gate_verdict`'s
+  # fail-closed `return 11` is a whole line that recurs in `rows`, and `gate_compare`'s override
+  # test begins as `rows`' own does, so each of those two sites carries a `# row-*` marker the
+  # literal includes.
   shmutant_mut always-run \
     '  return 10' \
     '  return 0' \
