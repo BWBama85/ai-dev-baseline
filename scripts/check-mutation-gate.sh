@@ -281,6 +281,20 @@ if [ "$MODE" = mutation ]; then
     "printf 'base %s does not resolve to a commit\\n' \"\$(adb_display_value \"\$base\")\"" \
     "printf 'base %s does not resolve to a commit\\n' \"\$base\"" \
     'cannot add a line to the summary'
+  # THE BASE REACHES GIT AS IT WAS GIVEN: each of the three readers, with the capture that drops a
+  # trailing newline put back.
+  shmutant_mut base-newline-stripped \
+    'gate_base "$1"; GATE_BASE="$GATE_REF"   # row-base-exact' \
+    'GATE_BASE="$(gate_base "$1"; printf "%s" "$GATE_REF")"   # row-base-exact' \
+    'a base with a trailing newline is not the base without it'
+  shmutant_mut rows-base-newline-stripped \
+    'gate_base "$basearg"; base="$GATE_REF"   # row-rows-base-exact' \
+    'base="$(gate_base "$basearg"; printf "%s" "$GATE_REF")"   # row-rows-base-exact' \
+    'the per-row decision refuses a base with a trailing newline'
+  shmutant_mut cmd-base-newline-stripped \
+    'gate_base "$basearg"; base="$GATE_REF"   # row-cmd-base-exact' \
+    'base="$(gate_base "$basearg"; printf "%s" "$GATE_REF")"   # row-cmd-base-exact' \
+    'the base subcommand refuses a base with a trailing newline'
   shmutant_mut touched-resolved-base-multiline \
     'GATE_BASE_SHOWN="$(adb_display_value "$GATE_BASE")"   # row-base-shown' \
     'GATE_BASE_SHOWN="$GATE_BASE"   # row-base-shown' \
@@ -491,6 +505,10 @@ if [ "$MODE" = mutation ]; then
     '--summary)" || rc=$?' \
     '--summary)"; rc=$?' \
     'does not fail'
+  shmutant_mut nightly-label-summary-fatal \
+    '|| echo "label run: the job summary could not be written (the selection is stated above)"' \
+    '|| exit 1' \
+    'publishes the matrix when the job summary cannot be written'
   shmutant_mut nightly-label-failure-published \
     'no matrix is published"; exit 1 ;;' \
     'no matrix is published" ;;' \
@@ -1101,6 +1119,20 @@ eq "$(printf '%s\n' "$T_SUM" | grep -c '^#')/$(printf '%s\n' "$T_SUM" | grep -c 
 hasnt "$T_SUM" "<b>" "touched --summary: no raw markup from a base that resolves reaches the summary"
 eq "$(printf '%s\n' "$T_ERR" | grep -c '^## forged')" "0" "touched: …and every decision line it prints stays one line"
 
+# THE BASE REACHES GIT AS IT WAS GIVEN. `HEAD<newline>` is a revision git refuses; a reader that
+# captured the base with a command substitution would lose the newline and compare against HEAD.
+tm --matrix --base $'HEAD\n'
+eq "$T_RC" "11" "touched: a base with a trailing newline is not the base without it (exit 11, fail-closed)"
+eq "$T_OUT" "$(cd "$R" && bash scripts/mutation-gate.sh steps --matrix)" "touched --matrix: a refused base selects every harness"
+T_OUT="$(cd "$R" && ADB_MUTATION_BASE=$'HEAD\n' bash scripts/mutation-gate.sh touched 2>/dev/null)"; T_RC=$?
+eq "$T_RC" "11" "touched: the same base from ADB_MUTATION_BASE is refused the same way"
+gate "$R" should-run stub-mutation --base $'HEAD\n' -- "${INPUTS[@]}"
+eq "$RC_" "11" "should-run: one step refuses a base with a trailing newline (exit 11)"
+OUT="$(cd "$R" && printf '%s\n' "$ROWS_IN" | bash scripts/mutation-gate.sh rows scripts/check-rows.sh --base $'HEAD\n' 2>&1)"; RC_=$?
+eq "$RC_" "11" "rows: the per-row decision refuses a base with a trailing newline (exit 11)"
+gate "$R" base --base $'HEAD\n'
+eq "$RC_" "3" "base: the base subcommand refuses a base with a trailing newline (exit 3)"
+
 # ONE COMPARISON SERVES THE WHOLE REGISTRY: one merge-base and one diff, however many harnesses
 # are registered, so nothing a step is decided on can change between two steps of one run. A `git`
 # in front of the real one logs every call it is handed, and can fail the first `diff`.
@@ -1555,6 +1587,13 @@ if [ -f "$NIGHTLY" ]; then
      "the label run names the harnesses it did not start in the job summary"
   has "$LBL_SUM" "workflow_dispatch" "the label run's summary says every harness is still available by dispatch"
   hasnt "$LBL_SUM" "check-gated.sh" "the label run's summary carries no file name from the diff"
+  # A job summary that cannot be written costs the run nothing else: the matrix is still published.
+  # A directory stands in for the unwritable file.
+  run_label "$R" gated-mutation=2 GITHUB_STEP_SUMMARY="$work"
+  eq "$LBL_RC" "0" "the label arm succeeds when the job summary cannot be written"
+  eq "$(printf '%s' "$LBL_OUT" | jq -c '[.include[].step] | unique')" '["gated-mutation"]' \
+     "the label arm publishes the matrix when the job summary cannot be written"
+  has "$LBL_LOG" "the job summary could not be written" "the label arm says the job summary could not be written"
   check_git "$R" checkout -q -- scripts/check-gated.sh
   # A PR against another branch is compared against THAT branch: here one whose tip is the fixture's
   # first commit, so everything since counts — `rows-mutation`'s input among it.

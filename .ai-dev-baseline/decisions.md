@@ -9712,7 +9712,8 @@ survive is the part a later reader needs.
              selected harnesses and the ones not started by step name, with the base, the
              merge-base and the commit. It is written by `touched --summary` and never copies a
              decision line, because a RUN line names files from the diff and the summary
-             renders Markdown. The same count and names end the plan's log.
+             renders Markdown. The same count and names are the last line `touched` writes to
+             the plan's log, before the plan's own line and the matrix.
 
              What the plan's full-history checkout costs: the same checkout took 5 s in
              `ci.yml`'s `fact-drift` and 6 s in `selfcheck-macos` on run 43942344693
@@ -9737,7 +9738,11 @@ survive is the part a later reader needs.
              does not resolve, and in the summary and every SKIP line when it does. Git resolves
              a revision that carries newlines (`HEAD^{/a|<newline>b}`), so resolving is not
              evidence of a single line; the third pass showed that by adding a heading to the
-             summary. **Owner decision 2026-11-16:** that third pass was the last of the three
+             summary. (10) THE BASE REACHES GIT AS IT WAS GIVEN. `gate_base` printed the ref and
+             every caller captured it, which drops trailing newlines, so `HEAD<newline>`, a
+             revision git refuses, was compared as `HEAD`. That predates this change; the fifth
+             pass found it in the lines the refactor kept. `gate_base` now assigns, for `touched`,
+             `should-run`, `run`, `rows` and `base` alike. **Owner decision 2026-11-16:** that third pass was the last of the three
              budgeted and still found two findings, so the budget for this run was raised
              (`ADB_LOCAL_REVIEW_PASSES=6`) and both were fixed rather than carried.
 

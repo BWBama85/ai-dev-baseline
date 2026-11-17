@@ -138,7 +138,10 @@ jobs:
               11) echo "label run: the diff against $ADB_MUTATION_BASE could not be established, so EVERY harness starts (fail-closed)" ;;
               *)  echo "label run: mutation-gate.sh touched failed (rc $rc) — no matrix is published"; exit 1 ;;
             esac
-            printf '\nThe selected harnesses are the jobs of this run; the others were not started. Every harness is still available: run this workflow by `workflow_dispatch` with no `step` input, on a branch of this repository.\n' >> "$GITHUB_STEP_SUMMARY"
+            # A summary that cannot be written costs the run nothing else: `touched` treats its own
+            # write the same way, and the selection is in this log.
+            printf '\nThe selected harnesses are the jobs of this run; the others were not started. Every harness is still available: run this workflow by `workflow_dispatch` with no `step` input, on a branch of this repository.\n' >> "$GITHUB_STEP_SUMMARY" \
+              || echo "label run: the job summary could not be written (the selection is stated above)"
           else
             matrix="$(bash scripts/mutation-gate.sh steps --matrix --shards "$SHARDS")" || exit 1
           fi

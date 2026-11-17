@@ -147,12 +147,17 @@ EOF
   exit 2
 }
 
-# gate_base [ref] — resolve the ref the diff is taken against, in precedence order: the argument,
-# ADB_MUTATION_BASE, origin/<default branch>. Prints the ref; never validates it (git does, below).
+# gate_base [ref] — name the ref the diff is taken against, in precedence order: the argument,
+# ADB_MUTATION_BASE, origin/<default branch>. Sets GATE_REF; never validates it (git does, below).
+#
+# ASSIGNED, NOT PRINTED: a caller that captured this with `$(…)` would lose the base's trailing
+# newlines before git ever saw them, and `HEAD<newline>`, which git refuses, would be compared as
+# `HEAD`. Call it in the shell that goes on to use GATE_REF.
+GATE_REF=""
 gate_base() {
-  if [ -n "${1:-}" ]; then printf '%s\n' "$1"; return 0; fi
-  if [ -n "${ADB_MUTATION_BASE:-}" ]; then printf '%s\n' "$ADB_MUTATION_BASE"; return 0; fi
-  printf 'origin/%s\n' "$(adb_default_branch "$ROOT")"
+  if [ -n "${1:-}" ]; then GATE_REF="$1"; return 0; fi
+  if [ -n "${ADB_MUTATION_BASE:-}" ]; then GATE_REF="$ADB_MUTATION_BASE"; return 0; fi
+  GATE_REF="origin/$(adb_default_branch "$ROOT")"
 }
 
 # gate_mb <base> [head] — the merge-base of <base> and [head] (default HEAD), printed. Non-zero with a one-line reason on
@@ -243,7 +248,7 @@ gate_compare() {
   local mb head
   GATE_BASE="" GATE_BASE_SHOWN="" GATE_HEAD="" GATE_MB="" GATE_WHY=""; GATE_CHANGED=()
   if [ -n "${ADB_MUTATION_RUN_ALL:-}" ]; then return 12; fi   # row-step-override
-  GATE_BASE="$(gate_base "$1")"
+  gate_base "$1"; GATE_BASE="$GATE_REF"   # row-base-exact
   GATE_BASE_SHOWN="$(adb_display_value "$GATE_BASE")"   # row-base-shown
   head="$(git -C "$ROOT" rev-parse --verify --quiet HEAD 2>/dev/null)" || head=""
   # stderr is MERGED into the capture on purpose: on success gate_mb writes nothing there (every git
@@ -527,7 +532,7 @@ gate_rows() {
   done
   shared="$(printf '%s, ' "${sharedarr[@]+"${sharedarr[@]}"}")"; shared="${shared%, }"
 
-  base="$(gate_base "$basearg")"
+  gate_base "$basearg"; base="$GATE_REF"   # row-rows-base-exact
   if ! mb="$(gate_mb "$base" 2>&1)"; then
     gate_rows_all "RUN-ALL: $suite — ${mb:-merge-base unavailable} (fail-closed: the diff could not be established, so every row runs)"
     return 11
@@ -567,7 +572,7 @@ case "$sub" in
         *) usage ;;
       esac
     done
-    base="$(gate_base "$basearg")"
+    gate_base "$basearg"; base="$GATE_REF"   # row-cmd-base-exact
     if out="$(gate_mb "$base" 2>&1)"; then
       printf '%s (merge-base %s)\n' "$base" "$out"
       exit 0
