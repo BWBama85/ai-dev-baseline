@@ -559,6 +559,7 @@ if [ -n "${ADB_T_STUB:-}" ]; then
       rc0-survived) printf '%s\n%s\n' "$(printf "$r" survived)" "$(printf "$s" 0)" >> "$SHMUTANT_STREAM"; return 0 ;;
       no-row)       printf '%s\n' "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
       no-summary)   printf '%s\n' "$(printf "$r" killed)" >> "$SHMUTANT_STREAM"; return 0 ;;
+      late-row)     printf '%s\n%s\n' "$(printf "$s" 1)" "$(printf "$r" killed)" >> "$SHMUTANT_STREAM"; return 0 ;;
       bad-summary)  printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 0)" >> "$SHMUTANT_STREAM"; return 0 ;;
       no-stream)    return 0 ;;
       wrong-name)   printf '%s\n%s\n' "$(printf "$r" killed | awk 'BEGIN { FS = OFS = "\t" } { $5 = "another"; print }')" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
@@ -596,6 +597,8 @@ if [ -n "${ADB_T_STUB:-}" ]; then
           blk-red-rc0)   printf '%s\n%s\n%s\n%s\n' "$b0" "$(printf "$b1" red)" "$rb" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
           blk-verdict)   printf '%s\n%s\n%s\n%s\n' "$b0" "$(printf "$b1" greeen)" "$rb" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
           blk-short)     printf '%s\nshmutant\t1\tbaseline\tuses-helper\tgreen\n%s\n%s\n' "$b0" "$rb" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
+          blk-late-base) printf '%s\n%s\n%s\n%s\n' "$rb" "$(printf "$s" 1)" "$b0" "$(printf "$b1" green)" >> "$SHMUTANT_STREAM"; return 0 ;;
+          blk-mid-base)  printf '%s\n%s\n%s\n%s\n' "$b0" "$rb" "$(printf "$b1" green)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
           blk-full)      printf 'shmutant\t1\tbaseline\t%s\tgreen\t0.100\tgreen before injection\n%s\n%s\n' "${SHMUTANT_ROWS_SEL[0]}" "$rb" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
         esac ;;
     esac
@@ -720,7 +723,7 @@ eq "$(cat "$work/seen-stub-ok.env" 2>/dev/null)" "unexported" "stub: …as local
 for _c in garbage:"is not in shmutant's v1 grammar" short-field:"is not in shmutant's v1 grammar" \
           version:"is not in shmutant's v1 grammar" rc1-killed:"returned 1 (a row not killed) but every row record says killed" \
           rc0-survived:"returned 0 while 1 row(s) were not killed" no-row:"carries 0 row verdict(s) for a table of 1" \
-          no-summary:"summary record is missing" bad-summary:"summary record is missing, repeated, or names another pool, other than its 1 row(s)" \
+          no-summary:"summary record is missing" late-row:"a row record follows the summary record" bad-summary:"summary record is missing, repeated, or names another pool, other than its 1 row(s)" \
           no-stream:"carries 0 row verdict(s) for a table of 1" rc2:"HARNESS ERROR (status 2)" rc7:"returned 7, which is not one of its statuses" \
           wrong-name:"which is not the table's row 0 ('caught')" wrong-target:"which is not the table's row 0 ('caught')" \
           wrong-select:"which is not the table's row 0 ('caught')" bad-seconds:"is not in shmutant's v1 grammar" \
@@ -887,8 +890,9 @@ shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper"
 shm blk "$shm_three" ADB_T_SUITE=suite.sh
 eq "$rc" 0 "shmutant blocks: rows that name their blocks pass"
 has "$out" "3/3 mutation(s) killed on their own witness (shmutant; pool=" "shmutant blocks: the tally counts every row"
-has "$out" "per-block, 3 block(s) controlled; row deadline" "shmutant blocks: the tally names the mode and the selections controlled"
+has "$out" "per-block, 3 selection(s) controlled; row deadline" "shmutant blocks: the tally names the mode and the selections controlled"
 eq "$(copies blk)" 1 "shmutant blocks: prepare runs once — every control is a clone of the pool's tree, as every row is"
+[ ! -e "$work/shm-blk/pool.counts" ] && ok || bad "shmutant blocks: the directory the runs' count files went to is removed when the pool returns"
 eq "$(awk -F'\t' '$3 == "baseline" { printf "[%s:%s]", $4, $5 }' "$work/shm-blk/pool.tsv" 2>/dev/null)" \
    "[:green][base:green][mult:green][uses-helper:green]" \
    "shmutant blocks: the stream holds the unselected baseline and one per selection, each green on its counts"
@@ -941,6 +945,35 @@ eq "$rc" 1 "shmutant blocks: a suite that declares no blocks fails"
 has "$out" "lib.sh declares no blocks" "shmutant blocks: …saying so"
 shm decl-missing "$shm_three" ADB_T_SUITE=absent.sh
 has "$out" "cannot read" "shmutant blocks: a suite that cannot be read is refused"
+# A WITNESS IS FOUND IN ONE BLOCK, never across the end of one and the start of the next.
+shm decl-seam "shmutant_mut neg '0 - \$1' '0 + \$1' 'fiif check_block mult base; then' base,mult" ADB_T_SUITE=suite.sh
+eq "$rc" 1 "shmutant blocks: a witness spelled by the end of one block and the start of the next is refused"
+has "$out" "does not appear in block(s) 'base,mult'" "shmutant blocks: …as a witness neither block carries"
+# A SOURCE READ THAT FAILS IS NOT THE BLOCK: this sed prints the witness and then fails, for the
+# shmutant pool and for the per-block rows, which read the source through the same helper.
+mkdir -p "$work/sed-stub"
+printf '#!/bin/sh\ncase "$1 $2" in "-n "*p) printf "neg-value\\n"; exit 77 ;; esac\nexec "%s" "$@"\n' "$(command -v sed)" > "$work/sed-stub/sed"; chmod +x "$work/sed-stub/sed"
+shm decl-sed "shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' uses-helper" ADB_T_SUITE=suite.sh PATH="$work/sed-stub:$PATH"
+eq "$rc" 1 "shmutant blocks: a block whose source could not be read fails the suite"
+has "$out" "row 'neg': the source of block(s) 'uses-helper' could not be read from suite.sh" "shmutant blocks: …saying the read failed, never that the witness is there"
+eq "$(copies decl-sed)" 0 "shmutant blocks: …before anything is built"
+rows decl-sed "check_row neg lib.sh uses-helper '0 - \$1' '0 + \$1' 'neg-value'" PATH="$work/sed-stub:$PATH"
+eq "$rc" 1 "a block whose source could not be read fails the per-block rows too"
+has "$out" "row 'neg': the source of block(s) 'uses-helper' could not be read from suite.sh" "…named the same way"
+# THE COUNT DIRECTORY IS MADE BY THE POOL, never found: one left by another run is refused.
+mkdir -p "$work/shm-decl-counts/pool.counts"
+shm decl-counts "$shm_three" ADB_T_SUITE=suite.sh
+eq "$rc" 1 "shmutant blocks: a block-count directory that already exists fails the suite"
+has "$out" "pool.counts already exists or could not be made" "shmutant blocks: …saying why"
+eq "$(copies decl-counts)" 0 "shmutant blocks: …before anything is built"
+# …and one this pool cannot remove afterwards is a failure, not a leftover. (Root unlinks through 555.)
+if [ "$(id -u)" -ne 0 ]; then
+  variant_after shm-keep 'check_blocks_done' '[ -z "${ADB_CHECK_BLOCK_COUNTS:-}" ] || { d="$(dirname "$ADB_CHECK_BLOCK_COUNTS")/locked"; mkdir -p "$d" && : > "$d/f" && chmod 555 "$d"; }'
+  shm ctl-keep "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-keep"
+  eq "$rc" 1 "shmutant blocks: a block-count directory that cannot be removed fails the suite"
+  has "$out" "pool.counts could not be removed" "shmutant blocks: …saying which"
+  chmod -R u+w "$work/shm-ctl-keep" 2>/dev/null
+fi
 # The selection is set around <run-fn>, so it has to be something that can be called from the wrapper.
 shm decl-run "$shm_three" ADB_T_SUITE=suite.sh ADB_T_RUN_CB=/bin/cat
 eq "$rc" 1 "shmutant blocks: a <run-fn> that is not a shell function is refused"
@@ -987,8 +1020,21 @@ variant_after shm-silent 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] |
 shm ctl-silent "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent" SHMUTANT_KEEP=1
 eq "$rc" 1 "shmutant blocks: a selection that reports no count for a block it selected fails the suite"
 has "$out" "baseline [mult]: red" "shmutant blocks: …as a red baseline, never a green one"
-has "$(cat "$work"/shm-ctl-silent/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: the selection 'mult' reported no count for block 'mult', which it selected" \
+has "$(cat "$work"/shm-ctl-silent/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: the selection 'mult' reported no count for block 'mult', which it runs" \
     "shmutant blocks: …and the run's own output says which block"
+# …and the same for a block the selection only DEPENDS on, and for any block of the unselected run.
+variant_after shm-silent-dep 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || { grep -v '^base' \"\$ADB_CHECK_BLOCK_COUNTS\" > \"\$ADB_CHECK_BLOCK_COUNTS.kept\"; cat \"\$ADB_CHECK_BLOCK_COUNTS.kept\" > \"\$ADB_CHECK_BLOCK_COUNTS\"; }"
+shm ctl-silent-dep "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent-dep" SHMUTANT_KEEP=1
+eq "$rc" 1 "shmutant blocks: a selection that reports no count for a block it depends on fails the suite"
+has "$out" "baseline [mult]: red" "shmutant blocks: …as a red baseline"
+has "$(cat "$work"/shm-ctl-silent-dep/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: the selection 'mult' reported no count for block 'base', which it runs" \
+    "shmutant blocks: …naming the dependency"
+variant_after shm-silent-ref 'check_blocks_done' "[ -n \"\${ADB_CHECK_BLOCK:-}\" ] || { grep -v '^empty' \"\$ADB_CHECK_BLOCK_COUNTS\" > \"\$ADB_CHECK_BLOCK_COUNTS.kept\"; cat \"\$ADB_CHECK_BLOCK_COUNTS.kept\" > \"\$ADB_CHECK_BLOCK_COUNTS\"; }"
+shm ctl-silent-ref "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent-ref" SHMUTANT_KEEP=1
+eq "$rc" 1 "shmutant blocks: an unselected run that reports no count for a declared block fails the suite"
+has "$out" "baseline [the whole suite, unselected]: red" "shmutant blocks: …as a red reference"
+has "$(cat "$work"/shm-ctl-silent-ref/pool/base-*/output 2>/dev/null)" "reported no count for block 'empty', which it runs" \
+    "shmutant blocks: …naming the block the reference left out"
 # The row deadline reaches the baselines as it reaches the rows.
 variant_after shm-hang '  eq "$(sq 3)" 9 "sq-value"' "sleep ${HANG}9"
 _t0=$SECONDS
@@ -1000,6 +1046,7 @@ no_survivor "shmutant blocks: a hung baseline"
 shm ctl-art "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-nodep" ADB_MUTATION_ARTIFACTS="$work/artifacts-ctl"
 _art="$(find "$work/artifacts-ctl" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"
 [ -n "$_art" ] && [ -f "$_art/pool.tsv" ] && ok || bad "shmutant blocks: a failed baseline's stream was not kept under ADB_MUTATION_ARTIFACTS"
+[ ! -e "$_art/pool.counts" ] && ok || bad "shmutant blocks: the runs' count files are not evidence and must not be kept beside it"
 has "$out" "is kept in $_art" "shmutant blocks: …and the log says where"
 shm ctl-art-green "$shm_three" ADB_T_SUITE=suite.sh ADB_MUTATION_ARTIFACTS="$work/artifacts-ctl-green"
 eq "$(find "$work/artifacts-ctl-green" -mindepth 1 -maxdepth 1 -name 'fixture.*' 2>/dev/null | wc -l | tr -d ' ')" 0 \
@@ -1010,7 +1057,7 @@ _blk="shmutant_mut caught '0 - \$1' '0 + \$1' 'neg-value' uses-helper"
 shm stub-blk-ok "$_blk" ADB_T_STUB=blk-ok ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh
 eq "$rc" 0 "stub: block mode accepts the baseline records its table calls for"
 eq "$(cut -d'|' -f3,7 "$work/seen-stub-blk-ok" 2>/dev/null)" "1|1" "stub: block mode turns shmutant's baseline and counts on"
-has "$out" "per-block, 1 block(s) controlled" "stub: …and counts the selections, not the unselected reference"
+has "$out" "per-block, 1 selection(s) controlled" "stub: …and counts the selections, not the unselected reference"
 shm stub-blk-full "$_blk" ADB_T_STUB=blk-full ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh ADB_MUTATION_FULL_SUITE=1
 eq "$rc" 0 "stub: full-suite block mode accepts its one baseline"
 eq "$(cut -d'|' -f3,7 "$work/seen-stub-blk-full" 2>/dev/null)" "1|0" "stub: full-suite block mode keeps the baseline and turns the counts off"
@@ -1020,6 +1067,8 @@ for _c in blk-no-base:"carries 0 baseline record(s) where this table's selection
           blk-other:"baseline record 1 is for selector 'base'" \
           blk-extra:"is not the baseline shmutant runs at that position" \
           blk-red-rc0:"returned 0 while 1 baseline(s) were not green" \
+          blk-late-base:"a baseline record follows the summary record" \
+          blk-mid-base:"a baseline record follows a row record" \
           blk-verdict:"is not in shmutant's v1 grammar" blk-short:"is not in shmutant's v1 grammar"; do
   _m="${_c%%:*}"; _w="${_c#*:}"
   shm "stub-$_m" "$_blk" ADB_T_STUB="$_m" ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh
@@ -1059,7 +1108,7 @@ eq "$(shm_rows_run shard-2-3)" "mul" "shmutant: shard 2/3 is the row at index 1"
 # In block mode a shard controls only the selections its own rows name.
 shm shard-blk "$shm_three" ADB_T_SUITE=suite.sh ADB_MUTATION_SHARD=1/3
 eq "$rc" 0 "shmutant blocks: a shard passes"
-has "$out" "per-block, 1 block(s) controlled; shard 1/3, 2 row(s) left to the other shard(s)" "shmutant blocks: a shard's tally names its mode and its share"
+has "$out" "per-block, 1 selection(s) controlled; shard 1/3, 2 row(s) left to the other shard(s)" "shmutant blocks: a shard's tally names its mode and its share"
 eq "$(awk -F'\t' '$3 == "baseline" { printf "[%s:%s]", $4, $5 }' "$work/shm-shard-blk/pool.tsv" 2>/dev/null)" "[:green][base:green]" \
    "shmutant blocks: a shard runs the unselected baseline and its own row's selection, and no other shard's"
 # A broken declaration OUTSIDE the shard still refuses it: every shard validates the whole table.

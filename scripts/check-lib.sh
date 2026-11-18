@@ -534,10 +534,11 @@ check_register_pool() {
 #     included — what the reference counted. The block counts reach shmutant through its count
 #     descriptor, and it refuses a count line that is not `<unit><TAB><digits>`. A row whose
 #     selection's baseline is not green is scored `baseline`, never run;
-#   * BY THE WRAPPER around <run-fn>: a green selection that reported no count for a block it
-#     selected is turned red, since shmutant compares only the units a run reports.
-# The stream must then carry exactly those baseline records, in shmutant's order, and each one that
-# is not green is a failure named here. ADB_MUTATION_FULL_SUITE=1 (the nightly's mode) runs every
+#   * BY THE WRAPPER around <run-fn>: a green run that reported no count for a block it runs — a
+#     dependency as much as a selected one, and every block for the unselected run — is turned red,
+#     since shmutant compares only the units a run reports.
+# The stream must then carry exactly those baseline records, ahead of the rows and in shmutant's
+# order, and each one that is not green is a failure named here. ADB_MUTATION_FULL_SUITE=1 (the nightly's mode) runs every
 # mutant against the whole suite: the rows are handed to the pool under ONE selector, so the only
 # baseline is a single unmutated run of the whole suite, and no counts are compared. The
 # declarations are still checked, so that mode cannot hide a broken one.
@@ -545,7 +546,7 @@ check_shmutant_pool() {
   local label="$1" wd="$2" prep="$3" run="$4" cap="$5" suite="${6:-}"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
   local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art="" arts i f0="$fail" whole=1 snap=""
-  local full=0 outside=0 runfn="$4" mode="" total narrowed=0 bl=0 cnt=0 nbase=0 bsel bverdict
+  local full=0 outside=0 runfn="$4" mode="" total narrowed=0 bl=0 cnt=0 nbase=0 bsel bverdict phase=0
   local -a verdicts=() names=() details=() t_name=() t_file=() t_sel=() b_want=() b_bad=()
   local -a all_name=() all_file=() all_old=() all_new=() all_wit=() all_sel=()
   tab="$(printf '\t')"
@@ -601,6 +602,17 @@ check_shmutant_pool() {
     bad "$label --mutation: a stale verdict stream $wd.tsv could not be removed — refusing to run the pool"
     return 1
   fi
+  # THE RUNS' BLOCK COUNTS go to files in ONE directory this call makes and removes: a run that is
+  # killed, or whose callback exits, cannot clean up after itself, so nothing is left to the runs.
+  # Made, not found: counts read from a directory another run wrote into would be compared as this one's.
+  CHECK_SHM_COUNTS_DIR=""
+  if [ "$cnt" -eq 1 ]; then
+    if ! mkdir "$wd.counts" 2>/dev/null; then
+      bad "$label --mutation: the block-count directory $wd.counts already exists or could not be made — refusing to run the pool"
+      return 1
+    fi
+    CHECK_SHM_COUNTS_DIR="$wd.counts"
+  fi
   # shellcheck disable=SC2034  # read by shmutant_pool (scripts/shmutant.sh), which these locals reach by dynamic scope
   local SHMUTANT_TIMEOUT="$CHECK_ROW_SECS" SHMUTANT_JOBS="$pool" SHMUTANT_BASELINE="$bl" SHMUTANT_STREAM="$wd.tsv" \
         SHMUTANT_RED_STATUS=1 SHMUTANT_RED_PREFIX='FAIL: ' SHMUTANT_COUNTS="$cnt"
@@ -644,7 +656,7 @@ check_shmutant_pool() {
       b_want+=("${t_sel[$i]}")
     done
     CHECK_SHM_RUN="$run"; CHECK_SHM_FULL="$full"; runfn=_check_shm_row_run
-    if [ "$full" -eq 1 ]; then mode="; full suite per mutant"; else mode="; per-block, $(( ${#b_want[@]} - 1 )) block(s) controlled"; fi
+    if [ "$full" -eq 1 ]; then mode="; full suite per mutant"; else mode="; per-block, $(( ${#b_want[@]} - 1 )) selection(s) controlled"; fi
   fi
   shmutant_pool "$label" "$wd" "$prep" "$runfn" "$cap"
   rc=$?
@@ -653,6 +665,13 @@ check_shmutant_pool() {
     SHMUTANT_ROWS_NEW=("${all_new[@]}"); SHMUTANT_ROWS_WIT=("${all_wit[@]}"); SHMUTANT_ROWS_SEL=("${all_sel[@]}")
   fi
   [ "$errexit" -eq 0 ] || set -e
+  if [ -n "$CHECK_SHM_COUNTS_DIR" ]; then
+    rm -rf "$CHECK_SHM_COUNTS_DIR" 2>/dev/null
+    if [ -e "$CHECK_SHM_COUNTS_DIR" ] || [ -L "$CHECK_SHM_COUNTS_DIR" ]; then
+      bad "$label --mutation: the block-count directory $CHECK_SHM_COUNTS_DIR could not be removed"
+    fi
+    CHECK_SHM_COUNTS_DIR=""
+  fi
   # An absent or empty stream carries no records (status 2 can leave either); anything else must be
   # whole — no NUL, a final newline, inside a bound no real table approaches. It is judged as ONE
   # bounded snapshot (`<workdir>.snap.*`, one byte past the bound), and the checks and the parse both
@@ -700,8 +719,14 @@ check_shmutant_pool() {
   while IFS= read -r rec; do
     [ -n "$rec" ] || continue
     kind="${rec%%"$tab"*}"; rest="${rec#*"$tab"}"
+    # shmutant writes its baselines first, then one row record per row, then the summary: a record out
+    # of that order is not a stream it wrote.
+    if [ "$phase" -eq 2 ] && [ "$kind" != malformed ]; then
+      bad "$label --mutation: a $kind record follows the summary record in $wd.tsv — the stream is not in shmutant's order"; whole=0
+    fi
     case "$kind" in
       row)
+        phase=1
         verdicts+=("${rest%%"$tab"*}"); rest="${rest#*"$tab"}"
         name="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
         tgt="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
@@ -715,6 +740,9 @@ check_shmutant_pool() {
         [ "${verdicts[$rows]}" != killed ] || killed=$((killed + 1))
         rows=$((rows + 1)) ;;
       baseline)
+        if [ "$phase" -ne 0 ]; then
+          bad "$label --mutation: a baseline record follows a row record in $wd.tsv — the stream is not in shmutant's order"; whole=0
+        fi
         bverdict="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
         bsel="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
         if [ "$nbase" -ge "${#b_want[@]}" ] || [ "$bsel" != "$(_shmutant_esc "${b_want[$nbase]-}")" ]; then
@@ -724,6 +752,7 @@ check_shmutant_pool() {
         [ "$bverdict" = green ] || b_bad+=("baseline [${bsel:-the whole suite, unselected}]: $bverdict — $rest")
         nbase=$((nbase + 1)) ;;
       summary)
+        phase=2
         sums=$((sums + 1))
         sum_label="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
         sum_rows="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
@@ -796,7 +825,7 @@ EOF
 # Set by check_shmutant_pool for `_check_shm_row_run`, which shmutant calls with its own argument
 # list: the caller's run, and whether every mutant runs the whole suite. CHECK_SHM_WHOLE is the one
 # selector every row is handed to the pool under in that mode.
-CHECK_SHM_RUN=""; CHECK_SHM_FULL=0; CHECK_SHM_WHOLE="whole-suite"
+CHECK_SHM_RUN=""; CHECK_SHM_FULL=0; CHECK_SHM_WHOLE="whole-suite"; CHECK_SHM_COUNTS_DIR=""
 
 # _check_shm_decls <label> <suite-path> — every row of shmutant's table names declared blocks whose
 # source carries its witness. Returns 1, with every problem named, when any does not.
@@ -812,9 +841,12 @@ _check_shm_decls() {
     if [ "$sel" = "$wit" ]; then
       bad "row '$nm': its selector equals its witness — shmutant_mut's fifth argument, the block, was not given"; errs=$((errs + 1)); continue
     fi
-    if ! _check_blocks_text "$ROOT/$suite" "$sel"; then
-      bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$sel}' is not declared in $suite"; errs=$((errs + 1)); continue
-    fi
+    _check_blocks_text "$ROOT/$suite" "$sel"
+    case "$?" in
+      0) ;;
+      2) bad "row '$nm': the source of block(s) '$sel' could not be read from $suite"; errs=$((errs + 1)); continue ;;
+      *) bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$sel}' is not declared in $suite"; errs=$((errs + 1)); continue ;;
+    esac
     # A LIST THE SUITE ITSELF WOULD REFUSE (`check_blocks_init` exits 2 on an empty element or a block
     # named twice) is refused here: in full-suite mode nothing else would ever read the selector.
     case ",$sel," in
@@ -836,13 +868,33 @@ _check_shm_decls() {
   [ "$errs" -eq 0 ] || { bad "$label --mutation: $errs row declaration(s) are invalid — nothing was built or run"; return 1; }
 }
 
+# _check_blocks_closure <selection> — the blocks a selection RUNS, space-separated: the ones it names
+# and everything they need, or every declared block when the selection is empty. Read after
+# `_check_blocks_parse`, whose table it uses; a dependency is always declared earlier, so one pass
+# from the last block backwards closes the set.
+_check_blocks_closure() {
+  local set=" " i one dep
+  if [ -z "$1" ]; then printf '%s' "${CHECK_PB_IDS[*]}"; return 0; fi
+  for one in ${1//,/ }; do set="$set$one "; done
+  for (( i = ${#CHECK_PB_IDS[@]} - 1; i >= 0; i-- )); do
+    case "$set" in
+      *" ${CHECK_PB_IDS[$i]} "*)
+        for dep in ${CHECK_PB_DEPS[$i]}; do
+          case "$set" in *" $dep "*) ;; *) set="$set$dep " ;; esac
+        done ;;
+    esac
+  done
+  printf '%s' "$set"
+}
+
 # _check_shm_row_run <root> <select> — the <run-fn> shmutant is handed in block mode: it calls the
 # caller's run with the selection in ADB_CHECK_BLOCK. <select> is a row's selector, or empty for the
 # unselected baseline; in full-suite mode nothing is selected, whatever shmutant passes. When
-# shmutant is counting (SHMUTANT_COUNTS_FD), the run's block counts are collected in a file of this
-# run's own and handed to that descriptor whole, and a green selection that reported no count for a
-# block it selected is turned red: shmutant compares the units a run reports, never the ones it
-# should have. The file is a mktemp name under TMPDIR, removed before this returns.
+# shmutant is counting (SHMUTANT_COUNTS_FD), the run's block counts are collected in a file of its
+# own under CHECK_SHM_COUNTS_DIR — which check_shmutant_pool makes and removes, so a run that is
+# killed leaves nothing behind for long — and handed to that descriptor whole. A green run that
+# reported no count for a block it runs, a dependency as much as a selected one, is turned red:
+# shmutant compares the units a run reports, never the ones it should have.
 _check_shm_row_run() {
   local sel="$2" cf rc one
   [ "$CHECK_SHM_FULL" -eq 0 ] || sel=""
@@ -850,7 +902,7 @@ _check_shm_row_run() {
     ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="" "$CHECK_SHM_RUN" "$1" "$sel"
     return
   fi
-  if ! cf="$(mktemp "${TMPDIR:-/tmp}/adb-block-counts.XXXXXX" 2>/dev/null)"; then
+  if ! cf="$(mktemp "$CHECK_SHM_COUNTS_DIR/run.XXXXXX" 2>/dev/null)"; then
     printf 'FAIL: check-blocks: no file could be made for this run'"'"'s block counts, so they cannot be compared\n'
     return 1
   fi
@@ -860,14 +912,13 @@ _check_shm_row_run() {
     [ "$rc" -ne 0 ] || rc=1
   fi
   if [ "$rc" -eq 0 ]; then
-    for one in ${sel//,/ }; do
+    for one in $(_check_blocks_closure "$sel"); do
       if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' "$cf" 2>/dev/null; then
-        printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it selected\n" "$sel" "$one"
+        printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
         rc=1
       fi
     done
   fi
-  rm -f "$cf" 2>/dev/null
   return "$rc"
 }
 
@@ -1043,13 +1094,16 @@ _check_blocks_finish() {
     || bad "check-blocks: only $CHECK_BLOCK_NEXT of ${#CHECK_BLOCK_IDS[@]} declared blocks were reached — the suite ended early"
 }
 
-# _check_blocks_text <suite-file> <block>[,<block>...] — the SOURCE of the named blocks, concatenated,
-# into CHECK_BLOCK_TEXT: what a row's witness must appear in for selecting them to be able to show it.
-# Read after `_check_blocks_parse <suite-file>`, whose table it uses. Returns 1 when the list is empty
-# or names a block the suite does not declare (CHECK_BLOCK_UNDECL names the first such, when one does).
+# _check_blocks_text <suite-file> <block>[,<block>...] — the SOURCE of the named blocks into
+# CHECK_BLOCK_TEXT, each followed by a newline: what a row's witness must appear in for selecting
+# them to be able to show it. A witness is one line, so the newline keeps it from being found across
+# the end of one block and the start of the next. Read after `_check_blocks_parse <suite-file>`,
+# whose table it uses. Returns 1 when the list is empty or names a block the suite does not declare
+# (CHECK_BLOCK_UNDECL names the first such, when one does), and 2 when a block's source could not be
+# read: a read that failed part-way is not the block.
 CHECK_BLOCK_TEXT=""; CHECK_BLOCK_UNDECL=""
 _check_blocks_text() {
-  local f="$1" one bi j seen=0
+  local f="$1" one bi j seen=0 part last
   CHECK_BLOCK_TEXT=""; CHECK_BLOCK_UNDECL=""
   # Outside the id charset is not a block, and is refused before the unquoted split below could glob it.
   case "$2" in *[!a-z0-9,-]*) CHECK_BLOCK_UNDECL="$2"; return 1 ;; esac
@@ -1057,11 +1111,9 @@ _check_blocks_text() {
     bi=-1
     for (( j = 0; j < ${#CHECK_PB_IDS[@]}; j++ )); do [ "${CHECK_PB_IDS[$j]}" = "$one" ] && bi=$j; done
     if [ "$bi" -lt 0 ]; then CHECK_BLOCK_UNDECL="$one"; return 1; fi
-    if [ $((bi + 1)) -lt "${#CHECK_PB_IDS[@]}" ]; then
-      CHECK_BLOCK_TEXT="$CHECK_BLOCK_TEXT$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_LINES[bi + 1] - 1 ))p" "$f")"
-    else
-      CHECK_BLOCK_TEXT="$CHECK_BLOCK_TEXT$(sed -n "${CHECK_PB_LINES[$bi]},$(( CHECK_PB_END - 1 ))p" "$f")"
-    fi
+    if [ $((bi + 1)) -lt "${#CHECK_PB_IDS[@]}" ]; then last=$(( CHECK_PB_LINES[bi + 1] - 1 )); else last=$(( CHECK_PB_END - 1 )); fi
+    part="$(sed -n "${CHECK_PB_LINES[$bi]},${last}p" "$f" 2>/dev/null)" || return 2
+    CHECK_BLOCK_TEXT="$CHECK_BLOCK_TEXT$part"$'\n'
     seen=$((seen + 1))
   done
   [ "$seen" -gt 0 ]
@@ -1214,9 +1266,12 @@ check_mutation_rows() {
     elif [ "$cnt" -gt 1 ]; then
       bad "row '$nm': its literal occurs $cnt times in '$tg' — a first-match rewrite could mutate the wrong one (witness: $wit)"; errs=$((errs + 1)); continue
     fi
-    if ! _check_blocks_text "$ROOT/$suite" "$b"; then
-      bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$b}' is not declared in $suite"; errs=$((errs + 1)); continue
-    fi
+    _check_blocks_text "$ROOT/$suite" "$b"
+    case "$?" in
+      0) ;;
+      2) bad "row '$nm': the source of block(s) '$b' could not be read from $suite"; errs=$((errs + 1)); continue ;;
+      *) bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$b}' is not declared in $suite"; errs=$((errs + 1)); continue ;;
+    esac
     case "$CHECK_BLOCK_TEXT" in
       *"$wit"*) ;;
       *) bad "row '$nm': witness '$wit' does not appear in block(s) '$b' — selecting them could never show it"; errs=$((errs + 1)); continue ;;
