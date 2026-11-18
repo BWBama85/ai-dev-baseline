@@ -81,7 +81,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 PW="$ROOT/scripts/lib/pr-watch.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
@@ -94,7 +94,7 @@ case "${1:-}" in
   *)          echo "usage: check-pr-watch.sh [--mutation]" >&2; exit 2 ;;
 esac
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-pr-watch: mktemp failed" >&2; exit 1; }
 # A SUITE THAT SKIPS ITS OWN VERDICT MUST NOT REPORT SUCCESS. Plain `rm -rf` was enough while the
 # only way out was the bottom of the file; `--mutation` below adds an `exit 0` after its own
 # `check_summary`, and an edit that loses that call would exit 0 having counted nothing.

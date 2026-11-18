@@ -43,7 +43,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 RL="$ROOT/scripts/lib/roadmap-lib.sh"
 WF="$ROOT/base/workflows/roadmap.md"
 # shellcheck source=/dev/null
@@ -1204,9 +1204,9 @@ art_with_decision="$(printf '%s\n' \
 art_without="${ printf '%s\n' '<!-- ai-dev-baseline:roadmap:v1 -->' '# Build roadmap' '## Dependencies' '- #73 depends on #25'; }"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 answered="${ printf '%s' "$art_with_decision" | bash "$RL" decisions; }"
-eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" retired "a recorded decision retires its question"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ grep -Fqx 'dep-outside-release:#73' <<< "$answered" && echo retired || echo asked; }" retired "a recorded decision retires its question"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 answered="${ printf '%s' "$art_without" | bash "$RL" decisions; }"
-eq "${ printf '%s\n' "$answered" | grep -Fqx 'dep-outside-release:#73' && echo retired || echo asked; }" asked "...and an unrecorded one is still asked"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
+eq "${ grep -Fqx 'dep-outside-release:#73' <<< "$answered" && echo retired || echo asked; }" asked "...and an unrecorded one is still asked"  # adb-claim-ok: fixture INPUT to the parser under test, not a citation
 
 # The stale edge in `## Dependencies` must NOT survive: edges are re-derived from the live
 # sources, and the decision row's own text retires this one.

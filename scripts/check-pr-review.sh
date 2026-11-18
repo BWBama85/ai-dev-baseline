@@ -75,12 +75,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 PR="$ROOT/scripts/lib/pr-review.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-pr-review: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 REPO="$work/repo"; GHOME="$work/home"; SBIN="$work/sbin"; S="$work/stub"

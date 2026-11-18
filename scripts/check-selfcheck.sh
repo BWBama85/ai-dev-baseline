@@ -58,7 +58,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . "$ROOT/scripts/check-lib.sh"   # ok/bad/eq/has/hasnt/yes/no + check_summary + check_exit_guard
 
@@ -272,7 +272,7 @@ if [ "$MODE" = mutation ]; then
     '    summarize_undispatched "$log"' ':' \
     'the digest names the steps a red static tier kept from running'
   shmutant_mut "tier-emptied" \
-    'STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index step-inputs)' \
+    'STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths suite-hygiene bash-floor shmutant-pin fact-drift claims practice-index step-inputs)' \
     'STATIC_STEPS=()' \
     'the static tier is exactly the steps that lint the tracked tree'
   # `--list` still says static; the dispatcher puts the step in the suite pool.
@@ -1185,7 +1185,7 @@ hasnt "$OUT" "STOPPED" "…and announces no stop, since nothing was left to disp
 # THE SHIPPED TIER, asked of the runner. Membership is policy, as a lane is: emptying the array
 # changes nothing any other assertion watches on a green tree, so it is pinned by name.
 eq "$(bash "$ROOT/scripts/selfcheck.sh" --list | awk -F'\t' '$6 == "static" {print $1}' | tr '\n' ' ')" \
-  "shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index step-inputs " \
+  "shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths suite-hygiene bash-floor shmutant-pin fact-drift claims practice-index step-inputs " \
   "the static tier is exactly the steps that lint the tracked tree, in declaration order"
 # A tier member that is not registered is in no tier at all, so it is refused at load.
 sed 's/^STATIC_STEPS=(shellcheck /STATIC_STEPS=(nosuchstep shellcheck /' "$FX/scripts/selfcheck.sh" > "$FX/scripts/badtier.sh"

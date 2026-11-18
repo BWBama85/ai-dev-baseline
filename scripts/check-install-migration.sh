@@ -56,7 +56,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # Single-source the default-branch resolver (don't re-implement origin/HEAD parsing here).
 # shellcheck source=/dev/null
 . "$ROOT/scripts/lib/common.sh"
@@ -130,7 +130,8 @@ printf 'install-migration: retirement register — %d row(s) checked\n' "$retire
 # planting a leaf in the RECEIPT that HEAD's payload does not declare, which is precisely the
 # state a real retirement produces in an already-installed home.
 if command -v jq >/dev/null 2>&1 && [ -s "$ROOT/agents/claude/settings.fragment.json" ]; then
-  sw="$(mktemp -d)"; sh_home="$sw/home"; mkdir -p "$sh_home/.claude"
+  sw="$(mktemp -d)" || { echo "check-install-migration: mktemp failed" >&2; exit 1; }
+  sh_home="$sw/home"; mkdir -p "$sh_home/.claude"
   printf '{"model":"opus","sandbox":{"network":{"strictAllowlist":true}}}\n' > "$sh_home/.claude/settings.json"
   {
     printf 'disposition installed\n'
@@ -175,7 +176,8 @@ elif [ "$base" = "$head" ]; then
   printf 'NOTE: HEAD is the merge-base (no divergence) — pull simulation is a trivial pass\n' >&2
   ok
 else
-  work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+  work="$(mktemp -d)" || { echo "check-install-migration: mktemp failed" >&2; exit 1; }
+  trap 'rm -rf "$work"' EXIT
   clone="$work/clone"; fh="$work/home"; mkdir -p "$fh"
   if ! git clone -q "$ROOT" "$clone" 2>/dev/null; then
     bad "could not clone repo for the migration test"

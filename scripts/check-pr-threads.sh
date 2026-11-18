@@ -62,7 +62,7 @@ case "${1:-}" in
   *)          echo "usage: check-pr-threads.sh [--mutation]" >&2; exit 2 ;;
 esac
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-pr-threads: mktemp failed" >&2; exit 1; }
 # A SUITE THAT SKIPS ITS OWN VERDICT MUST NOT REPORT SUCCESS: `--mutation` exits after its own
 # `check_summary`, and an edit that lost that call would exit 0 having counted nothing.
 check_exit_guard "check-pr-threads" "rm -rf \"$work\""

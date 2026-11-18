@@ -32,12 +32,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 SC="$ROOT/scripts/lib/skill-compose.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-skill-compose: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 REPO="$work/repo"; GHOME="$work/home"
 mkdir -p "$REPO/.claude/skills/demo" "$GHOME/.claude/skills/demo"

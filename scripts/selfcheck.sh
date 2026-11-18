@@ -150,7 +150,7 @@ lane_reason() {
 # run takes the static tier first — its serial members alone, then its pooled ones together — and
 # when one of them is red it ends there, before any suite starts (`--collect-all` runs on).
 # `--serial` keeps declaration order and never stops early.
-STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths bash-floor shmutant-pin fact-drift claims practice-index step-inputs)
+STATIC_STEPS=(shellcheck build-drift workflow-map skill-frontmatter workflow-shell injection tmp-paths suite-hygiene bash-floor shmutant-pin fact-drift claims practice-index step-inputs)
 
 # tier_of <step> — `static` or `suite`. THE one home for that decision, as lane_of is for the lane:
 # the dispatcher's split and `--list`'s sixth field both call it.
@@ -630,6 +630,13 @@ inputs injection           .
 # render), and no fixed shared-temp literal survives anywhere the four scanned roots reach.
 add tmp-paths           bash scripts/check-tmp-paths.sh
 inputs tmp-paths           .
+
+# Three shapes a check suite may not carry (#458, D160): `| grep -q` where the suite sets pipefail,
+# a `$(pwd)` capture, and a `mktemp -d` capture with no failure branch. The scan, then its proof:
+# each rule red on a fixture, each pre-fix spelling caught in a copy of a real suite, and every
+# suite's own ROOT capture run inside a `clone<NL>` directory.
+add suite-hygiene       bash scripts/check-suite-hygiene.sh
+inputs suite-hygiene       .
 
 add gate-detector       step_gate_detector
 inputs gate-detector       agents.toml scripts/lib/common.sh scripts/lib/project-gates.sh scripts/selfcheck.sh

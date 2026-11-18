@@ -67,7 +67,7 @@ case "${1:-}" in
   *)          echo "usage: check-pattern-ledger.sh [--mutation]" >&2; exit 2 ;;
 esac
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-pattern-ledger: mktemp failed" >&2; exit 1; }
 check_exit_guard "check-pattern-ledger" "rm -rf \"$work\""
 check_init check-pattern-ledger
 
@@ -852,7 +852,8 @@ eq "$?" 0 "…and the ledger still parses, rather than being destroyed by its ow
 # the writer must then exit 21 naming the thread — not print `recorded`.
 L7f="$work/l7f.md"
 bash "$PL" record --ledger "$L7f" --class seed-f --site s.sh --fix abc1231 --pr 1 --thread T0 >/dev/null 2>&1
-_lost="$(mktemp -d)"; cp "$PL" "$_lost/pl.sh"; cp "$ROOT/scripts/lib/common.sh" "$_lost/common.sh"; mkdir -p "$_lost/lib"; cp "$ROOT/scripts/lib/common.sh" "$_lost/lib/common.sh"
+_lost="$(mktemp -d)" || { echo "check-pattern-ledger: mktemp failed" >&2; exit 1; }
+cp "$PL" "$_lost/pl.sh"; cp "$ROOT/scripts/lib/common.sh" "$_lost/common.sh"; mkdir -p "$_lost/lib"; cp "$ROOT/scripts/lib/common.sh" "$_lost/lib/common.sh"
 # the copy's insert prints the file back WITHOUT the new line
 sed 's/l == e \&\& !done { print ENVIRON\["ADB_PL_LINE"\]; done = 1 }/l == e \&\& !done { done = 1 }/' "$_lost/pl.sh" > "$_lost/pl2.sh"
 if cmp -s "$_lost/pl.sh" "$_lost/pl2.sh"; then bad "fixture: the lost-row injection did not apply"; fi

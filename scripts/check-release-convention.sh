@@ -33,12 +33,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 RC="$ROOT/scripts/lib/release-convention.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-release-convention: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 # rcx <args...> : run the helper with the REAL PATH, capture combined output + rc in OUT/RC_.

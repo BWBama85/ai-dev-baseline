@@ -51,7 +51,7 @@ esac
 
 command -v jq >/dev/null 2>&1 || { echo "check-session-context: jq required" >&2; exit 1; }
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-session-context: mktemp failed" >&2; exit 1; }
 check_exit_guard "check-session-context" "rm -rf \"$work\""
 check_init check-session-context
 
@@ -670,7 +670,8 @@ if check_block lib-1b-order; then
 # 1b~. THE BLOCKED RECORD IS REFUSED BEFORE THE SCAN OPENS IT. `state-scan` runs jq over the blocked
 #      file in its marker arm; a damaged one must be refused (18) before that. Observed through a
 #      reader whose cleanup-lib cannot run: reached first, the scan fails (20); refused first, 18.
-_ord="$(mktemp -d)"; mkdir -p "$_ord/lib"; cp "$RS" "$_ord/run-state.sh"; cp "$ROOT/scripts/lib/common.sh" "$_ord/common.sh"
+_ord="$(mktemp -d)" || { echo "check-session-context: mktemp failed" >&2; exit 1; }
+mkdir -p "$_ord/lib"; cp "$RS" "$_ord/run-state.sh"; cp "$ROOT/scripts/lib/common.sh" "$_ord/common.sh"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$_ord/cleanup-lib.sh"; chmod +x "$_ord/cleanup-lib.sh"
 d="$(state blocked-order)"; marker "$d" "$LIVE"; ln -s /nonexistent-adb-blocked "$d/implement-issue-blocked.json"
 OUT="$(bash "$_ord/run-state.sh" summary --state "$d" --session "$SID_A" 2>/dev/null)"; RC=$?

@@ -40,7 +40,7 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh           # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-gates: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 TAB=$'\t'
 # A failing run KEEPS its log directory under $TMPDIR (D133), so this suite's TMPDIR is its own:

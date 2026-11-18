@@ -29,9 +29,9 @@
 #     rather than counted as passing it.
 #   * `scripts/build.sh` reaches its own library by a relative path, so rule 5's canary cannot
 #     discriminate for it. It is held by rules 1-4.
-#   * The 27 `scripts/check-*.sh` suites that compute `ROOT="$(pwd)"` after a `cd` carry the same
-#     lossy capture. They are test infrastructure rather than pre-source production bootstraps and
-#     are deliberately out of this file's declared set. Tracked separately.
+#   * The `scripts/check-*.sh` suites are test infrastructure rather than pre-source production
+#     bootstraps and are deliberately out of this file's declared set. They capture their root as
+#     `ROOT="$PWD"`, and `scripts/check-suite-hygiene.sh` bans the lossy `$(pwd)` form there (#458).
 #
 # Usage: bash scripts/check-bootstrap.sh [--mutation]   (exit 0 = all pass, 1 = a failure)
 
@@ -48,7 +48,7 @@ set -u
 cd "$(dirname "$0")/.." || exit 1
 # THE SAME SENTINEL THIS FILE PINS. A bare `ROOT="$(pwd)"` here would name the truncated sibling in
 # exactly the checkout this suite exists to test, and every fixture would then be built from the
-# wrong tree while reporting on this one. The other 26 suites still carry the bare form (#404).
+# wrong tree while reporting on this one. The other suites use `$PWD`, which loses nothing either.
 ROOT="$(pwd && printf 'X')"; ROOT="${ROOT%X}"; ROOT="${ROOT%$'\n'}"
 [ -n "$ROOT" ] || { printf 'check-bootstrap: cannot resolve the repo root\n' >&2; exit 1; }
 # shellcheck source=/dev/null
@@ -151,7 +151,8 @@ done
 #
 # THE EXEMPTIONS ARE NAMED, not globbed away, so a new one has to be classified rather than
 # inherited. Both are POST-SOURCE: they run once `scripts/lib/common.sh` is already reachable, so
-# they are free to use a shared primitive and are #404's scope, not this file's. The declared sites
+# they are free to use a shared primitive and are not this file's scope. The check suites' own
+# capture is held by `scripts/check-suite-hygiene.sh` (#458). The declared sites
 # are skipped here only because the rules below test them directly.
 POST_SOURCE_EXEMPT="scripts/lib/adopt-readiness.sh"
 
@@ -159,7 +160,7 @@ scanned=0; unmarked=""
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
-    scripts/check-*.sh) continue ;;                  # post-source test infrastructure (#404)
+    scripts/check-*.sh) continue ;;                  # post-source test infrastructure
   esac
   in_set "$POST_SOURCE_EXEMPT" "$f" && continue
   in_set "$BOOTSTRAP_SITES" "$f" && continue

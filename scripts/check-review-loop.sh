@@ -505,6 +505,8 @@ ISSUE_JSON='{"state":"OPEN","title":"t","body":"acceptance: loop","author":{"log
 
 # fixture — a repository whose origin/main is its base, on a feature branch carrying one change,
 # with .claude/state gitignored and an issue snapshot for dispatch-review's criteria. Prints the path.
+# EVERY CALL IS `d="$(fixture)" || exit 1`: a failed allocation prints nothing, and an empty path
+# makes `script` and `rl` write to and run in the checkout this suite was started from.
 fixture() {
   local d
   d="$(mktemp -d "$work/r.XXXXXX")" || return 1
@@ -544,7 +546,7 @@ rec() { cat "$1/.claude/state/review-loop.tsv" 2>/dev/null; }
 
 # =============================== 1. convergence ==================================================
 # #491 acceptance: REQUIRED on pass 1, none on pass 2 -> converges after pass 2, with the line.
-d="$(fixture)"; script "$d" req:2 req:0
+d="$(fixture)" || exit 1; script "$d" req:2 req:0
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 34 "1 a pass with REQUIRED findings and budget left is 34 — fix, commit, pass again"
 has "$RL_OUT" "pass 1/3 -> 2 REQUIRED" "1 …and says so with the pass number and the default budget"
@@ -558,7 +560,7 @@ eq "$(count "$d")" 2 "1 exactly two dispatches"
 
 # =============================== 2. exhaustion and carry =========================================
 # Findings on every pass with local_passes = 3 -> the carried code after pass 3, never a 4th dispatch.
-d="$(fixture)"; script "$d" req:2 req:2 req:2 req:2
+d="$(fixture)" || exit 1; script "$d" req:2 req:2 req:2 req:2
 rl "$d" pass .claude/state codex; commit_fix "$d" a
 rl "$d" pass .claude/state codex; commit_fix "$d" b
 rl "$d" pass .claude/state codex
@@ -591,7 +593,7 @@ has "$RL_OUT" "exhausted: every REQUIRED finding of pass 3 was carried, declined
 has "$RL_OUT" "pass 1 -> 2 REQUIRED · pass 2 -> 2 · pass 3 -> 2" "2 …after every pass"
 
 # One finding is carried once: its severity is the driver's triage, not part of what the finding is.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:2
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:2
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding 'one finding' .claude/state
 rl "$d" carry --severity medium --site f.sh:1 --finding 'one finding' .claude/state
@@ -603,7 +605,7 @@ printf 'carry\t1\tmedium\tf.sh:1\t1\tone finding\n' >> "$d/.claude/state/review-
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "2 a finding carried at two severities refuses the record"
 # A carry made before the budget was raised stays on the line once later passes converge.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1 req:0
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1 req:0
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding 'left for later' .claude/state
 RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; commit_fix "$d" more
@@ -613,7 +615,7 @@ eq "$RL_RC" 0 "2 a raised budget lets a later pass converge"
 has "$RL_OUT" 'carried: 1 (pass 1 low `f.sh:1`: `left for later`)' "2 …and the converged line still names what an earlier pass carried"
 RL_ENV=""
 # A carried HIGH blocks; a carried LOW pushes (above). Both observed.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 33 "2 a budget of 1 exhausts on its only pass"
 rl "$d" carry --severity high --site f.sh:1 --finding 'unescaped path' .claude/state
@@ -635,20 +637,20 @@ for bad_site in 'f.sh:0' 'f.sh:abc' 'a:b:c' '.' 'dir/'; do
 done
 # A closing keyword in carried text must not register a link when the line lands in a PR body: it is
 # rendered inside a code span, and a backtick in it cannot close the span early.
-d="$(fixture)"; script "$d" req:1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+d="$(fixture)" || exit 1; script "$d" req:1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding 'Closes #1 and `Fixes #2`' .claude/state
 rl "$d" report .claude/state
 has "$RL_OUT" "\`Closes #1 and 'Fixes #2'\`" "2 a carried closing keyword is rendered inside a code span, backticks neutralized"
 # EVERY carried finding is named in the line: the PR body is the durable copy once run state is swept.
-d="$(fixture)"; script "$d" req:51; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+d="$(fixture)" || exit 1; script "$d" req:51; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
 awk 'BEGIN { for (i = 1; i <= 51; i++) printf "carry\t1\tlow\tf.sh:%d\t1\tfinding %d\n", i, i }' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "2 fifty-one carried findings make a pushable exhaustion"
 has "$RL_OUT" '`f.sh:51`: `finding 51`' "2 …and the line names the 51st, not a count of the rest"
 # Two identical findings (same site, severity and text) are two findings: --occurrence tells them apart.
-d="$(fixture)"; script "$d" req:2
+d="$(fixture)" || exit 1; script "$d" req:2
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding 'twice' .claude/state
 rl "$d" carry --severity low --site f.sh:1 --finding 'twice' .claude/state
@@ -660,7 +662,7 @@ eq "$RL_RC" 33 "2 …and the duplicate-prose exhaustion is fully carried"
 rl "$d" carry --severity low --site f.sh:1 --occurrence 0 --finding 'x' .claude/state
 eq "$RL_RC" 19 "2 --occurrence 0 is refused (19)"
 # `--finding -` reads the line from stdin, so reviewer text survives without shell quoting.
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 RL_OUT="$( cd "$d" && env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site 'docs/a file.md:2' --finding - .claude/state <<'FINDING' 2>&1
 it's a $HOME-looking `thing`
@@ -675,7 +677,7 @@ eq "$RL_RC" 19 "2 --finding - refuses a trailing blank line — command substitu
 RL_OUT="$( cd "$d" && printf 'a\000b\n' | env HOME="$FHOME" ADB_LOCAL_REVIEW_PASSES=1 bash "$IL" review-loop carry --severity low --site f.sh:3 --finding - .claude/state 2>&1 )"; RL_RC=$?
 eq "$RL_RC" 19 "2 --finding - refuses a NUL byte rather than storing the line with it dropped"
 # Two findings sharing their wording are still two: the site is part of the identity.
-d="$(fixture)"; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+d="$(fixture)" || exit 1; script "$d" req:2; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site 'docs/a file.md:3' --finding 'same words' .claude/state
 eq "$RL_RC" 0 "2 a site with a space — a legal path — can be carried"
@@ -690,7 +692,7 @@ for l in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
   if locale -a 2>/dev/null | grep -qx -- "$l"; then UTF="$l"; break; fi
 done
 if [ -n "$UTF" ]; then
-  d="$(fixture)"; script "$d" req:3
+  d="$(fixture)" || exit 1; script "$d" req:3
   RL_ENV="ADB_LOCAL_REVIEW_PASSES=1 LC_ALL=$UTF"
   rl "$d" pass .claude/state codex
   mb="$(printf 'é%.0s' $(seq 150))"
@@ -704,7 +706,7 @@ fi
 
 # The writer never produces a record its reader refuses: a carry that would cross the record's
 # 1 MiB bound is refused, and the record it declined to grow still reads.
-d="$(fixture)"; script "$d" req:9999; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+d="$(fixture)" || exit 1; script "$d" req:9999; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
 R="$d/.claude/state/review-loop.tsv"
 pad="$(printf 'x%.0s' $(seq 290))"
@@ -715,13 +717,13 @@ eq "$RL_RC" 19 "2 a carry that would take the record past its bound is refused (
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "2 …and the record it declined to grow still reads (39, not 18)"
 RL_ENV=""
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding x .claude/state
 eq "$RL_RC" 17 "2 carry against a loop that is NOT exhausted is refused (17)"
 
 # =============================== 3. a failed pass is never clean ================================
-d="$(fixture)"; script "$d" req:1 127 req:0
+d="$(fixture)" || exit 1; script "$d" req:1 127 req:0
 rl "$d" pass .claude/state codex; commit_fix "$d" a
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 36 "3 a pass whose dispatch exits 127 is FAILED, not clean (36)"
@@ -731,7 +733,7 @@ has "$RL_OUT" "pass 2 -> failed (dispatch, rc 127)" "3 …the failure is rendere
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 0 "3 a later clean pass converges"
 
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:1 hang
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:1 hang
 rl "$d" pass .claude/state codex; commit_fix "$d" a
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 37 "3 a timed-out LAST pass is 37 — what remains is unknown"
@@ -740,7 +742,7 @@ eq "$RL_RC" 39 "3 a failed final pass BLOCKS"
 RL_ENV=""
 
 # A failed final pass must never reuse an earlier clean review.md.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:0 127
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:0 127
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 0 "3 pass 1 converges and leaves a clean review.md"
 commit_fix "$d" optional
@@ -764,7 +766,7 @@ fi
 exec "$(command -v wc)" "\$@"
 SH
 chmod +x "$SW/wc"
-d="$(fixture)"; script "$d" req:2
+d="$(fixture)" || exit 1; script "$d" req:2
 RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$SW:$SB:$PATH" RL_SCRIPT="$d.script" RL_COUNT="$d.count" \
     SWAP_OUT="$d/.claude/state/review.md" bash "$IL" review-loop pass .claude/state codex 2>&1 )"; RL_RC=$?
 [ -e "$d/.claude/state/review.md.swapped" ] && ok || bad "3 the swap fixture fired (the witness below is otherwise vacuous)"
@@ -784,19 +786,19 @@ esac
 exec "$(command -v bash)" "\$@"
 SH
 chmod +x "$VB/bash"
-d="$(fixture)"; script "$d" req:2
+d="$(fixture)" || exit 1; script "$d" req:2
 RL_OUT="$( cd "$d" && env HOME="$FHOME" PATH="$VB:$SB:$PATH" RL_SCRIPT="$d.script" RL_COUNT="$d.count" \
     SWAP_DIR="$d/.claude/state" bash "$IL" review-loop pass .claude/state codex 2>&1 )"; RL_RC=$?
 eq "$RL_RC" 36 "3 a reply replaced after dispatch-review validated it never records the replacement's count"
 
-d="$(fixture)"; script "$d" bad
+d="$(fixture)" || exit 1; script "$d" bad
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 36 "3 a reply with no verdict trailer is a failed pass"
 has "$(rec "$d")" "$(printf 'fail\t1\t28\tverdict')" "3 …recorded as a verdict failure, rc 28"
 
 # =============================== 4. the tree binding ============================================
 # A pass reviews the worktree and a push ships HEAD, so the loop certifies only a CLEAN tree (27).
-d="$(fixture)"; script "$d" req:0
+d="$(fixture)" || exit 1; script "$d" req:0
 printf 'uncommitted\n' >> "$d/f.sh"
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 27 "4 a pass over a dirty worktree is refused (27) — the reviewed tree must be the committed one"
@@ -824,12 +826,12 @@ rl "$d" report .claude/state
 eq "$RL_RC" 34 "4 an edit after a converged pass invalidates it — take another pass"
 has "$RL_OUT" "converged on an earlier tree" "4 …and says so"
 
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:0
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:0
 rl "$d" pass .claude/state codex
 commit_fix "$d" late
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "4 an edit after the FINAL budgeted pass blocks"
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 commit_fix "$d" sneaked
@@ -837,19 +839,19 @@ rl "$d" report .claude/state
 eq "$RL_RC" 39 "4 a commit after an EXHAUSTED pass blocks, even with every finding carried"
 RL_ENV=""
 
-d="$(fixture)"; script "$d" touch
+d="$(fixture)" || exit 1; script "$d" touch
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 36 "4 a tree that moved during the pass fails it"
 has "$(rec "$d")" "$(printf 'fail\t1\t-\tmoved')" "4 …recorded as moved"
 
-d="$(fixture)"; script "$d" lock
+d="$(fixture)" || exit 1; script "$d" lock
 rl "$d" pass .claude/state codex
 chmod 644 "$d/f.sh"
 eq "$RL_RC" 36 "4 a tree that cannot be digested after the pass fails it"
 has "$(rec "$d")" "$(printf 'fail\t1\t-\tunbound')" "4 …recorded as unbound"
 
 # =============================== 5. disabled, unavailable, nothing ==============================
-d="$(fixture)"; printf '[reviewers]\nlocal_passes = 0\n' > "$d/agents.toml"
+d="$(fixture)" || exit 1; printf '[reviewers]\nlocal_passes = 0\n' > "$d/agents.toml"
 git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1   # untracked, it would be a dirty tree
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 35 "5 local_passes = 0 is 35"
@@ -859,22 +861,22 @@ rl "$d" report .claude/state
 eq "$RL_RC" 35 "5 report says disabled too"
 has "$RL_OUT" "local review: disabled" "5 …rendered on this terminal path as well"
 
-d="$(fixture)"
+d="$(fixture)" || exit 1
 rl "$d" pass --unavailable deferred .claude/state
 eq "$RL_RC" 35 "5 no usable reviewer is 35, nothing dispatched"
 rl "$d" report .claude/state
 has "$RL_OUT" "no usable reviewer (rung deferred)" "5 …and the line names the rung"
 
-d="$(fixture)"
+d="$(fixture)" || exit 1
 rl "$d" report .claude/state
 eq "$RL_RC" 11 "5 report with nothing recorded is 11 — never a hand-written converged"
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
 rl "$d" pass .claude/state codex
 printf 'uncommitted fix\n' >> "$d/f.sh"
 rl "$d" report .claude/state
 eq "$RL_RC" 27 "5 a disabled loop over a dirty worktree is 27, never the push-able 35"
 RL_ENV=""
-d="$(fixture)"; script "$d" req:0
+d="$(fixture)" || exit 1; script "$d" req:0
 rl "$d" pass .claude/state codex
 mkdir "$d/.claude/state/.review-loop-mutex"
 rl "$d" report .claude/state
@@ -882,21 +884,21 @@ eq "$RL_RC" 20 "5 report decides under the loop's lock, and refuses (20) when it
 rmdir "$d/.claude/state/.review-loop-mutex"
 
 # Disabling the loop, or losing the reviewer, AFTER a pass exhausts it — it never excuses a block.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:1 127
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=2"; script "$d" req:1 127
 rl "$d" pass .claude/state codex; commit_fix "$d" a
 rl "$d" pass .claude/state codex
 RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "5 local_passes = 0 after a failed final pass still BLOCKS"
 has "$RL_OUT" "(then disabled)" "5 …and the line says the loop was disabled after it"
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity high --site f.sh:1 --finding 'real bug' .claude/state
 RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
 rl "$d" report .claude/state
 eq "$RL_RC" 39 "5 local_passes = 0 after a carried HIGH still BLOCKS"
 RL_ENV=""
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" pass --unavailable none .claude/state
 rl "$d" report .claude/state
@@ -907,30 +909,30 @@ rl "$d" report .claude/state
 eq "$RL_RC" 33 "5 …after which it pushes with the line"
 
 # =============================== 6. the record is refused whole =================================
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'start\t9\t3\tzz\tcodex\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "6 a row outside the grammar refuses the whole record"
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 18 "6 …for pass as well"
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'done\t1\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "6 an event out of order refuses the record"
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'x' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "6 a record with no final newline is refused (a torn append)"
-d="$(fixture)"; script "$d" req:0
+d="$(fixture)" || exit 1; script "$d" req:0
 rl "$d" pass .claude/state codex
 T1="$(awk -F'\t' '$1=="start"{t=$4} END{print t}' "$d/.claude/state/review-loop.tsv")"
 printf 'start\t2\t1\t%s\tcodex\ndone\t2\t%s\t0\t0\t%s\n' "$T1" "$T1" "$T1" >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "6 a pass numbered past the budget it ran under refuses the record (no writer can emit one)"
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'bogus\tx\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
@@ -938,13 +940,13 @@ eq "$RL_RC" 18 "6 an unknown row kind refuses the whole record"
 
 # The result is recorded only against the pass still open: a record that moved underneath a pass
 # refuses its result rather than appending a second outcome.
-d="$(fixture)"; script "$d" race
+d="$(fixture)" || exit 1; script "$d" race
 rl "$d" pass .claude/state codex
 eq "$RL_RC" 20 "6 a record that changed underneath a pass refuses to record its result"
 eq "$(grep -c '^done' "$d/.claude/state/review-loop.tsv")" 0 "6 …and no done row is appended beside the other outcome"
 
 # An interrupted pass (reserved, never answered) is recorded as the failure it was.
-d="$(fixture)"; script "$d" req:1 req:0
+d="$(fixture)" || exit 1; script "$d" req:1 req:0
 rl "$d" pass .claude/state codex
 T1="$(awk -F'\t' '$1=="start"{t=$4} END{print t}' "$d/.claude/state/review-loop.tsv")"
 printf 'start\t2\t3\t%s\tcodex\n' "$T1" >> "$d/.claude/state/review-loop.tsv"
@@ -957,7 +959,7 @@ has "$(rec "$d")" "$(printf 'start\t3\t')" "6 …numbered after the interrupted 
 # `begin` reserves the pass and binds its tree BEFORE the subagent runs, and removes the previous
 # reply, so `pass --published` can only read one published for this pass.
 publish() { printf 'finding\n\nADB-REVIEW-VERDICT v1 required=%s optional=0\n' "$2" > "$1/.claude/state/review.md"; }
-d="$(fixture)"
+d="$(fixture)" || exit 1
 publish "$d" 0
 rl "$d" pass --published .claude/state claude
 eq "$RL_RC" 17 "7 --published with no begun pass is refused (17) — even over a reply on disk"
@@ -987,20 +989,20 @@ rl "$d" pass --published .claude/state claude
 eq "$RL_RC" 37 "7 a native pass whose reply was never published is a FAILED pass"
 has "$(rec "$d")" "$(printf 'fail\t3\t-\tmissing')" "7 …recorded as missing"
 
-d="$(fixture)"
+d="$(fixture)" || exit 1
 rl "$d" begin .claude/state claude
 commit_fix "$d" during
 publish "$d" 0
 rl "$d" pass --published .claude/state claude
 eq "$RL_RC" 36 "7 a commit made while the native subagent reviewed fails the pass — the tree was bound at begin"
 has "$(rec "$d")" "$(printf 'fail\t1\t-\tmoved')" "7 …recorded as moved"
-d="$(fixture)"
+d="$(fixture)" || exit 1
 rl "$d" begin .claude/state claude
 printf 'prose with no trailer\n' > "$d/.claude/state/review.md"
 rl "$d" pass --published .claude/state claude
 eq "$RL_RC" 36 "7 a published reply with no verdict is a FAILED pass"
 has "$(rec "$d")" "$(printf 'fail\t1\t19\tverdict')" "7 …recorded as a verdict failure, rc 19"
-d="$(fixture)"; script "$d" req:0
+d="$(fixture)" || exit 1; script "$d" req:0
 rl "$d" pass .claude/state codex
 printf 'previous reply\n' > "$d/.claude/state/review.md"
 chmod 444 "$d/.claude/state/review-loop.tsv"
@@ -1008,14 +1010,14 @@ rl "$d" begin .claude/state claude
 chmod 644 "$d/.claude/state/review-loop.tsv"
 eq "$RL_RC" 20 "7 a begin whose reservation cannot be written fails (20)"
 eq "$(cat "$d/.claude/state/review.md" 2>/dev/null)" "previous reply" "7 …and puts the previous reply back rather than losing it"
-d="$(fixture)"; script "$d" req:0
+d="$(fixture)" || exit 1; script "$d" req:0
 rl "$d" begin .claude/state claude
 rl "$d" pass .claude/state codex
 has "$(rec "$d")" "$(printf 'fail\t1\t-\tinterrupted')" "7 a dispatched pass over an unfinished native one records it interrupted"
 
 # =============================== 8. the budget reader ===========================================
 bud() { ( cd "$1" && env HOME="$FHOME" ${2:+ADB_LOCAL_REVIEW_PASSES="$2"} bash "$RD" local-passes --with-source 2>&1 ); }
-d="$(fixture)"
+d="$(fixture)" || exit 1
 BO="$(bud "$d")"; eq "$?" 3 "8 unset: rc 3, the caller's built-in applies"
 set_lp() { printf '[reviewers]\nlocal_passes = %s\n' "$2" > "$1/agents.toml"; }
 set_lp "$d" 0;       BO="$(bud "$d")"; eq "$?/$BO" "0/0 repo" "8 exact 0 is the disabled sentinel"
@@ -1078,7 +1080,7 @@ cat > "$CB/git" <<SH
 exec "$(command -v git)" "\$@"
 SH
 chmod +x "$CB/gh" "$CB/git"
-d="$(fixture)"; git -C "$d" remote add origin https://github.com/o/r.git
+d="$(fixture)" || exit 1; git -C "$d" remote add origin https://github.com/o/r.git
 PH="$(git -C "$d" rev-parse HEAD)"
 commit_fix "$d" unpushed
 script "$d" req:0
@@ -1102,7 +1104,7 @@ eq "$?" 2 "9 --local-head without --criteria-from-pr is a usage error"
 
 # =============================== 10. registration ==============================================
 # The containment rule: a state-dir family must be named by state-scan, _il_clear and run-state.
-d="$(fixture)"; S="$d/.claude/state"
+d="$(fixture)" || exit 1; S="$d/.claude/state"
 printf 'x\n' > "$S/review-loop.tsv"; printf 'x\n' > "$S/review-loop-pr7-$(printf 'a%.0s' {1..12}).tsv"
 # The widest name the writer can produce — an 11-digit PR — must still fit run-state's name bound.
 printf 'x\n' > "$S/review-loop-pr12345678901-$(printf 'b%.0s' {1..12}).tsv"
@@ -1130,28 +1132,28 @@ printf 'body\n' > "$work/op-body.md"
 opr() { local dd="$1"; shift
   RL_OUT="$( cd "$dd" && env HOME="$FHOME" PATH="$OB:$SB:$PATH" RL_SCRIPT="$dd.script" RL_COUNT="$dd.count" \
       ${RL_ENV:-} bash "$IL" open-pr .claude/state --title t --body-file "$work/op-body.md" 2>&1 )"; RL_RC=$?; }
-opfix() { local dd; dd="$(fixture)"
+opfix() { local dd; dd="$(fixture)" || return 1
   jq -n '{branch:"issue-7-x", issue:"7", phase:"triaged", startedAt:"2026-09-28T00:00:00Z"}' > "$dd/.claude/state/implement-issue-active.json"
   printf '%s\n' "$dd"; }
-d="$(opfix)"
+d="$(opfix)" || exit 1
 opr "$d"
 eq "$RL_RC" 39 "12 open-pr refuses (39) when no loop is recorded"
-d="$(opfix)"; script "$d" req:0
+d="$(opfix)" || exit 1; script "$d" req:0
 rl "$d" pass .claude/state codex
 opr "$d"
 eq "$RL_RC" 24 "12 a converged loop lets open-pr through to its push"
 commit_fix "$d" after-report
 opr "$d"
 eq "$RL_RC" 39 "12 open-pr refuses (39) a commit made after the converged pass"
-d="$(opfix)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
+d="$(opfix)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=0"
 opr "$d"
 eq "$RL_RC" 24 "12 a disabled loop with nothing recorded does not hold the push"
-d="$(opfix)"; script "$d" req:1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
+d="$(opfix)" || exit 1; script "$d" req:1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 opr "$d"
 eq "$RL_RC" 24 "12 an exhaustion with a carried LOW lets open-pr through to its push"
-d="$(opfix)"; script "$d" req:1
+d="$(opfix)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" carry --severity high --site f.sh:1 --finding bug .claude/state
 opr "$d"
@@ -1159,7 +1161,7 @@ eq "$RL_RC" 39 "12 an exhaustion with a carried HIGH is refused at the push (39)
 RL_ENV=""
 # The tip must not move across the verdict read: a `git` shim advances the branch when open-pr asks
 # for the loop's report, so the report certifies the old tip and the push would send the new one.
-d="$(opfix)"; script "$d" req:0
+d="$(opfix)" || exit 1; script "$d" req:0
 rl "$d" pass .claude/state codex
 RB="$work/reportbin"; mkdir -p "$RB"
 # The shebang names the REAL interpreter: this shim is itself named `bash`, so `env bash` would
@@ -1186,7 +1188,7 @@ eq "$RL_RC" 39 "12 open-pr refuses (39) when the tip moved across the verdict re
 # =============================== 13. until-clean (#618) =========================================
 # No budget: no pass is refused as spent and none is the last, so the spent-budget codes (33, 37, 38)
 # are unreachable — observed over more passes than the old ceiling of 10 allowed.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=until-clean"
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=until-clean"
 script "$d" req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 req:1 127 req:0
 odd=""
 for i in 1 2 3 4 5 6 7 8 9 10 11; do
@@ -1214,7 +1216,7 @@ has "$RL_OUT" "local review: 13 passes · " "13 …with the total leading the li
 eq "$(count "$d")" 13 "13 thirteen dispatches, none refused"
 
 # A reviewer lost after a pass cannot exhaust a loop that has no last pass: it BLOCKS.
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" pass --unavailable none .claude/state
 rl "$d" report .claude/state
@@ -1223,7 +1225,7 @@ has "$RL_OUT" "until-clean ends only on a clean or settled pass" "13 …and says
 rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 eq "$RL_RC" 17 "13 carry under until-clean is refused (17) even after the reviewer is lost"
 # The budget is read live: a finite one set after until-clean took more passes than it allows is spent.
-d="$(fixture)"; script "$d" req:1 req:1 req:1 req:1 req:1
+d="$(fixture)" || exit 1; script "$d" req:1 req:1 req:1 req:1 req:1
 for i in 1 2 3 4; do rl "$d" pass .claude/state codex; [ "$i" = 4 ] || commit_fix "$d" "s$i"; done
 RL_ENV="ADB_LOCAL_REVIEW_PASSES=3"
 rl "$d" pass .claude/state codex
@@ -1232,7 +1234,7 @@ rl "$d" report .claude/state
 eq "$RL_RC" 39 "13 …and the record until-clean wrote still reads under it (39, not 18)"
 # What bounds a loop with no budget is the record's own bound: a pass that could not be recorded
 # is refused before anything is dispatched, and the record still reads.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=until-clean"; script "$d" req:9999 req:0
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=until-clean"; script "$d" req:9999 req:0
 rl "$d" pass .claude/state codex
 R="$d/.claude/state/review-loop.tsv"
 # Filled to within 30 bytes of the bound with deferred findings (a row is 15 bytes plus its text,
@@ -1252,7 +1254,7 @@ rl "$d" carry --severity low --site f.sh:1 --finding nit .claude/state
 eq "$RL_RC" 17 "13 …and the full record still reads (17, not 18)"
 # Room for the reservation alone is not room for the pass: 200 bytes free take a `start` row and
 # leave less than its result needs, so a pass dispatched there could never be recorded.
-d="$(fixture)"; script "$d" req:9999 req:0
+d="$(fixture)" || exit 1; script "$d" req:9999 req:0
 rl "$d" pass .claude/state codex
 R="$d/.claude/state/review-loop.tsv"
 awk -v pad="$pad" -v cur="$(wc -c < "$R" | tr -d ' ')" 'BEGIN {
@@ -1268,7 +1270,7 @@ eq "$RL_RC" 20 "13 a record with room for a reservation but not for its result r
 eq "$(count "$d")" 1 "13 a pass whose result would not fit is refused before it is dispatched"
 eq "$(grep -c '^start' "$R")" 1 "13 …and no second start row is written"
 RL_ENV=""
-d="$(fixture)"; printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$d/agents.toml"
+d="$(fixture)" || exit 1; printf '[reviewers]\nlocal_passes = "until-clean"\n' > "$d/agents.toml"
 git -C "$d" add agents.toml; git -C "$d" commit -qm manifest >/dev/null 2>&1
 script "$d" req:0
 rl "$d" pass .claude/state codex
@@ -1276,7 +1278,7 @@ has "$RL_OUT" "pass 1/until-clean" "13 the manifest spelling reaches the loop"
 
 # =============================== 14. decline and defer (#618) ===================================
 # #618 acceptance: a pass whose only REQUIRED finding is deferred with an issue lets the round push.
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" defer --issue 12 --site f.sh:1 --finding 'reads return empty on a database error' .claude/state
 eq "$RL_RC" 0 "14 defer records a finding against the issue filed for it"
@@ -1298,12 +1300,12 @@ commit_fix "$d" late
 rl "$d" report .claude/state
 eq "$RL_RC" 34 "14 a commit after a settled pass un-settles it — the tree it certified is gone"
 # …through open-pr's own gate, and through a resolver round's record.
-d="$(opfix)"; script "$d" req:1
+d="$(opfix)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 rl "$d" defer --issue 12 --site f.sh:1 --finding 'pre-existing' .claude/state
 opr "$d"
 eq "$RL_RC" 24 "14 a settled loop lets open-pr through to its push"
-d="$(fixture)"; git -C "$d" remote add origin https://github.com/o/r.git
+d="$(fixture)" || exit 1; git -C "$d" remote add origin https://github.com/o/r.git
 PH="$(git -C "$d" rev-parse HEAD)"; commit_fix "$d" unpushed; script "$d" req:1
 prl "$d" review-loop pass --pr 7 --head "$PH" .claude/state codex
 prl "$d" review-loop defer --pr 7 --head "$PH" --issue 12 --site f.sh:1 --finding 'pre-existing' .claude/state
@@ -1312,7 +1314,7 @@ eq "$RL_RC" 0 "14 a resolver round whose only REQUIRED finding is deferred repor
 
 # Two findings, one declined: not settled. The other fixed, the next pass's own deferred: settled,
 # and the line says how each ended.
-d="$(fixture)"; script "$d" req:2 req:1
+d="$(fixture)" || exit 1; script "$d" req:2 req:1
 rl "$d" pass .claude/state codex
 rl "$d" decline --reason 'a helper would live better elsewhere: a shape' --site f.sh:1 --finding 'move the helper' .claude/state
 eq "$RL_RC" 0 "14 decline records a finding with its reason"
@@ -1334,7 +1336,7 @@ has "$RL_OUT" 'declined: 1 (pass 1 `f.sh:1`: `move the helper` — `a helper wou
 has "$RL_OUT" 'deferred: 1 (pass 2 #40 `lib/a file.sh:9` (occurrence 2): ' "14 …and the deferred one, with its issue and occurrence"
 has "$RL_OUT" " — fixed: 1 · declined: 1 " "14 fixed excludes what was declined or deferred: two REQUIRED, one declined, one fixed"
 # FIXED is derived from a later pass over a DIFFERENT tree.
-d="$(fixture)"; script "$d" req:1 req:0
+d="$(fixture)" || exit 1; script "$d" req:1 req:0
 rl "$d" pass .claude/state codex
 rl "$d" pass .claude/state codex
 rl "$d" report .claude/state
@@ -1342,7 +1344,7 @@ eq "$RL_RC" 0 "14 a second pass over the unchanged tree may converge"
 hasnt "$RL_OUT" "fixed:" "14 a pass retaken on the same tree fixes nothing"
 has "$RL_OUT" " — superseded: 1" "14 …and its finding is still accounted for: superseded, since the same tree was read again"
 # ANY later pass over a changed tree, not only the next one: trees A, A, B.
-d="$(fixture)"; script "$d" req:1 req:1 req:0
+d="$(fixture)" || exit 1; script "$d" req:1 req:1 req:0
 rl "$d" pass .claude/state codex
 rl "$d" pass .claude/state codex
 commit_fix "$d" fixed
@@ -1351,7 +1353,7 @@ rl "$d" report .claude/state
 has "$RL_OUT" "pass 3 -> 0, converged — fixed: 2" "14 fixed counts a pass when ANY later pass read a changed tree, not only the next one"
 
 # Refused fields, and the passes a disposition cannot be taken against.
-d="$(fixture)"; script "$d" req:2
+d="$(fixture)" || exit 1; script "$d" req:2
 rl "$d" defer --issue 12 --site f.sh:1 --finding x .claude/state
 eq "$RL_RC" 17 "14 defer with nothing recorded is refused (17)"
 rl "$d" pass .claude/state codex
@@ -1367,7 +1369,7 @@ chmod 444 "$d/.claude/state/review-loop.tsv"
 rl "$d" defer --issue 12 --site f.sh:1 --finding x .claude/state
 chmod 644 "$d/.claude/state/review-loop.tsv"
 eq "$RL_RC" 20 "14 a defer that cannot be written fails (20), never reported as recorded"
-d="$(fixture)"; script "$d" 127
+d="$(fixture)" || exit 1; script "$d" 127
 rl "$d" pass .claude/state codex
 rl "$d" defer --issue 12 --site f.sh:1 --finding x .claude/state
 eq "$RL_RC" 17 "14 defer against a failed pass is refused (17)"
@@ -1375,7 +1377,7 @@ eq "$(grep -c '^defer' "$d/.claude/state/review-loop.tsv")" 0 "14 …and nothing
 
 # Exhaustion counts every disposition: a carried LOW beside a deferred finding pushes; a finding
 # cannot end two ways; a shortfall still blocks, and its line still names what was deferred.
-d="$(fixture)"; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:2
+d="$(fixture)" || exit 1; RL_ENV="ADB_LOCAL_REVIEW_PASSES=1"; script "$d" req:2
 rl "$d" pass .claude/state codex
 rl "$d" defer --issue 5 --site f.sh:1 --finding 'old bug' .claude/state
 rl "$d" carry --severity low --site f.sh:1 --finding 'old bug' .claude/state
@@ -1384,7 +1386,7 @@ rl "$d" carry --severity low --site f.sh:2 --finding 'a nit' .claude/state
 rl "$d" report .claude/state
 eq "$RL_RC" 33 "14 an exhaustion with one finding carried LOW and the other deferred pushes (33)"
 has "$RL_OUT" ' — deferred: 1 (pass 1 #5 `f.sh:1`: `old bug`) · carried: 1 (pass 1 low `f.sh:2`: `a nit`)' "14 …naming both"
-d="$(fixture)"; script "$d" req:3
+d="$(fixture)" || exit 1; script "$d" req:3
 rl "$d" pass .claude/state codex
 rl "$d" defer --issue 5 --site f.sh:1 --finding 'old bug' .claude/state
 rl "$d" carry --severity low --site f.sh:2 --finding 'a nit' .claude/state
@@ -1395,28 +1397,28 @@ has "$RL_OUT" "deferred: 1 (pass 1 #5 " "14 a BLOCKED line still names what was 
 RL_ENV=""
 
 # The reader enforces what the writers promise: these rows are ones no writer can emit.
-d="$(fixture)"; script "$d" req:2 req:1
+d="$(fixture)" || exit 1; script "$d" req:2 req:1
 rl "$d" pass .claude/state codex; commit_fix "$d" a
 rl "$d" pass .claude/state codex
 printf 'defer\t1\t12\tf.sh:1\t1\told\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "14 a defer row against an earlier pass refuses the record"
-d="$(fixture)"; script "$d" req:2
+d="$(fixture)" || exit 1; script "$d" req:2
 rl "$d" pass .claude/state codex
 printf 'defer\t1\t12\tf.sh:1\t1\tx\ndecline\t1\tf.sh:1\t1\tx\tbecause\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "14 a finding both deferred and declined refuses the record"
-d="$(fixture)"; script "$d" req:2
+d="$(fixture)" || exit 1; script "$d" req:2
 rl "$d" pass .claude/state codex
 printf 'defer\t1\t12\tf.sh:1\t1\tx\ncarry\t1\tlow\tf.sh:1\t1\tx\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "14 a finding deferred and then carried refuses the record"
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'defer\t1\t12\tf.sh:1\t1\tx\ndefer\t1\t12\tf.sh:2\t1\ty\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
 eq "$RL_RC" 18 "14 more dispositions than the pass declared REQUIRED refuses the record"
-d="$(fixture)"; script "$d" req:1
+d="$(fixture)" || exit 1; script "$d" req:1
 rl "$d" pass .claude/state codex
 printf 'defer\t1\tabc\tf.sh:1\t1\tx\n' >> "$d/.claude/state/review-loop.tsv"
 rl "$d" report .claude/state
@@ -1424,7 +1426,7 @@ eq "$RL_RC" 18 "14 a defer row whose issue is not a number refuses the record"
 
 # =============================== 15. the whole-run summary (#618) ===============================
 # One record per /implement-issue run and per resolver round; `summary` reads the run whole.
-d="$(fixture)"; git -C "$d" remote add origin https://github.com/o/r.git
+d="$(fixture)" || exit 1; git -C "$d" remote add origin https://github.com/o/r.git
 S="$d/.claude/state"
 marker() { jq -n --arg u "$2" '{branch:"issue-7-x", issue:"7", phase:"pr_opened", startedAt:"2026-09-28T00:00:00Z", prUrl:$u}' > "$1/implement-issue-active.json"; }
 marker "$S" "https://github.com/o/r/pull/7"
@@ -1455,7 +1457,7 @@ prl "$d" review-loop summary --pr 7 .claude/state
 has "$RL_OUT" "2 pass(es) in 2 record(s)" "15 summary --pr leaves out a run record whose marker names another PR"
 has "$RL_OUT" "/implement-issue: not counted" "15 …and says it left it out"
 # A record with no pass in it is still a record: its line says why, and the counts stay empty.
-e="$(fixture)"
+e="$(fixture)" || exit 1
 ( cd "$e" && env HOME="$FHOME" bash "$IL" review-loop pass --unavailable none .claude/state ) >/dev/null 2>&1
 RL_OUT="$( cd "$e" && env HOME="$FHOME" bash "$IL" review-loop summary .claude/state 2>&1 )"; RL_RC=$?
 eq "$RL_RC" 0 "15 summary reads a record that holds no pass"
@@ -1561,7 +1563,7 @@ printf 'bogus\tx\n' >> "$S/review-loop-pr7-${H2:0:12}.tsv"
 prl "$d" review-loop summary --pr 7 .claude/state
 eq "$RL_RC" 18 "15 summary refuses (18) when a round record does not parse — never a partial run"
 # Every REQUIRED finding has an outcome: 3 on tree A (one declined), 2 on A again, then 1 on B, open.
-e="$(fixture)"; script "$e" req:3 req:2 req:1
+e="$(fixture)" || exit 1; script "$e" req:3 req:2 req:1
 rl "$e" pass .claude/state codex
 rl "$e" decline --reason 'a shape' --site f.sh:1 --finding 'x' .claude/state
 rl "$e" pass .claude/state codex
@@ -1570,14 +1572,14 @@ rl "$e" pass .claude/state codex
 rl "$e" summary .claude/state
 has "$RL_OUT" "REQUIRED per pass: 3, 2, 1 — fixed: 4 · superseded: 0 · declined: 1 · deferred: 0 · carried: 0 · open: 1" \
    "15 the outcomes add up to the REQUIRED total: 3 + 2 + 1 = 4 fixed + 1 declined + 1 open"
-e="$(fixture)"; script "$e" req:2 req:0
+e="$(fixture)" || exit 1; script "$e" req:2 req:0
 rl "$e" pass .claude/state codex
 rl "$e" pass .claude/state codex
 rl "$e" summary .claude/state
 has "$RL_OUT" "REQUIRED per pass: 2, 0 — fixed: 0 · superseded: 2 · " "15 a finding a later pass on the same tree no longer raised is superseded, never dropped from the totals"
 
 # =============================== 16. the reviewer brief (#618) ==================================
-d="$(fixture)"; script "$d" req:0
+d="$(fixture)" || exit 1; script "$d" req:0
 rl "$d" pass .claude/state codex
 RP="$(cat "$d/.claude/state/review-prompt.txt")"
 has "$RP" "a defect this diff INTRODUCES, or one it makes REACHABLE" "16 the brief scopes REQUIRED to what the diff introduced or made reachable"

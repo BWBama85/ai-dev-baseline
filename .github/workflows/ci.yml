@@ -334,6 +334,11 @@ jobs:
       - name: Run data lands on a per-checkout path, never a fixed shared-temp one (#250)
         run: bash scripts/check-tmp-paths.sh
 
+      # A lint over the check suites themselves, riding this job for the branch-protection reason
+      # the steps above give.
+      - name: No check suite pipes into grep -q under pipefail, captures $(pwd), or leaves mktemp -d unchecked (#458)
+        run: bash scripts/check-suite-hygiene.sh
+
       # Fifth species, riding this job for the SAME branch-protection reason the three above give.
       # It also belongs here on subject: it is the second thing `build.sh` now does per agent,
       # beside the placeholder MAP the first step covers.

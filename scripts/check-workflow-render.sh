@@ -40,7 +40,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 # `shmutant_mutate`, the inline mutations' literal rewrite: the vendored shmutant (#519), sourced
@@ -48,7 +48,7 @@ ROOT="$(pwd)"
 # shellcheck source=/dev/null
 . scripts/shmutant.sh
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d)" || { echo "check-workflow-render: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 
 # render_fixture <dst> <name> <src> — build a throwaway repo skeleton mirroring what build.sh

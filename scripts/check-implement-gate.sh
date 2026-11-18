@@ -37,14 +37,14 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 GATE="$ROOT/agents/claude/scripts/implement-issue-gate.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "check-implement-gate: jq required" >&2; exit 1; }
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/has + check_summary + check_git
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-implement-gate: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 # --- gh shim -----------------------------------------------------------------

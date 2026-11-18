@@ -95,7 +95,7 @@ set -u
 # invoking shell.
 set +f
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 

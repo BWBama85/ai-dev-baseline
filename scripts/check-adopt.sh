@@ -69,7 +69,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 AD="$ROOT/scripts/lib/adopt-lib.sh"
 # Codex's user skill root follows CODEX_HOME; every fixture HOME must decide it, never the caller's.
 unset CODEX_HOME

@@ -45,7 +45,7 @@ AGENT_INIT="$REPO/bin/agent-init"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-agent-init: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 FAKEHOME="$work/home"; mkdir -p "$FAKEHOME"
 
