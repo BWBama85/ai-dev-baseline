@@ -528,10 +528,31 @@ cat > "$work/shm-driver.sh" <<'EOF'
 [ -n "${ADB_T_NO_SHMUTANT:-}" ] || . "$ADB_T_SHMUTANT"
 [ -z "${ADB_T_CWD:-}" ] || cd "$ADB_T_CWD" || exit 3
 # ADB_T_PREP_CD: a prepare that changes directory, which shmutant permits.
-prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/" || return 1; [ -z "${ADB_T_PREP_CD:-}" ] || cd /; }
+# ADB_T_PREP_SLEEP / _FAIL / _STATE / _ROOT: a prepare that hangs, fails, sets a variable its run
+# needs, or prints a root — what a control must bound, report, carry over and check (#631).
+prep() {
+  printf 'copy\n' >> "$ADB_T_PREP_LOG"
+  [ -z "${ADB_T_PREP_SLEEP:-}" ] || sleep "$ADB_T_PREP_SLEEP"
+  [ -z "${ADB_T_PREP_FAIL:-}" ] || return 1
+  cp -R "$ADB_T_FIX/." "$1/" || return 1
+  [ -z "${ADB_T_PREP_STATE:-}" ] || PREP_STATE=ready
+  [ -z "${ADB_T_PREP_ROOT:-}" ] || printf '%s' "$ADB_T_PREP_ROOT"
+  [ -z "${ADB_T_PREP_CD:-}" ] || cd /
+}
 # "$BASH", never a bare `bash`: on macOS a PATH without Homebrew first resolves /bin/bash 3.2, which
 # shmutant refuses to load and the fixture suite was never written for.
-run() { ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
+run() {
+  if [ -n "${ADB_T_PREP_STATE:-}" ] && [ "${PREP_STATE:-}" != ready ]; then
+    printf 'FAIL: the state prepare set did not reach run\n'; return 1
+  fi
+  ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"
+}
+# ADB_T_RUN_EXE: the run callback as a RELATIVE executable, written where the driver starts.
+run_cb=run
+if [ -n "${ADB_T_RUN_EXE:-}" ]; then
+  printf '#!/bin/sh\nexec "%s" "$1/suite.sh"\n' "$BASH" > "$ADB_T_RUN_EXE" && chmod +x "$ADB_T_RUN_EXE" || exit 3
+  run_cb="$ADB_T_RUN_EXE"
+fi
 [ -z "${ADB_T_ERREXIT:-}" ] || set -e
 if [ -n "${ADB_T_STUB:-}" ]; then
   # A stand-in for shmutant_pool: it records what it was handed, then writes the stream ADB_T_STUB
@@ -574,6 +595,7 @@ if [ -n "${ADB_T_STUB:-}" ]; then
       unterminated) printf '%s\n%s' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 0 ;;
       rc2)          return 2 ;;
       rc7)          printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 7 ;;
+      rc3)          printf '%s\n%s\n' "$(printf "$r" killed)" "$(printf "$s" 1)" >> "$SHMUTANT_STREAM"; return 3 ;;
     esac
   }
 fi
@@ -582,9 +604,9 @@ eval "${ADB_T_ROWS:-}"
 # ADB_T_SUITE: the sixth argument — the selectors are blocks of that suite, read under ROOT.
 ROOT="$ADB_T_FIX"
 if [ -n "${ADB_T_SUITE:-}" ]; then
-  check_shmutant_pool "fixture" "$ADB_T_WD" prep run 4 "$ADB_T_SUITE"
+  check_shmutant_pool "fixture" "$ADB_T_WD" prep "$run_cb" 4 "$ADB_T_SUITE"
 else
-  check_shmutant_pool "fixture" "$ADB_T_WD" prep run 4
+  check_shmutant_pool "fixture" "$ADB_T_WD" prep "$run_cb" 4
 fi
 printf 'adapter-rc=%s\n' "$?"
 [ -n "${ADB_T_NO_SHMUTANT:-}" ] || printf 'table-after=%s\n' "${#SHMUTANT_ROWS_NAME[@]}"
@@ -698,6 +720,7 @@ for _c in garbage:"is not in shmutant's v1 grammar" short-field:"is not in shmut
           rc0-survived:"returned 0 while 1 row(s) were not killed" no-row:"carries 0 row verdict(s) for a table of 1" \
           no-summary:"summary record is missing" bad-summary:"summary record is missing, repeated, or names another pool, other than its 1 row(s)" \
           no-stream:"carries 0 row verdict(s) for a table of 1" rc2:"HARNESS ERROR (status 2)" rc7:"returned 7, which is not one of its statuses" \
+          rc3:"returned 3, which is not one of its statuses" \
           wrong-name:"which is not the table's row 0 ('caught')" wrong-target:"which is not the table's row 0 ('caught')" \
           wrong-select:"which is not the table's row 0 ('caught')" bad-seconds:"is not in shmutant's v1 grammar" \
           bad-verdict:"is not in shmutant's v1 grammar" bad-escape:"is not in shmutant's v1 grammar" \
@@ -942,11 +965,69 @@ shm ctl-hang "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-hang" ADB_MU
 within "shmutant blocks: a hung full control" "$_t0"
 has "$out" "the UNMUTATED suite did not finish within 3s" "shmutant blocks: a hung full control is named"
 no_survivor "shmutant blocks: a hung full control"
-# A controls directory left by an earlier run is refused: its counts and verdicts are read by name.
+# A controls directory that already exists is refused, an empty one too: it is RESERVED by creating
+# it, so two runs cannot share the counts and verdicts read back from it by name.
 mkdir -p "$work/shm-ctl-stale/pool.ctl"; printf 'ok\n' > "$work/shm-ctl-stale/pool.ctl/ctl-base.verdict"
 shm ctl-stale "$shm_three" ADB_T_SUITE=suite.sh
-eq "$rc" 1 "shmutant blocks: a controls workdir that is not empty fails the suite"
-has "$out" "is not empty — a previous run's counts or verdicts would be read" "shmutant blocks: …saying why"
+eq "$rc" 1 "shmutant blocks: a controls workdir left by an earlier run fails the suite"
+has "$out" "already exists or could not be created — a previous run's counts or verdicts would be read" "shmutant blocks: …saying why"
+mkdir -p "$work/shm-ctl-taken/pool.ctl"
+shm ctl-taken "$shm_three" ADB_T_SUITE=suite.sh
+eq "$rc" 1 "shmutant blocks: a controls workdir that exists, even empty, is not this run's to use"
+eq "$(copies ctl-taken)" 0 "shmutant blocks: …and nothing is built in it"
+# THE STATUS OF A FAILED CONTROL IS ITS OWN: a pool that returns 3 in block mode is an unknown status
+# like any other, never read as "a control failed" (which records no failure of its own).
+shm stub-rc3-blk "shmutant_mut caught '0 - \$1' '0 + \$1' 'neg-value' uses-helper" ADB_T_STUB=rc3 ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh
+eq "$rc" 1 "shmutant blocks: a pool status of 3 fails the suite"
+has "$out" "returned 3, which is not one of its statuses" "shmutant blocks: …as an unknown pool status"
+lacks "$out" "NO row was run" "shmutant blocks: …and is not reported as a failed control"
+# A CONTROL IS ONE SHELL: what the caller's prepare sets is there for its run, as it is in the pool.
+shm ctl-state "$shm_three" ADB_T_SUITE=suite.sh ADB_T_PREP_STATE=1
+eq "$rc" 0 "shmutant blocks: a variable prepare sets reaches run in every control"
+has "$out" "3/3 mutation(s) killed" "shmutant blocks: …and in every row"
+# A RELATIVE executable callback survives a prepare that changes directory, in the controls and the pool.
+shm ctl-exe "$shm_three" ADB_T_SUITE=suite.sh ADB_T_CWD="$work/shm-ctl-exe" ADB_T_RUN_EXE=./runexe.sh ADB_T_PREP_CD=1
+eq "$rc" 0 "shmutant blocks: a relative executable run callback is resolved before any prepare changes directory"
+has "$out" "3/3 mutation(s) killed" "shmutant blocks: …so every row still runs it"
+# THE ROW DEADLINE COVERS A CONTROL'S PREPARE: a copy that hangs is named, not waited on.
+_t0=$SECONDS
+shm ctl-prep-hang "$shm_three" ADB_T_SUITE=suite.sh ADB_T_PREP_SLEEP="${HANG}0" ADB_MUTATION_ROW_TIMEOUT_SECS=3
+within "shmutant blocks: a control whose prepare hangs" "$_t0"
+eq "$rc" 1 "shmutant blocks: a control whose prepare hangs fails the suite"
+has "$out" "the UNMUTATED suite did not finish within 3s" "shmutant blocks: …named by the bound it ran under"
+no_survivor "shmutant blocks: a control whose prepare hangs"
+shm ctl-prep-fail "$shm_three" ADB_T_SUITE=suite.sh ADB_T_PREP_FAIL=1
+eq "$rc" 1 "shmutant blocks: a control whose prepare fails fails the suite"
+has "$out" "    | FAIL: control: prepare could not build the tree" "shmutant blocks: …saying the tree could not be built"
+shm ctl-prep-root "$shm_three" ADB_T_SUITE=suite.sh ADB_T_PREP_ROOT=/
+eq "$rc" 1 "shmutant blocks: a prepare that prints a root outside its directory fails the control"
+has "$out" "    | FAIL: control: prepare printed a root outside its directory: /" "shmutant blocks: …saying so"
+# A TREE THAT WILL NOT GO IS A FAILURE: the disk bound holds only while every control's tree is removed.
+# (Root unlinks through mode 555.)
+if [ "$(id -u)" -ne 0 ]; then
+  variant_after shm-lock 'if check_block base; then' '  mkdir -p locked && : > locked/f && chmod 555 locked'
+  shm ctl-rm "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-lock"
+  eq "$rc" 1 "shmutant blocks: a full control whose tree cannot be removed fails the suite"
+  has "$out" "the full control's tree $work/shm-ctl-rm/pool.ctl/control could not be removed" "shmutant blocks: …naming the tree"
+  variant_after shm-lock-sel 'if check_block base; then' '  [ -z "${ADB_CHECK_BLOCK:-}" ] || { mkdir -p locked && : > locked/f && chmod 555 locked; }'
+  shm ctl-rm-sel "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-lock-sel"
+  eq "$rc" 1 "shmutant blocks: a selection whose tree cannot be removed fails the suite"
+  has "$out" "control failed for block base: its tree copy $work/shm-ctl-rm-sel/pool.ctl/ctl-base could not be removed" "shmutant blocks: …on that selection's verdict"
+  chmod -R u+w "$work/shm-ctl-rm" "$work/shm-ctl-rm-sel" 2>/dev/null
+fi
+# A COUNT RECORD IS READ WHOLE OR NOT AT ALL. Each line below is appended by a SELECTED run only, and
+# none of them moves the sum over the selected blocks: a count awk reads as a number, a line cut
+# short, and a second record for a block the selection only depends on.
+for _c in "field|printf 'x\t1junk\n'" "cut|printf 'x\t1'" "twice|printf 'base\t1\n'"; do
+  _m="${_c%%|*}"
+  variant_after "counts-$_m" 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || ${_c#*|} >> \"\$ADB_CHECK_BLOCK_COUNTS\""
+  shm "counts-$_m" "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/counts-$_m"
+  eq "$rc" 1 "shmutant blocks: a count record with a bad line ($_m) fails the suite"
+  has "$out" "control failed for block mult: a block-count record is not whole" "shmutant blocks: …named as a record that cannot be compared ($_m)"
+  ADB_T_FIX="$work/counts-$_m" rows "counts-$_m" "check_row mul lib.sh mult '\$1 * \$2' '\$1 + \$2' 'mul-product'"
+  eq "$rc" 1 "a count record with a bad line ($_m) fails the per-block rows too"
+  has "$out" "control failed for block mult: a block-count record is not whole" "…named the same way ($_m)"
+done
 # A failed control's evidence is kept where CI uploads it, and the log says where.
 shm ctl-art "$shm_three" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-nodep" ADB_MUTATION_ARTIFACTS="$work/artifacts-ctl"
 _art="$(find "$work/artifacts-ctl" -mindepth 1 -maxdepth 1 -type d -name 'fixture.*' 2>/dev/null | head -1)"

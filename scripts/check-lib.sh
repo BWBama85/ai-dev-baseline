@@ -529,12 +529,14 @@ check_register_pool() {
 #     (`_check_block_ctl`). A selection that fails stops the pool: every failure is named, no row runs.
 # ADB_MUTATION_FULL_SUITE=1 (the nightly's mode) runs every mutant against the whole suite and skips
 # the per-selection controls; the declarations and the full control are still required. The controls
-# work in `<workdir>.ctl`, beside the pool's workdir, and prepare one tree for each.
+# work in `<workdir>.ctl`, beside the pool's workdir, which this call creates and must not find
+# there. Each control calls <prepare-fn> for a tree of its own and then <run-fn>, in one shell under
+# the row deadline, and removes that tree once it has a verdict; a tree that will not go is a failure.
 check_shmutant_pool() {
   local label="$1" wd="$2" prep="$3" run="$4" cap="$5" suite="${6:-}"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
   local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art="" arts i f0="$fail" whole=1 snap=""
-  local full=0 outside=0 nblocks=0 runfn="$4" mode="" total
+  local full=0 outside=0 nblocks=0 runfn="$4" mode="" total ctl_bad=0
   local -a verdicts=() names=() details=() t_name=() t_file=() t_sel=()
   local -a all_name=() all_file=() all_old=() all_new=() all_wit=() all_sel=()
   tab="$(printf '\t')"
@@ -612,18 +614,21 @@ check_shmutant_pool() {
   rc=0
   if [ -n "$suite" ]; then
     # BLOCK MODE's controls, on this run's rows; then the selection travels as ADB_CHECK_BLOCK.
-    CHECK_SHM_PREP="$prep"; CHECK_SHM_RUN="$run"; CHECK_SHM_FULL="$full"; runfn=_check_shm_row_run
-    _check_shm_controls "$label" "$wd.ctl" "$pool" "$full" || rc=3
+    # The callbacks are resolved NOW, before any prepare can change directory: shmutant does the same
+    # for the pair it is handed, and here it is handed a wrapper in <run-fn>'s place.
+    CHECK_SHM_PREP="$(_check_shm_callback "$prep")"; CHECK_SHM_RUN="$(_check_shm_callback "$run")"
+    CHECK_SHM_FULL="$full"; runfn=_check_shm_row_run
+    _check_shm_controls "$label" "$wd.ctl" "$pool" "$full" || ctl_bad=1
     nblocks="$CHECK_SHM_NBLOCKS"
     if [ "$full" -eq 1 ]; then mode="; full suite per mutant"; else mode="; per-block, $nblocks block(s) controlled"; fi
   fi
-  [ "$rc" -ne 0 ] || { shmutant_pool "$label" "$wd" "$prep" "$runfn" "$cap"; rc=$?; }
+  [ "$ctl_bad" -ne 0 ] || { shmutant_pool "$label" "$wd" "$prep" "$runfn" "$cap"; rc=$?; }
   if [ "$CHECK_SHARD_OF" -gt 0 ]; then
     SHMUTANT_ROWS_NAME=("${all_name[@]}"); SHMUTANT_ROWS_FILE=("${all_file[@]}"); SHMUTANT_ROWS_OLD=("${all_old[@]}")
     SHMUTANT_ROWS_NEW=("${all_new[@]}"); SHMUTANT_ROWS_WIT=("${all_wit[@]}"); SHMUTANT_ROWS_SEL=("${all_sel[@]}")
   fi
   [ "$errexit" -eq 0 ] || set -e
-  if [ "$rc" -eq 3 ]; then
+  if [ "$ctl_bad" -ne 0 ]; then
     # A CONTROL FAILED, and said why: no pool ran, so there is no stream to read and no row to score.
     [ -z "$art" ] || printf '%s --mutation: the evidence of this failure — every control'"'"'s output — is kept in %s\n' "$label" "$art"
     printf '\n%s --mutation: NO row was run — an unmutated control failed (shmutant; pool=%s requested; row deadline %ss)\n' \
@@ -792,17 +797,49 @@ _check_shm_decls() {
   [ "$errs" -eq 0 ] || { bad "$label --mutation: $errs row declaration(s) are invalid — nothing was built or run"; return 1; }
 }
 
-# _check_shm_prep <dir> — shmutant's `prepare` contract (populate <dir>; optionally print the tree
-# root) as `_check_block_ctl` calls a prepare: make <dir>, build the tree there, print its root.
-_check_shm_prep() {
-  local root
-  mkdir -p "$1" 2>/dev/null || return 1
-  root="$("$CHECK_SHM_PREP" "$1")" || return 1
-  printf '%s' "${root:-$1}"
+# _check_shm_callback <name> — a callback as it can be called from any directory: a function or a
+# builtin as named, a relative path made absolute, a bare command name resolved through PATH.
+_check_shm_callback() {
+  case "$(type -t "$1" 2>/dev/null)" in
+    function|builtin|keyword|alias) printf '%s' "$1"; return 0 ;;
+  esac
+  case "$1" in
+    /*)  printf '%s' "$1" ;;
+    */*) printf '%s/%s' "$PWD" "$1" ;;
+    *)   command -v "$1" 2>/dev/null || printf '%s' "$1" ;;
+  esac
 }
 
-# _check_shm_ctl_run <root> — a control: its caller put the selection in ADB_CHECK_BLOCK already.
-_check_shm_ctl_run() { "$CHECK_SHM_RUN" "$1" "${ADB_CHECK_BLOCK:-}"; }
+# _check_shm_ctl_dir <dir> — the `prepare` handed to `_check_block_ctl`: it only makes and names the
+# control's directory. The caller's own prepare runs inside the control (`_check_shm_ctl_run`).
+_check_shm_ctl_dir() { mkdir -p "$1" 2>/dev/null && printf '%s' "$1"; }
+
+# _check_shm_ctl_run <dir> — one control, start to finish, in the shell `_check_run_bounded` gives it:
+# the caller's prepare builds the tree in <dir>, then its run takes the selection the control's caller
+# put in ADB_CHECK_BLOCK. ONE shell for both, as shmutant's contract has it — what prepare sets (a
+# variable, a function, the directory) is there for run — and so the row deadline covers the prepare
+# too. A prepare that fails, or prints a root outside <dir>, is a red control that says so.
+_check_shm_ctl_run() {
+  local root
+  if ! "$CHECK_SHM_PREP" "$1" > "$1.root"; then
+    printf 'FAIL: control: prepare could not build the tree in %s\n' "$1"; return 1
+  fi
+  root="$(cat "$1.root" 2>/dev/null)"
+  [ -n "$root" ] || root="$1"
+  case "$root" in
+    "$1"|"$1"/*) ;;
+    *) printf 'FAIL: control: prepare printed a root outside its directory: %s\n' "$root"; return 1 ;;
+  esac
+  "$CHECK_SHM_RUN" "$root" "${ADB_CHECK_BLOCK:-}"
+}
+
+# _check_shm_ctl_rm <tree> — remove a control's tree, which is not evidence (its output, counts and
+# verdict are). Returns 1 when it is still there: the trees on disk at once are bounded by the pool's
+# width only while each one really goes.
+_check_shm_ctl_rm() {
+  rm -rf "$1" "$1.root" 2>/dev/null
+  [ ! -e "$1" ] && [ ! -L "$1" ]
+}
 
 # _check_shm_row_run <root> <select> — a mutant: shmutant passes the row's selector, which becomes
 # ADB_CHECK_BLOCK for the caller's run — or nothing at all in full-suite mode.
@@ -820,21 +857,19 @@ _check_shm_row_run() {
 # reproduce that count. Sets CHECK_SHM_NBLOCKS to the selections controlled. Returns 1, with every
 # failure named, when the pool must not run.
 _check_shm_controls() {
-  local label="$1" cd="$2" pool="$3" full="$4" root rc i b why blocks=" " running=0 failed=0
+  local label="$1" cd="$2" pool="$3" full="$4" rc i b key why blocks=" " running=0 failed=0
   CHECK_SHM_NBLOCKS=0
-  # FRESH: counts and verdicts are read back by name, so a previous run's files would be believed.
-  if [ -e "$cd" ] && [ -n "$(ls -A "$cd" 2>/dev/null)" ]; then
-    bad "$label --mutation: the controls' workdir '$cd' is not empty — a previous run's counts or verdicts would be read"; return 1
-  fi
-  if ! mkdir -p "$cd" 2>/dev/null; then
-    bad "$label --mutation: the controls' workdir '$cd' could not be created"; return 1
+  # RESERVED, not merely found empty: `mkdir` without -p succeeds for exactly one caller, so a second
+  # run on the same workdir cannot share this one's counts and verdicts, which are read back by name.
+  if ! mkdir "$cd" 2>/dev/null; then
+    bad "$label --mutation: the controls' workdir '$cd' already exists or could not be created — a previous run's counts or verdicts would be read"; return 1
   fi
   check_register_pool "$cd"
-  if ! root="$(_check_shm_prep "$cd/control")" || [ -z "$root" ]; then
-    bad "$label --mutation: the control tree copy could not be built"; return 1
+  if ! _check_shm_ctl_dir "$cd/control" >/dev/null; then
+    bad "$label --mutation: the control's directory $cd/control could not be created"; return 1
   fi
   : > "$cd/control.counts"
-  ADB_CHECK_BLOCK="" ADB_CHECK_BLOCK_COUNTS="$cd/control.counts" _check_run_bounded "$cd/control.out" _check_shm_ctl_run "$root"; rc=$?
+  ADB_CHECK_BLOCK="" ADB_CHECK_BLOCK_COUNTS="$cd/control.counts" _check_run_bounded "$cd/control.out" _check_shm_ctl_run "$cd/control"; rc=$?
   if [ "$CHECK_RUN_HUNG" -eq 1 ]; then
     bad "$label --mutation: the UNMUTATED suite did not finish within ${CHECK_ROW_SECS}s (the row deadline, ADB_MUTATION_ROW_TIMEOUT_SECS) — no row can be scored"; return 1
   fi
@@ -843,29 +878,33 @@ _check_shm_controls() {
     grep '^FAIL: ' "$cd/control.out" 2>/dev/null | head -10 | sed 's/^/    | /' >&2
     return 1
   fi
-  # A control's TREE is not evidence — its output, counts and verdict are — so it goes once read.
-  rm -rf "$cd/control" 2>/dev/null
+  if ! _check_shm_ctl_rm "$cd/control"; then
+    bad "$label --mutation: the full control's tree $cd/control could not be removed"; return 1
+  fi
   [ "$full" -eq 0 ] || return 0
   # shellcheck disable=SC2154  # SHMUTANT_ROWS_SEL is shmutant's table, declared by the caller's source
   for (( i = 0; i < ${#SHMUTANT_ROWS_SEL[@]}; i++ )); do
-    b="${SHMUTANT_ROWS_SEL[$i]}"
+    b="${SHMUTANT_ROWS_SEL[$i]}"; key="${b//,/+}"
     case "$blocks" in *" $b "*) continue ;; esac
     blocks="$blocks$b "; CHECK_SHM_NBLOCKS=$((CHECK_SHM_NBLOCKS + 1))
     # The tree goes as soon as its control has a verdict, so the trees on disk at once are the pool's
-    # width, not one per selection.
-    { _check_block_ctl "$cd" _check_shm_prep _check_shm_ctl_run "$b"; rm -rf "$cd/ctl-${b//,/+}" 2>/dev/null; } &
+    # width, not one per selection — and a tree that will not go is that control's failure.
+    { _check_block_ctl "$cd" _check_shm_ctl_dir _check_shm_ctl_run "$b"
+      _check_shm_ctl_rm "$cd/ctl-$key" \
+        || printf 'bad|its tree copy %s could not be removed\n' "$cd/ctl-$key" > "$cd/ctl-$key.verdict"; } &
     running=$((running + 1))
     if [ "$running" -ge "$pool" ]; then wait -n; running=$((running - 1)); fi
   done
   wait
   for b in $blocks; do
-    why="$(cat "$cd/ctl-${b//,/+}.verdict" 2>/dev/null)"
+    key="${b//,/+}"
+    why="$(cat "$cd/ctl-$key.verdict" 2>/dev/null)"
     [ "$why" != ok ] || continue
     failed=$((failed + 1))
     [ -n "$why" ] || why="bad|it produced NO verdict — its worker died without reporting"
     bad "$label --mutation: control failed for block $b: ${why#bad|}"
     # What it failed ON, since the workdir is the suite's own and goes when the suite exits.
-    grep '^FAIL: ' "$cd/ctl-${b//,/+}.out" 2>/dev/null | head -5 | sed 's/^/    | /' >&2
+    grep '^FAIL: ' "$cd/ctl-$key.out" 2>/dev/null | head -5 | sed 's/^/    | /' >&2
   done
   [ "$failed" -eq 0 ]
 }
@@ -1119,6 +1158,15 @@ _check_row_one() {
   return 0
 }
 
+# _check_counts_whole <file> — a block-count record (`ADB_CHECK_BLOCK_COUNTS`) can be summed: the byte
+# rules of common.sh's `adb_bytes_whole`, every line exactly `<id><TAB><digits>`, and no id twice. awk
+# would otherwise read `1junk` as 1 and a cut line as whatever number it starts with.
+_check_counts_whole() {
+  command -v adb_bytes_whole >/dev/null 2>&1 || return 1
+  adb_bytes_whole "$1" 1048576 || return 1
+  awk -F '\t' 'NF != 2 || $1 !~ /^[a-z0-9-]+$/ || $2 !~ /^[0-9]+$/ || ($1 in seen) { exit 1 } { seen[$1] = 1 }' "$1" 2>/dev/null
+}
+
 # _check_block_ctl <workdir> <prepare-fn> <run-fn> <block> — prove one selection, unmutated, on its own tree
 # copy (a runner may write inside its root, so no two runs share one): it must pass and run exactly the assertions the full control counted for that block. Writes `ok` or `bad|<why>`.
 _check_block_ctl() {
@@ -1133,6 +1181,8 @@ _check_block_ctl() {
     printf 'bad|its unmutated control did not finish within %ss (the row deadline) — no row on it can be scored\n' "$CHECK_ROW_SECS" > "$wd/ctl-$key.verdict"
   elif [ "$src" -ne 0 ]; then
     printf 'bad|its unmutated control failed (rc %s) — a dependency is undeclared, or the block is red on its own\n' "$src" > "$wd/ctl-$key.verdict"
+  elif ! _check_counts_whole "$wd/control.counts" || ! _check_counts_whole "$wd/ctl-$key.counts"; then
+    printf 'bad|a block-count record is not whole (unreadable, a line off `<id><TAB><count>`, an id twice, or no final newline) — no count can be compared\n' > "$wd/ctl-$key.verdict"
   elif [ -z "$want" ] || [ "$want" != "$got" ]; then
     printf 'bad|its unmutated control ran %s assertion(s) where the full suite runs %s — the selection does not reproduce the block\n' "${got:-no}" "${want:-none}" > "$wd/ctl-$key.verdict"
   else
