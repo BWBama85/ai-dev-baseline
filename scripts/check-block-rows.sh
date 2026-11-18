@@ -1042,8 +1042,8 @@ has "$out" "its count lines are unusable" "shmutant blocks: …saying the counts
 variant_after shm-silent 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || { grep -v '^mult' \"\$ADB_CHECK_BLOCK_COUNTS\" > \"\$ADB_CHECK_BLOCK_COUNTS.kept\"; cat \"\$ADB_CHECK_BLOCK_COUNTS.kept\" > \"\$ADB_CHECK_BLOCK_COUNTS\"; }"
 shm ctl-silent "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent" SHMUTANT_KEEP=1
 eq "$rc" 1 "shmutant blocks: a selection that reports no count for a block it selected fails the suite"
-has "$out" "baseline [mult]: red" "shmutant blocks: …as a red baseline, never a green one"
-has "$(cat "$work"/shm-ctl-silent/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: the selection 'mult' reported no count for block 'mult', which it runs" \
+has "$out" "baseline [mult]: aborted" "shmutant blocks: …as an aborted baseline, never a green one"
+has "$(cat "$work"/shm-ctl-silent/pool/base-*/output 2>/dev/null)" "check-blocks: the selection 'mult' reported no count for block 'mult', which it runs" \
     "shmutant blocks: …and the run's own output says which block"
 # WHAT IS CHECKED IS WHAT WAS HANDED OVER. This `head` appends the missing block's count to the file
 # just after the snapshot of it is taken, as a process the run left behind could: the count never
@@ -1052,19 +1052,19 @@ mkdir -p "$work/head-stub"
 printf '#!/bin/sh\n"%s" "$@"; rc=$?\ncase "$3" in */pool.counts/run.??????) printf "mult\\t1\\n" >> "$3" ;; esac\nexit "$rc"\n' "$(command -v head)" > "$work/head-stub/head"; chmod +x "$work/head-stub/head"
 shm ctl-late "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent" PATH="$work/head-stub:$PATH"
 eq "$rc" 1 "shmutant blocks: a count that appears in the file only after its snapshot was taken does not count"
-has "$out" "baseline [mult]: red" "shmutant blocks: …so the selection is still red"
+has "$out" "baseline [mult]: aborted" "shmutant blocks: …so the selection is still not green"
 # THE BYTES ARE HANDED OVER AS THE RUN WROTE THEM, or not at all. A NUL and an oversized file are
 # refused here by the byte rules; an empty record is left for shmutant's own reader to refuse, which
 # it can only do if nothing on the way has tidied it up.
 variant_after shm-nul 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || printf 'ba\\000se\\t1\\n' >> \"\$ADB_CHECK_BLOCK_COUNTS\""
 shm ctl-nul "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-nul" SHMUTANT_KEEP=1
 eq "$rc" 1 "shmutant blocks: a count file holding a NUL fails the suite"
-has "$out" "baseline [mult]: red" "shmutant blocks: …as a red baseline"
-has "$(cat "$work"/shm-ctl-nul/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block counts are not whole" "shmutant blocks: …refused by the byte rules, not passed on with the NUL dropped"
+has "$out" "baseline [mult]: aborted" "shmutant blocks: …as an aborted baseline"
+has "$(cat "$work"/shm-ctl-nul/pool/base-*/output 2>/dev/null)" "check-blocks: this run's block counts are not whole" "shmutant blocks: …refused by the byte rules, not passed on with the NUL dropped"
 variant_after shm-big 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || { head -c 1100000 /dev/zero | tr '\\000' x; printf '\\n'; } >> \"\$ADB_CHECK_BLOCK_COUNTS\""
 shm ctl-big "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-big" SHMUTANT_KEEP=1
 eq "$rc" 1 "shmutant blocks: a count file past the bound fails the suite"
-has "$(cat "$work"/shm-ctl-big/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block counts are not whole" "shmutant blocks: …refused by the bound"
+has "$(cat "$work"/shm-ctl-big/pool/base-*/output 2>/dev/null)" "check-blocks: this run's block counts are not whole" "shmutant blocks: …refused by the bound"
 variant_after shm-blank 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || printf '\\n' >> \"\$ADB_CHECK_BLOCK_COUNTS\""
 shm ctl-blank "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-blank"
 eq "$rc" 1 "shmutant blocks: a count file with an empty record fails the suite"
@@ -1084,7 +1084,7 @@ eq "$(cat "$work/victim")" "untouched" "shmutant blocks: …and what it points a
 for _m in status link; do
   shm "ctl-rm-$_m" "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_RM="$_m" SHMUTANT_KEEP=1
   eq "$rc" 1 "shmutant blocks: a count file whose removal fails ($_m) fails the suite"
-  has "$(cat "$work/shm-ctl-rm-$_m"/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so ($_m)"
+  has "$(cat "$work/shm-ctl-rm-$_m"/pool/base-*/output 2>/dev/null)" "check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so ($_m)"
 done
 # THE CALLBACK CANNOT REACH THE WRAPPER'S VARIABLES. This run function assigns `cf`, the name the
 # wrapper keeps its count file under: the counts that are checked are still the run's own, and the
@@ -1093,6 +1093,14 @@ printf 'untouched\n' > "$work/clobber-victim"
 shm ctl-clobber "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_CLOBBER="$work/clobber-victim"
 eq "$rc" 0 "shmutant blocks: a callback that assigns the wrapper's own variable does not change what is counted"
 eq "$(cat "$work/clobber-victim" 2>/dev/null)" "untouched" "shmutant blocks: …and the file it named is still there, unread and unremoved"
+# A WRAPPER FAILURE IS AN ABORT, NEVER A RED. This mutant leaves the suite green, prints a `FAIL:`
+# line carrying the row's witness on its way, and empties its count file as it exits. Returned as
+# status 1, that would be a red run with the witness on a red line: a killed row, from a suite that
+# passed. The status the wrapper returns is what keeps it aborted.
+variant_after shm-diag 'if check_block base; then' '  : "block counts"'
+shm ctl-diag "shmutant_mut hides 'T_A=1' 'printf \"FAIL: block counts\\n\"; trap \": > \\\"\$ADB_CHECK_BLOCK_COUNTS\\\"\" EXIT' 'block counts' base" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-diag"
+eq "$rc" 1 "shmutant blocks: a green mutant whose counts cannot be handed over fails the suite"
+has "$out" "FAIL: mutation 'hides': aborted" "shmutant blocks: …as aborted, never killed, whatever its output carries"
 # A RUN THAT WAS NOT GREEN KEEPS ITS OWN STATUS. This mutant prints the row's witness, removes its
 # count file and exits 2: an abort, which no trouble with its counts may turn into a red.
 shm ctl-abort "shmutant_mut dies 'T_A=1' 'printf \"FAIL: neg-value\\n\"; rm -f \"\$ADB_CHECK_BLOCK_COUNTS\"; exit 2' 'neg-value' uses-helper" ADB_T_SUITE=suite.sh
@@ -1103,20 +1111,20 @@ if [ "$(id -u)" -ne 0 ]; then
   variant_after shm-stuck 'check_blocks_done' '[ -z "${ADB_CHECK_BLOCK_COUNTS:-}" ] || chmod 555 "$(dirname "$ADB_CHECK_BLOCK_COUNTS")"'
   shm ctl-stuck "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-stuck" SHMUTANT_KEEP=1
   eq "$rc" 1 "shmutant blocks: a run whose count files cannot be removed fails the suite"
-  has "$(cat "$work"/shm-ctl-stuck/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so"
+  has "$(cat "$work"/shm-ctl-stuck/pool/base-*/output 2>/dev/null)" "check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so"
   chmod -R u+w "$work/shm-ctl-stuck" 2>/dev/null
 fi
 # …and the same for a block the selection only DEPENDS on, and for any block of the unselected run.
 variant_after shm-silent-dep 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || { grep -v '^base' \"\$ADB_CHECK_BLOCK_COUNTS\" > \"\$ADB_CHECK_BLOCK_COUNTS.kept\"; cat \"\$ADB_CHECK_BLOCK_COUNTS.kept\" > \"\$ADB_CHECK_BLOCK_COUNTS\"; }"
 shm ctl-silent-dep "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent-dep" SHMUTANT_KEEP=1
 eq "$rc" 1 "shmutant blocks: a selection that reports no count for a block it depends on fails the suite"
-has "$out" "baseline [mult]: red" "shmutant blocks: …as a red baseline"
-has "$(cat "$work"/shm-ctl-silent-dep/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: the selection 'mult' reported no count for block 'base', which it runs" \
+has "$out" "baseline [mult]: aborted" "shmutant blocks: …as an aborted baseline"
+has "$(cat "$work"/shm-ctl-silent-dep/pool/base-*/output 2>/dev/null)" "check-blocks: the selection 'mult' reported no count for block 'base', which it runs" \
     "shmutant blocks: …naming the dependency"
 variant_after shm-silent-ref 'check_blocks_done' "[ -n \"\${ADB_CHECK_BLOCK:-}\" ] || { grep -v '^empty' \"\$ADB_CHECK_BLOCK_COUNTS\" > \"\$ADB_CHECK_BLOCK_COUNTS.kept\"; cat \"\$ADB_CHECK_BLOCK_COUNTS.kept\" > \"\$ADB_CHECK_BLOCK_COUNTS\"; }"
 shm ctl-silent-ref "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent-ref" SHMUTANT_KEEP=1
 eq "$rc" 1 "shmutant blocks: an unselected run that reports no count for a declared block fails the suite"
-has "$out" "baseline [the whole suite, unselected]: red" "shmutant blocks: …as a red reference"
+has "$out" "baseline [the whole suite, unselected]: aborted" "shmutant blocks: …as an aborted reference"
 has "$(cat "$work"/shm-ctl-silent-ref/pool/base-*/output 2>/dev/null)" "reported no count for block 'empty', which it runs" \
     "shmutant blocks: …naming the block the reference left out"
 # The row deadline reaches the baselines as it reaches the rows.

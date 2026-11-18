@@ -537,7 +537,7 @@ check_register_pool() {
 #     selection's baseline is not green is scored `baseline`, never run;
 #   * BY THE WRAPPER around <run-fn>: a green run whose counts cannot be handed to shmutant whole,
 #     or that reported none for a block it runs — a dependency as much as a selected one, and every
-#     block for the unselected run — is turned red, since shmutant compares only the units a run
+#     block for the unselected run — is aborted, since shmutant compares only the units a run
 #     reports. A run that was not green keeps its own status: its counts are never read.
 # The stream must then carry exactly those baseline records, ahead of the rows and in shmutant's
 # order, and each one that is not green is a failure named here. ADB_MUTATION_FULL_SUITE=1 (the nightly's mode) runs every
@@ -832,6 +832,9 @@ EOF
 # list: the caller's run, and whether every mutant runs the whole suite. CHECK_SHM_WHOLE is the one
 # selector every row is handed to the pool under in that mode.
 CHECK_SHM_RUN=""; CHECK_SHM_FULL=0; CHECK_SHM_WHOLE="whole-suite"; CHECK_SHM_COUNTS_DIR=""
+# What `_check_shm_row_run` returns when the WRAPPER, not the suite, could not do its part: neither
+# 0 nor SHMUTANT_RED_STATUS, so shmutant scores the run aborted.
+CHECK_SHM_ABORT=70
 
 # _check_shm_decls <label> <suite-path> — every row of shmutant's table names declared blocks whose
 # source carries its witness. Returns 1, with every problem named, when any does not.
@@ -882,9 +885,11 @@ _check_shm_decls() {
 # own under CHECK_SHM_COUNTS_DIR, and ONLY A RUN THAT EXITED 0 HAS THEM READ: shmutant compares
 # counts for green baselines alone, so a red or an aborted run goes back with the status its
 # callback gave it, whatever became of its counts. A green run whose counts cannot be handed over
-# whole, or that reported none for a block it runs, is turned red (`_check_shm_counts`). The run's
-# files are removed before this returns; `check_shmutant_pool` removes the directory, which is what
-# clears a run that was killed.
+# whole, or that reported none for a block it runs, is ABORTED (`_check_shm_counts`): status
+# CHECK_SHM_ABORT, which shmutant reads as neither green nor red whatever the run printed. Never
+# red: that is the suite's own verdict, and a row whose witness was on a `FAIL:` line of the output
+# would be scored killed by a suite that passed. The run's files are removed before this returns;
+# `check_shmutant_pool` removes the directory, which is what clears a run that was killed.
 _check_shm_row_run() {
   local sel="$2" cf rc
   [ "$CHECK_SHM_FULL" -eq 0 ] || sel=""
@@ -895,16 +900,16 @@ _check_shm_row_run() {
     return
   fi
   if ! cf="$(mktemp "$CHECK_SHM_COUNTS_DIR/run.XXXXXX" 2>/dev/null)"; then
-    printf 'FAIL: check-blocks: no file could be made for this run'"'"'s block counts, so they cannot be compared\n'
-    return 1
+    printf 'check-blocks: no file could be made for this run'"'"'s block counts, so they cannot be compared\n'
+    return "$CHECK_SHM_ABORT"
   fi
   ( ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="$cf" "$CHECK_SHM_RUN" "$1" "$sel" ); rc=$?
   if [ "$rc" -eq 0 ]; then
-    _check_shm_counts "$cf" "$sel" || rc=1
+    _check_shm_counts "$cf" "$sel" || rc="$CHECK_SHM_ABORT"
   fi
   if ! _check_shm_gone "$cf"; then
-    printf 'FAIL: check-blocks: this run'"'"'s block-count file could not be removed\n'
-    [ "$rc" -ne 0 ] || rc=1
+    printf 'check-blocks: this run'"'"'s block-count file could not be removed\n'
+    [ "$rc" -ne 0 ] || rc="$CHECK_SHM_ABORT"
   fi
   return "$rc"
 }
@@ -924,34 +929,34 @@ _check_shm_gone() {
 # byte rules of common.sh's `adb_bytes_whole` (a regular file of 1 byte to 1 MiB, no NUL, a final
 # newline), a count for every block the selection runs, and then the hand-over, untouched, so the
 # record grammar is shmutant's to judge on the bytes the run wrote. Checking the file and then
-# reading it again would judge one set of bytes and forward another. Returns 1, with a `FAIL:`
-# line saying why, when the counts cannot stand for the run.
+# reading it again would judge one set of bytes and forward another. Returns 1, with a line saying
+# why, when the counts cannot stand for the run.
 _check_shm_counts() {
   local cf="$1" sel="$2" snap one bad=0
   if [ -L "$cf" ] || [ ! -f "$cf" ] || ! snap="$(mktemp "$CHECK_SHM_COUNTS_DIR/snap.XXXXXX" 2>/dev/null)"; then
-    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
+    printf 'check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
     return 1
   fi
   if ! head -c 1048577 "$cf" > "$snap" 2>/dev/null; then
-    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
+    printf 'check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
     bad=1
   elif ! adb_bytes_whole "$snap" 1048576; then
-    printf 'FAIL: check-blocks: this run'"'"'s block counts are not whole (none at all, a NUL, no final newline, or past 1 MiB), so they cannot be compared\n'
+    printf 'check-blocks: this run'"'"'s block counts are not whole (none at all, a NUL, no final newline, or past 1 MiB), so they cannot be compared\n'
     bad=1
   else
     for one in $(_check_blocks_closure "$sel"); do
       if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' "$snap" 2>/dev/null; then
-        printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
+        printf "check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
         bad=1
       fi
     done
     if [ "$bad" -eq 0 ] && ! cat "$snap" >&"$SHMUTANT_COUNTS_FD"; then
-      printf 'FAIL: check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
+      printf 'check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
       bad=1
     fi
   fi
   if ! _check_shm_gone "$snap"; then
-    printf 'FAIL: check-blocks: the snapshot of this run'"'"'s block counts could not be removed\n'
+    printf 'check-blocks: the snapshot of this run'"'"'s block counts could not be removed\n'
     bad=1
   fi
   return "$bad"
