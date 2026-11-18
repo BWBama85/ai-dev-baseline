@@ -889,7 +889,8 @@ _check_shm_decls() {
 # CHECK_SHM_ABORT, which shmutant reads as neither green nor red whatever the run printed. Never
 # red: that is the suite's own verdict, and a row whose witness was on a `FAIL:` line of the output
 # would be scored killed by a suite that passed. The run's files are removed before this returns;
-# `check_shmutant_pool` removes the directory, which is what clears a run that was killed.
+# `check_shmutant_pool` removes the directory, which is what clears a run that was killed. A count
+# file that will not go aborts the run whatever its verdict was, a red one included.
 _check_shm_row_run() {
   local sel="$2" cf rc
   [ "$CHECK_SHM_FULL" -eq 0 ] || sel=""
@@ -907,9 +908,11 @@ _check_shm_row_run() {
   if [ "$rc" -eq 0 ]; then
     _check_shm_counts "$cf" "$sel" || rc="$CHECK_SHM_ABORT"
   fi
+  # A verdict is not given by a run the wrapper could not finish with: green or red, it is aborted.
+  # A run that already aborted keeps the status it has.
   if ! _check_shm_gone "$cf"; then
     printf 'check-blocks: this run'"'"'s block-count file could not be removed\n'
-    [ "$rc" -ne 0 ] || rc="$CHECK_SHM_ABORT"
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq "${SHMUTANT_RED_STATUS:-1}" ]; then rc="$CHECK_SHM_ABORT"; fi
   fi
   return "$rc"
 }

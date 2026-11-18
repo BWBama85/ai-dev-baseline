@@ -27,8 +27,9 @@
 #      or impossible selector is refused before anything is built (#532);
 #  12. block mode for the shmutant pool (#631) — the adapter refuses a row whose block is missing,
 #      undeclared, repeated or does not carry its witness, hands shmutant the settings that make
-#      its baselines the controls, forwards each run's block counts, turns a selected block that
-#      reported none red, and reads the baseline records back: each expected, in order, and green;
+#      its baselines the controls, forwards each green run's block counts, aborts a run that
+#      reported none for a block it runs, and reads the baseline records back: each expected, in
+#      order, and green;
 #  13. sharding the shmutant pool (#631) — the same rule as 11, on the rows the pool is handed.
 #
 # The copier lives here rather than in a suite of its own because check-lib.sh is one library and
@@ -537,9 +538,17 @@ prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/" || ret
 # "$BASH", never a bare `bash`: on macOS a PATH without Homebrew first resolves /bin/bash 3.2, which
 # shmutant refuses to load and the fixture suite was never written for.
 # ADB_T_CLOBBER: a callback that assigns a name the adapter's wrapper uses for its own count file.
-run() { [ -z "${ADB_T_CLOBBER:-}" ] || cf="$ADB_T_CLOBBER"; ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
+# ADB_T_RM_ONLY_RED: a run that went red leaves a marker, which is when the `rm` below starts failing.
+run() {
+  local st
+  [ -z "${ADB_T_CLOBBER:-}" ] || cf="$ADB_T_CLOBBER"
+  ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; st=$?
+  [ "$st" -ne 1 ] || [ -z "${ADB_T_RM_ONLY_RED:-}" ] || : > "$ADB_T_WD.red"
+  return "$st"
+}
 # ADB_T_RM: an `rm` that removes a run's count file and then fails (`status`), or leaves a dangling
 # link where it was (`link`). The adapter calls `rm` by name; shmutant's own calls are `command -p`.
+# With ADB_T_RM_ONLY_RED it fails only once a run has gone red, so the baselines before it stay green.
 if [ -n "${ADB_T_RM:-}" ]; then
   rm() {
     local rc a
@@ -547,6 +556,7 @@ if [ -n "${ADB_T_RM:-}" ]; then
     for a in "$@"; do
       case "$a" in
         */pool.counts/run.??????)
+          if [ -n "${ADB_T_RM_ONLY_RED:-}" ] && [ ! -e "$ADB_T_WD.red" ]; then continue; fi
           case "$ADB_T_RM" in status) return 77 ;; link) ln -s /nonexistent/adb "$a" ;; esac ;;
       esac
     done
@@ -1101,6 +1111,11 @@ variant_after shm-diag 'if check_block base; then' '  : "block counts"'
 shm ctl-diag "shmutant_mut hides 'T_A=1' 'printf \"FAIL: block counts\\n\"; trap \": > \\\"\$ADB_CHECK_BLOCK_COUNTS\\\"\" EXIT' 'block counts' base" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-diag"
 eq "$rc" 1 "shmutant blocks: a green mutant whose counts cannot be handed over fails the suite"
 has "$out" "FAIL: mutation 'hides': aborted" "shmutant blocks: …as aborted, never killed, whatever its output carries"
+# …and a RED run's too: this mutant is killed on its witness, and its count file's removal then
+# fails. A run the wrapper could not finish with gives no verdict, so the row is aborted, not killed.
+shm ctl-rm-red "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_RM=status ADB_T_RM_ONLY_RED=1
+eq "$rc" 1 "shmutant blocks: a red run whose count file cannot be removed fails the suite"
+has "$out" "FAIL: mutation 'mul': aborted" "shmutant blocks: …as aborted, never killed"
 # A RUN THAT WAS NOT GREEN KEEPS ITS OWN STATUS. This mutant prints the row's witness, removes its
 # count file and exits 2: an abort, which no trouble with its counts may turn into a red.
 shm ctl-abort "shmutant_mut dies 'T_A=1' 'printf \"FAIL: neg-value\\n\"; rm -f \"\$ADB_CHECK_BLOCK_COUNTS\"; exit 2' 'neg-value' uses-helper" ADB_T_SUITE=suite.sh
