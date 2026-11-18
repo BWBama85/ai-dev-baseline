@@ -888,15 +888,17 @@ _check_shm_decls() {
 _check_shm_row_run() {
   local sel="$2" cf rc
   [ "$CHECK_SHM_FULL" -eq 0 ] || sel=""
+  # THE CALLBACK RUNS IN A SUBSHELL OF ITS OWN, here and below: bash's dynamic scope would otherwise
+  # let it assign this function's locals, and what is checked and removed afterwards is named by them.
   if [ -z "${SHMUTANT_COUNTS_FD:-}" ]; then
-    ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="" "$CHECK_SHM_RUN" "$1" "$sel"
+    ( ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="" "$CHECK_SHM_RUN" "$1" "$sel" )
     return
   fi
   if ! cf="$(mktemp "$CHECK_SHM_COUNTS_DIR/run.XXXXXX" 2>/dev/null)"; then
     printf 'FAIL: check-blocks: no file could be made for this run'"'"'s block counts, so they cannot be compared\n'
     return 1
   fi
-  ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="$cf" "$CHECK_SHM_RUN" "$1" "$sel"; rc=$?
+  ( ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="$cf" "$CHECK_SHM_RUN" "$1" "$sel" ); rc=$?
   if [ "$rc" -eq 0 ]; then
     _check_shm_counts "$cf" "$sel" || rc=1
   fi

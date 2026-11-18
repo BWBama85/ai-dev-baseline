@@ -536,7 +536,8 @@ cat > "$work/shm-driver.sh" <<'EOF'
 prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/" || return 1; [ -z "${ADB_T_PREP_CD:-}" ] || cd /; }
 # "$BASH", never a bare `bash`: on macOS a PATH without Homebrew first resolves /bin/bash 3.2, which
 # shmutant refuses to load and the fixture suite was never written for.
-run() { ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
+# ADB_T_CLOBBER: a callback that assigns a name the adapter's wrapper uses for its own count file.
+run() { [ -z "${ADB_T_CLOBBER:-}" ] || cf="$ADB_T_CLOBBER"; ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
 # ADB_T_RM: an `rm` that removes a run's count file and then fails (`status`), or leaves a dangling
 # link where it was (`link`). The adapter calls `rm` by name; shmutant's own calls are `command -p`.
 if [ -n "${ADB_T_RM:-}" ]; then
@@ -1085,6 +1086,13 @@ for _m in status link; do
   eq "$rc" 1 "shmutant blocks: a count file whose removal fails ($_m) fails the suite"
   has "$(cat "$work/shm-ctl-rm-$_m"/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so ($_m)"
 done
+# THE CALLBACK CANNOT REACH THE WRAPPER'S VARIABLES. This run function assigns `cf`, the name the
+# wrapper keeps its count file under: the counts that are checked are still the run's own, and the
+# file the callback named is neither read as counts nor removed.
+printf 'untouched\n' > "$work/clobber-victim"
+shm ctl-clobber "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_CLOBBER="$work/clobber-victim"
+eq "$rc" 0 "shmutant blocks: a callback that assigns the wrapper's own variable does not change what is counted"
+eq "$(cat "$work/clobber-victim" 2>/dev/null)" "untouched" "shmutant blocks: …and the file it named is still there, unread and unremoved"
 # A RUN THAT WAS NOT GREEN KEEPS ITS OWN STATUS. This mutant prints the row's witness, removes its
 # count file and exits 2: an abort, which no trouble with its counts may turn into a red.
 shm ctl-abort "shmutant_mut dies 'T_A=1' 'printf \"FAIL: neg-value\\n\"; rm -f \"\$ADB_CHECK_BLOCK_COUNTS\"; exit 2' 'neg-value' uses-helper" ADB_T_SUITE=suite.sh
