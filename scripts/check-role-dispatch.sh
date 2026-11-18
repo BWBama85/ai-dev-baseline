@@ -1044,7 +1044,7 @@ chmod +x "$BIN/codex"
 for _line in 'touch: out.txt: Operation not permitted (os error 1)' \
              'Error: failed to write final message: Operation not permitted (os error 1)'; do
   printf 'x' | rd_env CODEX_LINE="$_line" bash "$RD" invoke gap_analysis >/dev/null 2>"$work/ctool.err"
-  eq "$(head -1 "$work/ctool.err")" "$_line" "fixture: the stub printed its line"
+  eq "$(first_substantive "$work/ctool.err")" "$_line" "fixture: the stub printed its line"
   has "$(grep 'gap_analysis (codex) —' "$work/ctool.err")" "a real agent/CLI error" "not codex's start-up denial: $_line"
 done
 

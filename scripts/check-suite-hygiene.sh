@@ -42,8 +42,9 @@
 #     `until`. A bare `$(pwd)` passed as an argument is not seen.
 #   * A capture is CHECKED when `||` follows it directly; when `&&` follows it and a `||` comes
 #     before the statement's next `;`; or when the line opens with `if`/`elif`/`while`/`until` and
-#     the capture sits before that line's `; then` or `; do`. `local x="$(mktemp -d)" || …` is a
-#     finding whatever follows: the declaration's status replaces mktemp's.
+#     the capture sits before that line's `; then` or `; do`. What the `||` runs is not judged, so
+#     `|| true` passes. `local x="$(mktemp -d)" || …` is a finding whatever follows: the
+#     declaration's status replaces mktemp's.
 #   * Only `mktemp -d` (or `--directory`) captures. A helper that RETURNS a path it allocated is not
 #     followed to its callers: `d="$(new_repo)"` is read by review, not by this scan.
 #
@@ -263,13 +264,12 @@ if [ "$MODE" = scan ]; then
     *) echo "suite-hygiene: FAIL — the scan could not read what it scans" >&2; exit 2 ;;
   esac
 fi
+work="$(mktemp -d)" || { echo "check-suite-hygiene: mktemp failed" >&2; exit 1; }
+check_exit_guard "check-suite-hygiene" "rm -rf \"$work\""
 if [ "$tree_rc" -eq 0 ]; then ok; else
   bad "the shipped suites carry a banned shape, or could not be scanned (rc $tree_rc):
 $tree_out"
 fi
-
-work="$(mktemp -d)" || { echo "check-suite-hygiene: mktemp failed" >&2; exit 1; }
-check_exit_guard "check-suite-hygiene" "rm -rf \"$work\""
 
 # The three shapes, composed rather than typed, so this file is not a finding of its own scan.
 GQ='| grep'" -q"
@@ -458,7 +458,7 @@ printf 'newline-tree' > "$pair/clone$NL/marker"
 # probe <cd-line> <root-line> — the marker the capture reaches from the newline tree.
 probe() {
   printf '%s\n' '#!/usr/bin/env bash' "$1" "$2" 'cat "$ROOT/marker"' > "$pair/clone$NL/scripts/check-probe.sh"
-  bash "$pair/clone$NL/scripts/check-probe.sh" 2>/dev/null
+  "$BASH" "$pair/clone$NL/scripts/check-probe.sh" 2>/dev/null
 }
 CD_LINE='cd "$(dirname "$0")/.." || exit 1'
 eq "$(probe "$CD_LINE" "ROOT=\"$PW\"")" "sibling-tree" "the banned capture, run in clone<NL>, reads the SIBLING tree (the defect, observed)"

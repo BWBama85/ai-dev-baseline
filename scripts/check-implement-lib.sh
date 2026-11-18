@@ -4195,6 +4195,12 @@ af_run() {
   AF_OUT="$( cd "$AF_HOST" && PATH="$AF_BIN:$PATH" AF_FAIL="$1" "$BASH" scripts/check-implement-lib.sh 2>&1 )"; AF_RC=$?
   AF_AFTER="$(af_state)"
 }
+# The two calling conventions the helpers' comments state, held: a caller that drops the check, or
+# calls remote_pair inside `$( )`, would carry an empty path on.
+eq "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\(new_repo\)"' "$work/af-pristine.sh")" \
+   "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\(new_repo\)" \|\| exit 1' "$work/af-pristine.sh")" \
+   "55 every statement that captures new_repo stops the suite when the helper allocates nothing"
+eq "$(grep -cE '\$\(remote_pair\)' "$work/af-pristine.sh")" "0" "55 remote_pair is never called inside a \$( ) substitution, where its exit could not end the suite"
 af_run all
 no "$AF_RC" "55 the suite exits non-zero when its scratch root cannot be created"
 has "$AF_OUT" "check-implement-lib: mktemp failed" "55 …at startup, naming the failed allocation"
