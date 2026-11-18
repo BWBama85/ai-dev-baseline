@@ -546,7 +546,7 @@ check_shmutant_pool() {
   local label="$1" wd="$2" prep="$3" run="$4" cap="$5" suite="${6:-}"
   local n pool rc parsed="" rec kind rest name tgt sel rows=0 killed=0 sums=0 errexit=0
   local sum_label="" sum_rows="" sum_killed="" sum_jobs="" tab art="" arts i f0="$fail" whole=1 snap=""
-  local full=0 outside=0 runfn="$4" mode="" total narrowed=0 bl=0 cnt=0 nbase=0 bsel bverdict phase=0
+  local full=0 outside=0 runfn="$4" mode="" total narrowed=0 bl=0 cnt=0 nbase=0 bsel bverdict phase=0 rmrc
   local -a verdicts=() names=() details=() t_name=() t_file=() t_sel=() b_want=() b_bad=()
   local -a all_name=() all_file=() all_old=() all_new=() all_wit=() all_sel=()
   tab="$(printf '\t')"
@@ -667,9 +667,11 @@ check_shmutant_pool() {
   # BEFORE the caller's errexit is put back: under it a removal that failed would end the shell here,
   # ahead of its own diagnostic and of every verdict below.
   if [ -n "$CHECK_SHM_COUNTS_DIR" ]; then
-    rm -rf "$CHECK_SHM_COUNTS_DIR" 2>/dev/null
-    if [ -e "$CHECK_SHM_COUNTS_DIR" ] || [ -L "$CHECK_SHM_COUNTS_DIR" ]; then
-      bad "$label --mutation: the block-count directory $CHECK_SHM_COUNTS_DIR could not be removed"
+    # The command's status AND the postcondition: an `rm` that failed has not been shown to have
+    # removed everything it was asked to, whatever is left at the path.
+    rmrc=0; rm -rf "$CHECK_SHM_COUNTS_DIR" 2>/dev/null || rmrc=$?
+    if [ "$rmrc" -ne 0 ] || [ -e "$CHECK_SHM_COUNTS_DIR" ] || [ -L "$CHECK_SHM_COUNTS_DIR" ]; then
+      bad "$label --mutation: the block-count directory $CHECK_SHM_COUNTS_DIR could not be removed (rm exited $rmrc)"
     fi
     CHECK_SHM_COUNTS_DIR=""
   fi
@@ -877,9 +879,11 @@ _check_shm_decls() {
 # own under CHECK_SHM_COUNTS_DIR — which check_shmutant_pool makes and removes, so a run that is
 # killed leaves nothing behind for long — and handed to that descriptor whole. A green run that
 # reported no count for a block it runs, a dependency as much as a selected one, is turned red:
-# shmutant compares the units a run reports, never the ones it should have.
+# shmutant compares the units a run reports, never the ones it should have. The file is read ONCE:
+# what is checked for every block is the text that was handed over, so a line something appends
+# after the run returned can neither reach shmutant nor satisfy the check.
 _check_shm_row_run() {
-  local sel="$2" cf rc one
+  local sel="$2" cf rc one counts
   [ "$CHECK_SHM_FULL" -eq 0 ] || sel=""
   if [ -z "${SHMUTANT_COUNTS_FD:-}" ]; then
     ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="" "$CHECK_SHM_RUN" "$1" "$sel"
@@ -890,13 +894,18 @@ _check_shm_row_run() {
     return 1
   fi
   ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="$cf" "$CHECK_SHM_RUN" "$1" "$sel"; rc=$?
-  if ! cat "$cf" >&"$SHMUTANT_COUNTS_FD"; then
+  if ! counts="$(cat "$cf" 2>/dev/null)"; then
+    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read back\n'
+    return 1
+  fi
+  # A line per record, as the file had them: the substitution dropped the last newline.
+  if [ -n "$counts" ] && ! printf '%s\n' "$counts" >&"$SHMUTANT_COUNTS_FD"; then
     printf 'FAIL: check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
     [ "$rc" -ne 0 ] || rc=1
   fi
   if [ "$rc" -eq 0 ]; then
     for one in $(_check_blocks_closure "$sel"); do
-      if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' "$cf" 2>/dev/null; then
+      if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' <<< "$counts" 2>/dev/null; then
         printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
         rc=1
       fi

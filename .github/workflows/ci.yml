@@ -407,8 +407,11 @@ jobs:
     name: common-lib
     runs-on: ubuntu-26.04
     # The Linux jobs' 10: two suites, about 133s on run 38081150119, and since #629 the gate's suite
-    # and the declared-inputs lint, well under a minute together. Its mutation harness runs in
-    # `mutation-nightly.yml` since #456 (D126).
+    # and the declared-inputs lint, well under a minute together. The whole job took 3m24s on run
+    # 44171071479, 83s of it `check-block-rows.sh`. #631 added that suite's block-mode and shard
+    # cases, which run real shmutant pools: locally it went from about 130s to about 235s, so the
+    # job is expected near five minutes. Its mutation harness runs in `mutation-nightly.yml` since
+    # #456 (D126).
     timeout-minutes: 10
     # `actions: read` for the last-nightly line below, which lists this repository's workflow runs.
     permissions:

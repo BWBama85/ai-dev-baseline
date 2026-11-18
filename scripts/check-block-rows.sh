@@ -1029,6 +1029,14 @@ eq "$rc" 1 "shmutant blocks: a selection that reports no count for a block it se
 has "$out" "baseline [mult]: red" "shmutant blocks: …as a red baseline, never a green one"
 has "$(cat "$work"/shm-ctl-silent/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: the selection 'mult' reported no count for block 'mult', which it runs" \
     "shmutant blocks: …and the run's own output says which block"
+# WHAT IS CHECKED IS WHAT WAS HANDED OVER. This `cat` appends the missing block's count to the file
+# just after it has been read, as a process the run left behind could: the count never reached
+# shmutant, so it must not satisfy the check either.
+mkdir -p "$work/cat-stub"
+printf '#!/bin/sh\n"%s" "$@"; rc=$?\ncase "$1" in */pool.counts/run.??????) printf "mult\\t1\\n" >> "$1" ;; esac\nexit "$rc"\n' "$(command -v cat)" > "$work/cat-stub/cat"; chmod +x "$work/cat-stub/cat"
+shm ctl-late "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent" PATH="$work/cat-stub:$PATH"
+eq "$rc" 1 "shmutant blocks: a count that appears in the file only after it was handed over does not count"
+has "$out" "baseline [mult]: red" "shmutant blocks: …so the selection is still red"
 # …and the same for a block the selection only DEPENDS on, and for any block of the unselected run.
 variant_after shm-silent-dep 'check_blocks_done' "[ -z \"\${ADB_CHECK_BLOCK:-}\" ] || { grep -v '^base' \"\$ADB_CHECK_BLOCK_COUNTS\" > \"\$ADB_CHECK_BLOCK_COUNTS.kept\"; cat \"\$ADB_CHECK_BLOCK_COUNTS.kept\" > \"\$ADB_CHECK_BLOCK_COUNTS\"; }"
 shm ctl-silent-dep "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-silent-dep" SHMUTANT_KEEP=1
@@ -1064,6 +1072,14 @@ _blk="shmutant_mut caught '0 - \$1' '0 + \$1' 'neg-value' uses-helper"
 shm stub-blk-ok "$_blk" ADB_T_STUB=blk-ok ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh
 eq "$rc" 0 "stub: block mode accepts the baseline records its table calls for"
 eq "$(cut -d'|' -f3,7 "$work/seen-stub-blk-ok" 2>/dev/null)" "1|1" "stub: block mode turns shmutant's baseline and counts on"
+# An `rm` that FAILS has not been shown to have removed the count directory, even when nothing is
+# left there. Through the stand-in pool: a real one leaves `rm` hashed to the system's own (its
+# `command -p rm`), so a stub on PATH would not be the one the adapter then calls.
+mkdir -p "$work/rm-stub"
+printf '#!/bin/sh\n"%s" "$@"; rc=$?\ncase "$*" in *pool.counts) exit 77 ;; esac\nexit "$rc"\n' "$(command -v rm)" > "$work/rm-stub/rm"; chmod +x "$work/rm-stub/rm"
+shm stub-rm-status "$_blk" ADB_T_STUB=blk-ok ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh PATH="$work/rm-stub:$PATH"
+eq "$rc" 1 "stub: a removal of the block-count directory that exits non-zero fails the suite"
+has "$out" "pool.counts could not be removed (rm exited 77)" "stub: …with the status it exited"
 has "$out" "per-block, 1 selection(s) controlled" "stub: …and counts the selections, not the unselected reference"
 shm stub-blk-full "$_blk" ADB_T_STUB=blk-full ADB_POOL_JOBS=2 ADB_T_SUITE=suite.sh ADB_MUTATION_FULL_SUITE=1
 eq "$rc" 0 "stub: full-suite block mode accepts its one baseline"
