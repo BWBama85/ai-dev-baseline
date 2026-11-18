@@ -406,9 +406,17 @@ if [ "$MODE" = mutation ]; then
     "matrix='{\"include\":[{\"step\":\"fact-mutation\",\"shard\":1,\"shards\":1}]}'" \
     'PUBLISHES exactly'
   shmutant_mut nightly-shards-dropped \
-    "SHARDS: 'settings-fragment-mutation=3'" \
+    "SHARDS: 'settings-fragment-mutation=3,adopt-mutation=5'" \
     "SHARDS: 'fact-mutation=1'" \
     'splits settings-fragment-mutation into more than one shard'
+  shmutant_mut nightly-adopt-shards-dropped \
+    ",adopt-mutation=5'" \
+    "'" \
+    'splits adopt-mutation into more than one shard'
+  shmutant_mut nightly-adopt-shards-reduced \
+    ",adopt-mutation=5'" \
+    ",adopt-mutation=2'" \
+    'gives adopt-mutation at least five shards'
   shmutant_mut nightly-shard-unwired \
     'ADB_MUTATION_SHARD: ${{ matrix.shard }}/${{ matrix.shards }}' \
     'ADB_MUTATION_SHARD: 1/1' \
@@ -1535,6 +1543,13 @@ if [ -f "$NIGHTLY" ]; then
   # whole table back in one job, which took up to 316 of the 360 minutes a hosted job may run.
   eq "$(printf '%s' "$PLAN_OUT" | jq '[.include[] | select(.step == "settings-fragment-mutation") | .shard] | length > 1')" "true" \
      "the published matrix splits settings-fragment-mutation into more than one shard"
+  # …and so is `adopt-mutation` (#631): one job of it ran 185 minutes at 238 rows, and five is the
+  # count that was sized against the job bound, so fewer is a regression and every index must be there.
+  eq "$(printf '%s' "$PLAN_OUT" | jq '[.include[] | select(.step == "adopt-mutation") | .shard] | length > 1')" "true" \
+     "the published matrix splits adopt-mutation into more than one shard"
+  eq "$(printf '%s' "$PLAN_OUT" | jq -c '[.include[] | select(.step == "adopt-mutation")] | length as $n
+        | ($n >= 5) and ([.[].shard] == [range(1; $n + 1)]) and all(.[]; .shards == $n)')" "true" \
+     "the published matrix gives adopt-mutation at least five shards, numbered from 1 with none missing, each of that many"
   run_plan fact-mutation
   eq "$PLAN_OUT" '{"include":[{"step":"fact-mutation","shard":1,"shards":1}]}' "the plan PUBLISHES exactly the one dispatched step"
   run_plan settings-fragment-mutation

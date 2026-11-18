@@ -99,11 +99,34 @@ WORK="$(mktemp -d)" || { echo "check-adopt: FATAL — cannot create a scratch di
 # replace it.
 check_exit_guard "check-adopt" "rm -rf \"$WORK\""
 
-# --- 1. classify: the four verdicts, and the order of the arms ----------------------------------
+check_blocks_init "$ROOT/scripts/check-adopt.sh"
+
+# --- helpers more than one block calls -------------------------------------------------------------
+# Defined before the first block, so a block selected on its own (ADB_CHECK_BLOCK) still has them.
 # The verdict is the first TSV field; the reason is prose and is not asserted on (asserting the
 # sentence would make every wording improvement a test failure, which trains people to stop
 # improving wording).
 verdict() { bash "$AD" classify "$@" | cut -f1; }
+dev_entry() {  # <id> <audit-rule> [omit-field]
+  printf '## %s — DEVIATION: one licence\n' "$1"
+  for f_ in date category baseline-rule conflict scope reason; do
+    [ "$f_" = "${3:-}" ] && continue
+    case "$f_" in category) printf -- '- category:      deviation\n' ;; date) printf -- '- date: 2026-11-01\n' ;; *) printf -- '- %s: value\n' "$f_" ;; esac
+  done
+  printf -- '- audit-rule:    %s\n\n' "$2"
+}
+sp_entry() {  # <id> <category> <keeps> — a complete decision entry, seven lines
+  printf '## %s — an entry\n- date: 2026-11-09\n- category: %s\n- decision: keep it\n- reason: a fact here\n- keeps: %s\n\n' "$1" "$2" "$3"
+}
+
+# --- fixtures more than one block reads -----------------------------------------------------------
+# A project carrying only the exempt `release` skill, and an empty HOME: the clean inputs the
+# workflows blocks judge beside their own fixtures.
+mkdir -p "$WORK/wf-clean/.claude/skills/release" "$WORK/pt-home"
+printf 'x\n' > "$WORK/wf-clean/.claude/skills/release/SKILL.md"
+
+if check_block s1; then
+# --- 1. classify: the four verdicts, and the order of the arms ----------------------------------
 
 eq "$(verdict skill  no  same    no)"  keep     "no baseline artifact of this identity -> keep"
 eq "$(verdict skill  no  differs no)"  keep     "no collision -> keep regardless of delta"
@@ -149,7 +172,9 @@ eq "$(verdict skill no unknown no -)"                keep "no workflows class ->
 eq "$(verdict skill yes same no shadows)"          remove "a byte-identical same-name skill is still remove"
 eq "$(bash "$AD" classify skill no unknown no bogus >/dev/null 2>&1; echo $?)" 2 "an unknown workflows class exits 2"
 eq "$(bash "$AD" classify skill no unknown no competes >/dev/null 2>&1; echo $?)" 2 "a bare competes (no target) exits 2"
+fi
 
+if check_block s1b; then
 # --- 1b. classify: every rejectable argument is observed being REJECTED --------------------------
 # The enum is closed, so the harness injects each invalid form rather than spot-checking one. A
 # predicate that accepted a typo'd enum would answer a question nobody asked: `delta=diffres`
@@ -164,7 +189,9 @@ for badargs in "skill maybe same no" "skill yes sometimes no" "skill yes same pe
   eq "$rc" 2 "classify [$badargs] must exit 2"
   has "$out" "adopt-lib:" "classify [$badargs] must say which argument was wrong"
 done
+fi
 
+if check_block s2; then
 # --- 2. prescribed: the table matches the practice it transcribes --------------------------------
 # The table in adopt-lib.sh is a TRANSCRIPTION of handling-the-unknown.md's prescribed-home list,
 # and a transcription drifts. This is the guard against the drift that would matter: a home
@@ -196,7 +223,9 @@ fi
 # the feature contradicted each other in writing. Review caught it.
 eq "$(verdict foreign-pin no unknown no)" move "a foreign framework pin is MOVE (reconcile then retire), never keep"
 eq "$(verdict foreign-pin no same    no)" move "...whatever its delta, since it has no baseline counterpart"
+fi
 
+if check_block s2b; then
 # --- 2b. delta: the skill-is-a-directory trap, and unknown as a reachable answer ----------------
 # `delta` exists because the obvious inline `cmp -s` is WRONG for the commonest case. A skill's
 # shipped source is a directory; `cmp` on a directory returns non-zero, a workflow reads that as
@@ -254,7 +283,9 @@ eq "$(PATH="$CMPDIR:$PATH" cmp -s /dev/null /dev/null; echo $?)" 2 "the cmp stub
 # delta must reach `escalate`, never a verdict.
 eq "$(verdict skill yes "$(bash "$AD" delta skill "$S1" "$WORK/nope")" no)" escalate \
    "an unreadable baseline copy escalates rather than recommending anything"
+fi
 
+if check_block s2c; then
 # --- 2c. review findings: symlinks, the vendored lib, filename safety, escaping, pin reads -------
 # Six defects an independent review found after the suite above was green. Each is asserted from the
 # side that costs something, and each carries a mutation row.
@@ -329,7 +360,9 @@ for a_dir in "$ROOT"/agents/*/; do
   yes "$(bash "$AD" scan "$WORK" --agents "$a_tok" >/dev/null 2>&1; echo $?)" \
       "the baseline-shipped agent '$a_tok' is a valid scan target"
 done
+fi
 
+if check_block s3; then
 # --- 3. shipped: derived from the real manifest, never a second list -----------------------------
 # The value of `shipped` is that it cannot disagree with install.sh about what the baseline
 # installs. Asserting a hardcoded expected list here would recreate exactly the second list the
@@ -387,7 +420,9 @@ has "$multi_ok" "skill${TAB}fine${TAB}claude" "shipped still enumerates the repr
 
 # Non-emptiness on the good path, so 'refuse everything' cannot satisfy the assertions above.
 if [ -n "$shipped" ]; then ok; else bad "shipped must still enumerate a representable baseline root"; fi
+fi
 
+if check_block s4; then
 # --- 4. scan: the surface, the boundary, and the record format ----------------------------------
 # A fixture modelling getrich's documented shape: forked skills (one colliding with a baseline
 # skill, one not), duplicate hook scripts, a settings.json, a stack root doc, no agents.toml,
@@ -478,7 +513,9 @@ has "$oth" "skill${TAB}.claude/skills/implement-issue${TAB}implement-issue${TAB}
 
 eq "$(bash "$AD" scan "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "scan of a missing dir exits 2"
 eq "$(bash "$AD" scan "$FX" --agents >/dev/null 2>&1; echo $?)" 2 "scan --agents with no value exits 2"
+fi
 
+if check_block s4b s4; then
 # --- 4b. --agents is a PATH COMPONENT, so its tokens are validated ------------------------------
 # `--agents` is interpolated into `$root/.$a`, so an unvalidated token walks out of the project:
 # `--agents '../..'` made the scan read a sibling directory and report the result as the project's
@@ -504,7 +541,9 @@ eq "$(bash "$AD" scan "$FX" --agents '' >/dev/null 2>&1; echo $?)" 2 "scan --age
 eq "$(bash "$AD" hygiene "$FX" --agents '' >/dev/null 2>&1; echo $?)" 2 "hygiene --agents '' is refused"
 # ...and a legitimate token still works, so the guard is not simply rejecting everything.
 yes "$(bash "$AD" scan "$FX" --agents claude >/dev/null 2>&1; echo $?)" "a valid agent token is still accepted"
+fi
 
+if check_block s4c; then
 # --- 4c. workflows (#535): which workflow the project runs, by name and path ------------------
 # Every project skill is a finding under policy:one-baseline except the exempt `release`. The map is
 # read from THIS checkout's rendered skills (`--baseline "$ROOT"`), so a mutated copy is judged by
@@ -547,8 +586,7 @@ ln -s "$ROOT/agents/claude/skills/cleanup" "$WFX/home/.claude/skills/cleanup"
 wfo2="$(HOME="$WFX/home" bash "$AD" workflows "$WFX" --agents claude --baseline "$ROOT")"
 has "$wfo2" "duplicates${TAB}.claude/skills/cleanup${TAB}claude${TAB}cleanup" \
     "workflows: with the baseline's personal cleanup installed, the Claude copy duplicates (never runs)"
-# A clean project, and no project skills at all, exits 0 with a visible zero.
-mkdir -p "$WORK/wf-clean/.claude/skills/release"; printf 'x\n' > "$WORK/wf-clean/.claude/skills/release/SKILL.md"
+# A clean project (built before the first block), and no project skills at all, exits 0 with a visible zero.
 wfc="$(HOME="$WFX/home" bash "$AD" workflows "$WORK/wf-clean" --agents claude --baseline "$ROOT")"; wfcrc=$?
 eq "$wfcrc" 0 "workflows: only the exempt release -> exit 0"
 has "$wfc" "skills=1 mapped=0 same-name=0 exempt=1 unmapped=0" "workflows: the clean trailer still counts what it saw"
@@ -648,7 +686,9 @@ eq "$(printf '%s\n' "$wscan" | grep -c 'UPSTREAM_VERSION')" 1 "scan emits .claud
 # ...and the byte-identical .agents/skills/cleanup joins Codex's shipped row -> remove.
 cdelta="$(bash "$AD" delta skill "$WFX/.agents/skills/cleanup" "$ROOT/agents/codex/skills/cleanup")"
 eq "$(verdict skill yes "$cdelta" no shadows)" remove "a byte-identical .agents/skills/cleanup is remove, joined against Codex's copy"
+fi
 
+if check_block s4d; then
 # --- 4d. workflows (#535, second slice): root-doc pointers, tracked mirrors, user skill roots ----
 # Names a pointer may route to: every legacy name the map supersedes, plus the project's own skills
 # (owner decision 2026-11-03). A baseline name with no project copy routes to the baseline.
@@ -758,7 +798,9 @@ else
      "workflows: an unsearchable .agents makes .agents/skills unjudged (11), never absent"
 fi
 chmod 755 "$AGX/.agents"
+fi
 
+if check_block s4e-nested; then
 # --- 4e. workflows (#535, third slice): nested roots, the pinned map, CDPATH, Antigravity roots ---
 # NESTED PROJECT ROOTS: every `<subdir>/.claude/skills` (Claude) and `<subdir>/.agents/skills`
 # (Codex) below the top level, read from the filesystem. `.git`, the retirement folder and the
@@ -882,6 +924,10 @@ chmod 755 "$WORK/wf-locked-sel/.claude/skills"
 # A FILE where a root or its parent would be holds no skills: not a reason to call the walk incomplete.
 mkdir -p "$WORK/wf-file-root/.claude" "$WORK/wf-file-parent"
 printf 'x\n' > "$WORK/wf-file-root/.claude/skills"; printf 'x\n' > "$WORK/wf-file-parent/.claude"
+# MUTATION ROWS CITE THESE LABELS, which the code below builds from a variable. Spelled out here so
+# each row's witness is in this block's source, which the harness requires before it runs a row:
+#   a file where a skill root or its parent would be does not make the walk unjudged [wf-file-root]
+#   a file where a skill root or its parent would be does not make the walk unjudged [wf-file-parent]
 for fx_ in wf-file-root wf-file-parent; do
   eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$WORK/$fx_" --agents codex --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 0 \
      "workflows: a file where a skill root or its parent would be does not make the walk unjudged [$fx_]"
@@ -949,7 +995,9 @@ if git -C "$NMX" init -q >/dev/null 2>&1 && git -C "$NMX" add sub >/dev/null 2>&
 else
   bad "workflows: could not build the nested-mirror fixture"
 fi
+fi
 
+if check_block s4e-pinmap; then
 # THE PINNED MAP: a pinned project's own payload supplies the map and the shipped set, with no global
 # install, and beside one (owner decision 2026-11-03). Its digests are the proof.
 PMX="$WORK/wf-pinmap"; mkdir -p "$PMX/.ai-dev-baseline" "$PMX/.claude/skills/implement" "$WORK/pm-home"
@@ -1062,7 +1110,9 @@ mkdir -p "$WORK/pm-home/.claude/skills/cleanup"; printf 'x\n' > "$WORK/pm-home/.
 has "$(cd "$WORK" && HOME="$WORK/pm-home" bash "$AD" workflows "$PMX" --agents claude)" \
     "user-global${TAB}~/.claude/skills/cleanup${TAB}claude${TAB}cleanup" \
     "workflows: with no global install, a user skill named like a baseline skill is reported, never matched against the working directory"
+fi
 
+if check_block s4e-roots s4c; then
 # AN EXPORTED CDPATH must not move a relative root or leak into a path capture.
 CPX="$WORK/cdpath"; mkdir -p "$CPX/decoy/proj" "$CPX/real/proj/.claude/skills/implement"
 printf 'x\n' > "$CPX/real/proj/.claude/skills/implement/SKILL.md"
@@ -1135,7 +1185,9 @@ printf '[upstream]\nmode = "pinned"\n' > "$SPX/.ai-dev-baseline/upstream.toml"
 printf '%s  %s\n' "$(adb_sha256 "$SPX/real-cleanup/SKILL.md")" .claude/skills/cleanup/SKILL.md > "$SPX/.ai-dev-baseline/pinned-files.sha256"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$SPX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 11 \
    "workflows: a symlinked receipt-owned pinned skill is unjudged (11), never clean"
+fi
 
+if check_block s4e-wclass; then
 # wclass: one path's class, judged only from a WHOLE workflows file.
 WCF="$WORK/wclass.tsv"
 wcl() { bash "$AD" wclass "$WCF" .claude/skills/implement claude; }
@@ -1240,7 +1292,9 @@ eq "$(PATH="$WCSTUB:$PATH" HOME="$WORK/pt-home" bash "$AD" workflows "$BGX" --ag
 printf 'competes\t.claude/skills/implement\tclaude\timplement-issue\towner\tr\nsummary\t-\t-\t-\t-\ts\n' > "$WCF"
 eq "$(PATH="$WCSTUB:$PATH" bash "$AD" wclass "$WCF" .claude/skills/implement claude)" unjudged \
    "wclass: a file whose size read failed is not whole, whatever wc printed"
+fi
 
+if check_block s4e-agree s4d s4e-roots s4e-wclass; then
 # The writer and the reader agree. A repeated --agents token judges each path once...
 RAX="$WORK/wf-repeat"; mkdir -p "$RAX/.claude/skills/implement"; printf 'x\n' > "$RAX/.claude/skills/implement/SKILL.md"
 HOME="$WORK/pt-home" bash "$AD" workflows "$RAX" --agents claude,claude --baseline "$ROOT" --scope project > "$WORK/wf-repeat.tsv"
@@ -1260,7 +1314,9 @@ eq "$(PATH="$GSTUB:$PATH" HOME="$WORK/pt-home" bash "$AD" workflows "$MRX" --age
 printf 'Then run /implement...\n' > "$DTX/CLAUDE.md"
 eq "$(HOME="$WORK/pt-home" bash "$AD" workflows "$DTX" --agents claude --baseline "$ROOT" --scope project >/dev/null 2>&1; echo $?)" 10 \
    "workflows: '/implement...' ending a sentence is a pointer"
+fi
 
+if check_block s4e-clone s4e-wclass; then
 # A SECOND CLONE of the baseline (a development checkout beside the install) ships its rendered
 # skills too: they are not mirrors. It is proved by SHARED HISTORY with the installed baseline,
 # never by layout: an unrelated repository that copies `install.sh`, `agents/` and `base/workflows/`
@@ -1290,7 +1346,9 @@ fi
 
 rm -f "$WCF"; eq "$(wcl)" unjudged "wclass: a missing file judges nothing"
 eq "$(bash "$AD" wclass "$WCF" x >/dev/null 2>&1; echo $?)" 2 "wclass: wrong arity is usage (2)"
+fi
 
+if check_block s4e-build s4c; then
 # THE MAP'S BUILD-TIME RULES, on a copy of the tree (never the tracked one).
 BFX="$WORK/build-copy"; mkdir -p "$BFX"
 if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2>&1; then
@@ -1331,6 +1389,9 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
       awk -v l="$1" 'NR==1{print; next} /^# adb:supersedes/{next} !done && $0=="---"{print l; done=1} {print}' "$f_" > "$f_.new" && mv "$f_.new" "$f_"
     done
   }
+  # A MUTATION ROW CITES THIS LABEL, which the loop below builds from its variable. Spelled out here
+  # so the row's witness is in this block's source, which the harness requires before it runs a row:
+  #   supersedes refuses an installed marker the build would refuse [# adb:supersedes]
   for bad_ in '# adb:supersedes release' '# adb:supersedes cleanup' '# adb:supersedes' '# adb:supersedes fix-bug\n# adb:supersedes old-debug'; do
     put_marker "$bad_"
     eq "$(bash "$BFX/scripts/lib/adopt-lib.sh" supersedes "$BFX" >/dev/null 2>&1; echo $?)" 2 \
@@ -1404,7 +1465,9 @@ if check_copy_subtrees "$ROOT" "$BFX" scripts base agents templates >/dev/null 2
 else
   bad "could not copy the tree for the build-time map rules"
 fi
+fi
 
+if check_block s4f s4d; then
 # --- 4f. conformance (#301): the project's own instructions, against the baseline ------------------
 # Two rules today (D152): same-model-review (the CONFIGURED review rung, clearable by a recorded
 # DEVIATION) and root-doc-workflow (the workflows record's stale-pointers, never clearable).
@@ -1451,14 +1514,6 @@ eq "$cfrc" 10 "conformance: an undeclared review defaults to primary's own pass 
 has "$cfo" "is not declared in the project's agents.toml" "conformance: ...and says the review came from a lower layer"
 
 # A recorded DEVIATION clears it — prose only, every required field, and the audit-rule named.
-dev_entry() {  # <id> <audit-rule> [omit-field]
-  printf '## %s — DEVIATION: one licence\n' "$1"
-  for f_ in date category baseline-rule conflict scope reason; do
-    [ "$f_" = "${3:-}" ] && continue
-    case "$f_" in category) printf -- '- category:      deviation\n' ;; date) printf -- '- date: 2026-11-01\n' ;; *) printf -- '- %s: value\n' "$f_" ;; esac
-  done
-  printf -- '- audit-rule:    %s\n\n' "$2"
-}
 mkdir -p "$CF1/.ai-dev-baseline"
 dev_entry D3 same-model-review > "$CF1/.ai-dev-baseline/decisions.md"
 cfo="$(cf "$CF1")"; cfrc=$?
@@ -1502,6 +1557,9 @@ eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: a field from the section 
 # Any line that is not a field ends the entry: an indented or tab-separated heading, a Setext
 # heading, or prose, each followed by a borrowed `- reason:`. A blank line before the first field
 # is still allowed.
+# MUTATION ROWS CITE THESE LABELS, which the code below builds from a variable. Spelled out here so
+# each row's witness is in this block's source, which the harness requires before it runs a row:
+#   conformance: a field after [Other] does not complete the entry above it
 for sep_ in '  ## Other' "##${TAB}Other" "$(printf 'Other\n=====')" 'Some prose.'; do
   { dev_entry D26 same-model-review reason; printf '%s\n- reason: borrowed\n' "$sep_"; } > "$CF1/.ai-dev-baseline/decisions.md"
   eq "$(cf "$CF1" >/dev/null; echo $?)" 10 "conformance: a field after [$(printf '%s' "$sep_" | head -n 1)] does not complete the entry above it"
@@ -1569,7 +1627,9 @@ cfbefore="$(cd "$CF1" && find . -type f -not -path './.git/*' | LC_ALL=C sort | 
 cf "$CF1" >/dev/null 2>&1
 eq "$(cd "$CF1" && find . -type f -not -path './.git/*' | LC_ALL=C sort | while IFS= read -r f; do printf '%s ' "$f"; cksum < "$f"; done)" "$cfbefore" \
    "conformance: the audit never alters the project it reads"
+fi
 
+if check_block s4g; then
 # --- 4g. specialized (#552): where a project's facts live — rules, nested root docs, mirrors -------
 # Decided by PATH AND FRONTMATTER only; the fact-vs-workflow judgment is the agent's, and this
 # library validates it. Every fixture is a git repository: nested root docs are enumerated from the
@@ -1594,9 +1654,6 @@ cp "$SPX/.claude/rules/db.md" "$SPX/.codex/rules/db.md"
 printf '# DB\nMigrations under src/db are append-only.\n' > "$SPX/.codex/rules/db-body.md"
 printf 'a hand-written summary of several rules\n' > "$SPX/.codex/rules.md"
 printf 'not markdown\n' > "$SPX/.codex/rules/default.rules"
-sp_entry() {  # <id> <category> <keeps> — a complete decision entry, seven lines
-  printf '## %s — an entry\n- date: 2026-11-09\n- category: %s\n- decision: keep it\n- reason: a fact here\n- keeps: %s\n\n' "$1" "$2" "$3"
-}
 {
   sp_entry D1 project-delta apps/web/AGENTS.md          # keeps at line 6
   sp_entry D2 project-delta .claude/rules/db.md         # 13
@@ -1676,7 +1733,9 @@ hasnt "$sps" "other${TAB}.claude/rules/db.md" "scan: no project rule falls back 
 hasnt "$sps" "other${TAB}.claude/rules/sub/general.md" "scan: ...nor one in a subdirectory"
 has "$sps" "other${TAB}.claude/rules/notes.txt" "scan: a non-markdown file in the rules directory stays other"
 has "$sps" "other${TAB}.codex/rules/default.rules" "scan: Codex's execpolicy file stays other"
+fi
 
+if check_block s4g-judgment s4g; then
 # The judgment: ranges the agent wrote, validated against the file as it is now.
 spf="$WORK/sp-split.tsv"
 spd_db="$(bash "$AD" prose "$SPX" .claude/rules/db.md | awk -F'\t' '$1=="file" {print $3}')"
@@ -1734,6 +1793,10 @@ has "$(bash "$AD" classify rule no unknown no respell | cut -f2)" "paths:" "clas
 
 # A judgment is refused WHOLE: a gap, a fence-only workflow range, a cover that stops short, a bad
 # destination, or a row for a path that is not a judged surface.
+# MUTATION ROWS CITE THESE LABELS, which the code below builds from a variable. Spelled out here so
+# each row's witness is in this block's source, which the harness requires before it runs a row:
+#   a workflow range holding only a fenced block is refused
+#   a range that stops short of the last line is refused
 sp_refused() {  # <label> — the judgment in $spf is refused
   local o; o="$(bash "$AD" specialized "$SPX" --agents claude,codex,gemini --judgment "$spf")"
   has "$o" "unknown${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}-${TAB}judgment-refused" "judgment: $1 is refused"
@@ -1776,6 +1839,9 @@ eq "$(bash "$AD" specialized "$SPH" --judgment "$WORK/does-not-exist" >/dev/null
 eq "$(bash "$AD" specialized >/dev/null 2>&1; echo $?)" 2 "specialized: no project root is usage (exit 2)"
 eq "$(bash "$AD" specialized "$SPH" --bogus >/dev/null 2>&1; echo $?)" 2 "specialized: an unknown option is usage (exit 2)"
 eq "$(bash "$AD" prose "$SPH" ../etc/passwd >/dev/null 2>&1; echo $?)" 2 "prose: a path leaving the project is refused"
+fi
+
+if check_block s4g-shapes s4g; then
 # --- 4g, continued: frontmatter shapes, mirrors' bytes, root docs, empty files and decision entries -
 SPR="$WORK/sp-r1"; mkdir -p "$SPR/.claude/rules" "$SPR/.codex/rules" "$SPR/apps/api/src" "$SPR/pkg/empty"
 printf '{}\n' > "$SPR/apps/api/package.json"; printf '{}\n' > "$SPR/pkg/package.json"
@@ -1883,6 +1949,9 @@ dir/CLAUDE.md"; git init -q "$NLD" >/dev/null 2>&1; check_git "$NLD" add -A; che
 else
   check_note "SKIP: this filesystem refuses a newline in a directory name"
 fi
+fi
+
+if check_block s4g-links; then
 # --- 4g, continued: links, the YAML subset, reach and record grammar --------------------------------
 # NO LINK IS FOLLOWED (owner, 2026-11-09): a linked rules directory, or a linked rule, is not judged.
 SPL="$WORK/sp-links"; mkdir -p "$SPL/.claude" "$SPL/shared" "$SPL/other/.claude/rules" "$WORK/sp-outside"
@@ -1940,6 +2009,10 @@ has "$(cat "$WORK/sp-r2j.tsv")" "surface${TAB}.codex/rules/copy.md${TAB}rule${TA
 eq "$(bash "$AD" sclass "$WORK/sp-r2j.tsv" .codex/rules/copy.md codex)" split "sclass: a mirror of a split source is split, never keep"
 has "$(cat "$WORK/sp-r2j.tsv")" "facts=0 mixed=1" "mirror: ...and is not counted a second time"
 # sclass checks each field on its own.
+# MUTATION ROWS CITE THESE LABELS, which the code below builds from a variable. Spelled out here so
+# each row's witness is in this block's source, which the harness requires before it runs a row:
+#   an unknown reach judges nothing
+#   a scope outside the glob charset judges nothing
 sp_bad_surface() {  # <label> <scope> <reach> <status> <judged>
   printf 'surface\tx.md\trule\tclaude\tpaths\t%s\t%s\t%s\t%s\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rootdocs=0 rules=1 nested=0 mirrors=0 facts=1 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=0 unknown=0 judgment=given\n' "$2" "$3" "$4" "$5" > "$WORK/sp-bad.tsv"
   eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" x.md claude)" unjudged "sclass: $1 judges nothing"
@@ -1960,6 +2033,9 @@ printf 'surface\tx.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\
 eq "$(bash "$AD" sclass "$WORK/sp-good.tsv" x.md claude)" homed "sclass: ...while the same record with every field in its grammar is read"
 printf 'surface\t../x.md\trule\tclaude\tpaths\tsrc/**\tclaude:on-path-match\thomed\tfacts\nsummary\t-\t-\t-\t-\t-\t-\t-\tspecialized: rootdocs=0 rules=1 nested=0 mirrors=0 facts=1 mixed=0 workflows=0 unhomed=0 respell=0 exempt=0 refused=0 unjudged=0 pointers=0 unknown=0 judgment=given\n' > "$WORK/sp-bad.tsv"
 eq "$(bash "$AD" sclass "$WORK/sp-bad.tsv" ../x.md claude)" unjudged "sclass: a traversal-shaped surface path judges nothing"
+fi
+
+if check_block s4g-pointers s4g; then
 # --- 4g, continued: pointers in every root doc, current links, tabs, Claude's AGENTS.md in scan ---
 SP5="$WORK/sp-r5"; mkdir -p "$SP5/.claude/rules" "$SP5/pkg"
 printf 'Run /implement 42.\n' > "$SP5/.claude/CLAUDE.md"; printf 'Run /implement 43.\n' > "$SP5/AGENTS.override.md"
@@ -1975,6 +2051,9 @@ has "$r5" "unknown${TAB}.claude/rules/tab.md${TAB}rule${TAB}claude${TAB}-${TAB}-
 has "$r5" "unknown${TAB}.claude/rules/nested.md${TAB}rule${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}malformed-frontmatter" "yaml: a nested mapping is outside the subset"
 has "$r5" "unknown${TAB}pkg/CLAUDE.md${TAB}nested-doc${TAB}claude${TAB}-${TAB}-${TAB}-${TAB}linked-doc" "links: a tracked doc now a link in the working tree is not judged"
 has "$(bash "$AD" scan "$SPX" --agents claude)" "nested-doc${TAB}apps/web/AGENTS.md${TAB}AGENTS.md${TAB}codex" "scan: --agents claude lists an AGENTS.md Claude reads, as specialized does"
+fi
+
+if check_block s4g-foreign; then
 # --- 4g, continued: a surface another agent owns is not this run's to refuse ----------------------
 SP6="$WORK/sp-r6"; mkdir -p "$SP6/.gemini" "$SP6/.ai-dev-baseline" "$SP6/.claude/rules" "$SP6/pkg"
 printf 'gemini notes\n' > "$SP6/.gemini/rules.md"
@@ -1995,6 +2074,9 @@ check_git "$SP6" add -A; check_git "$SP6" commit -q -m link
 r6l="$(bash "$AD" specialized "$SP6" --agents claude)"; r6lrc=$?
 has "$r6l" "unknown${TAB}pkg/AGENTS.md${TAB}nested-doc${TAB}codex${TAB}-${TAB}-${TAB}-${TAB}linked-doc" "unknowns: a linked AGENTS.md Claude reads is reported under --agents claude"
 eq "$r6lrc" 11 "unknowns: ...and the run is not judged in full (exit 11)"
+fi
+
+if check_block s4g-nested; then
 # --- 4g, continued: list indentation, nested .claude/CLAUDE.md, on-disk overrides, record relations -
 SP7="$WORK/sp-r7"; mkdir -p "$SP7/.claude/rules" "$SP7/pkg/.claude" "$SP7/svc"
 printf -- '---\npaths:\n  - "src/**"\n - "tests/**"\n---\nx\n' > "$SP7/.claude/rules/uneven.md"
@@ -2015,6 +2097,9 @@ sp_bad_row "a globs: rule that claims to load on a match" "x.md${TAB}rule${TAB}c
 sp_bad_row "a Claude rule marked as a mirror" "x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/**${TAB}claude:on-path-match${TAB}mirror:y.md${TAB}-" claude
 sp_bad_row "a scope with a .. component" "x.md${TAB}rule${TAB}claude${TAB}paths${TAB}src/../**${TAB}claude:on-path-match${TAB}homed${TAB}facts" claude
 sp_bad_row "a mirror whose source row is absent" "x.md${TAB}rule${TAB}codex${TAB}-${TAB}-${TAB}none${TAB}mirror:missing.md${TAB}-" codex
+fi
+
+if check_block s4g-paths s4g s4g-judgment; then
 # --- 4g, continued: unprintable paths Claude reads, the `-` scope, .claude/AGENTS.md, override dirs --
 SP8="$WORK/sp-r8"; mkdir -p "$SP8/.claude/rules" "$SP8/bad dir" "$SP8/svc/AGENTS.override.md"
 printf 'claude-visible\n' > "$SP8/bad dir/AGENTS.md"
@@ -2035,7 +2120,9 @@ spem="$(bash "$AD" specialized "$SPH" --judgment "$spf")"; spemrc=$?
 hasnt "$spem" "judgment-refused" "judgment: an empty judgment file is not refused"
 has "$spem" "${TAB}homed${TAB}unjudged" "judgment: ...and judges nothing"
 eq "$spemrc" 10 "judgment: an unjudged surface under a given judgment is a finding (exit 10)"
+fi
 
+if check_block s5 s4; then
 # --- 5. the getrich inventory, end to end --------------------------------------------------------
 # #20's acceptance criterion, discharged against the SHAPE rather than the live repo (see the
 # header): remove the duplicated non-prescribed hook, keep the stack CLAUDE.md, keep the
@@ -2064,7 +2151,9 @@ eq "$(verdict rootdoc no unknown \
    "getrich: the stack CLAUDE.md is KEEP"
 eq "$(bash "$AD" roles-infer "$FX" | awk -F"$TAB" '$1=="gap_analysis"{print $2}')" codex \
    "getrich: gap_analysis = codex is inferred from the inline codex exec"
+fi
 
+if check_block s6; then
 # --- 6. roles-infer: no signal means NO PROPOSAL, and two signals mean AMBIGUOUS -----------------
 # The dangerous direction here is inventing intent. A project that says nothing must produce
 # `none` — never the baseline's own default wearing the project's name.
@@ -2103,7 +2192,9 @@ AMB="$WORK/ambiguous"; mkdir -p "$AMB/.claude/skills/x"
 printf 'the code-review pass runs codex exec\nthe code-review pass also runs gemini\n' > "$AMB/.claude/skills/x/SKILL.md"
 eq "$(bash "$AD" roles-infer "$AMB" | awk -F"$TAB" '$1=="review"{print $2}')" ambiguous \
    "two agents named for one role -> ambiguous, not a coin flip"
+fi
 
+if check_block s7 s4; then
 # --- 7. propose: an uninferred role is COMMENTED, and the output is a real manifest --------------
 prop="$(bash "$AD" roles-infer "$FX" | bash "$AD" propose)"
 printf '%s\n' "$prop" > "$WORK/proposed.toml"
@@ -2130,7 +2221,9 @@ warnprop="$(printf 'warning\ta gap_analysis field contains a tab\n' | bash "$AD"
 warnkeys="$(printf '%s\n' "$warnprop" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=.*/\1/p')"
 hasnt "$warnkeys" "warning" "propose must never render a non-role record as a TOML key"
 has   "$warnprop" '# NOTE'  "...it surfaces the unusable record as a comment instead"
+fi
 
+if check_block s7b s4 s7; then
 # --- 7b. propose renders EVERY section the template ships (#459) ---------------------------------
 # DERIVED FROM THE TEMPLATE, never a list in this file: a section added to templates/agents.toml
 # and forgotten by `propose` must fail here, which a hand-copied list could not do. A header counts
@@ -2143,6 +2236,9 @@ if [ "${#tsections[@]}" -ge 8 ]; then ok
 else bad "propose: the template section list could not be derived (got ${#tsections[@]}: ${tsections[*]})"; fi
 # Here-strings, not `printf … |`: under pipefail, `grep -q` exits on its first match and the writer
 # can die of SIGPIPE (141) before it finishes, which reads as "not found".
+# MUTATION ROWS CITE THESE LABELS, which the code below builds from a variable. Spelled out here so
+# each row's witness is in this block's source, which the harness requires before it runs a row:
+#   propose: renders the template section [mcp]
 for s in "${tsections[@]}"; do
   if grep -Fq -e "[$s]" <<< "$prop" && grep -Eq "^(# )?\[$(printf '%s' "$s" | sed 's/[][\.*^$()+?{}|]/\\&/g')\]" <<< "$prop"; then ok
   else bad "propose: renders the template section [$s] (live or commented with its reason)"; fi
@@ -2150,7 +2246,9 @@ done
 # `[updates]` is GLOBAL ONLY — a project copy is ignored — so it must never be proposed live.
 eq "$(adb_toml_get "$WORK/proposed.toml" updates session_start >/dev/null 2>&1; echo $?)" 1 \
    "propose: [updates] is never live in a project proposal (it is global-only)"
+fi
 
+if check_block s7c s4; then
 # --- 7c. [reviewers] is inferred from the OBSERVED PR history, and never from its absence --------
 OBS="$WORK/observed"; mkdir -p "$OBS"
 printf 'prs\t3\t100\nreviewer\tchatgpt-codex-connector\t35,38,40\ndelete-branch-on-merge\tfalse\n' > "$OBS/codex.tsv"
@@ -2198,6 +2296,13 @@ printf 'prs\t1\t100\nreviewer\tapp\t1,2,3\n' > "$OBS/more-prs-than-read.tsv"
 printf 'prs\t3\t100\nreviewer\tapp\t5,5\n' > "$OBS/repeated-pr.tsv"
 printf 'prs\t3\t100\ntruncated\t0\n' > "$OBS/zero-truncated.tsv"
 printf 'prs\t3\t100\ntruncated\t5\ntruncated\t5\n' > "$OBS/repeated-truncated.tsv"
+# MUTATION ROWS CITE THESE LABELS, which the code below builds from a variable. Spelled out here so
+# each row's witness is in this block's source, which the harness requires before it runs a row:
+#   propose: a damaged observation (bad-kind) is refused whole
+#   propose: a damaged observation (trailing-tab) is refused whole
+#   propose: a damaged observation (read-past-bound) is refused whole
+#   propose: a damaged observation (more-prs-than-read) is refused whole
+#   propose: a damaged observation (cut-off) is refused whole
 for bad_obs in bad-kind cut-off doubled-tab trailing-tab no-prs read-past-bound zero-bound reviewer-without-history nul \
                more-prs-than-read repeated-pr zero-truncated repeated-truncated; do
   propose_obs "$OBS/$bad_obs.tsv" > "$WORK/p-$bad_obs.toml"
@@ -2221,7 +2326,9 @@ propose_obs "$OBS/truncated.tsv" > "$WORK/p-trunc.toml"
 eq "$(adb_toml_get "$WORK/p-trunc.toml" reviewers bots >/dev/null 2>&1; echo $?)" 1 \
    "propose: a truncated history with no App seen proposes a COMMENTED bots"
 has "$(cat "$WORK/p-trunc.toml")" "#35 had more reviews than were read" "...and names the truncated pull request"
+fi
 
+if check_block s7d s4 s7c; then
 # --- 7d. the interview's answers (#459): validated twice, override inference, refuse ambiguity ----
 # an <key> <value> — publish ONE answer through `answers` into a scratch file and print the record.
 an() {
@@ -2365,7 +2472,9 @@ has "$(cat "$WORK/p-inf.toml")" "NOT PROPOSED: inferred from CLAUDE.md:1" "propo
 printf 'primary\tcodex\n' > "$WORK/answers-codex.tsv"
 HOME="$WORK/nohome" bash "$AD" propose --answers "$WORK/answers-codex.tsv" < "$WORK/inferred-claude.tsv" > "$WORK/p-inf-ok.toml"
 eq "$(adb_toml_get "$WORK/p-inf-ok.toml" roles review)" '["claude"]' "propose: an inferred review that differs from primary is still proposed"
+fi
 
+if check_block s7e s4; then
 # --- 7e. [gates]: a detected gate is SHOWN, not pinned; nothing detected is loud ------------------
 printf 'test\tpnpm test\nlint\tpnpm lint\n' > "$WORK/gates.tsv"
 bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/gates.tsv" > "$WORK/p-gates.toml"
@@ -2398,7 +2507,9 @@ printf 'test\tpnpm test\nnot a gate line\n' > "$WORK/bad-gates.tsv"
 pg="$(bash "$AD" roles-infer "$FX" | bash "$AD" propose --gates "$WORK/bad-gates.tsv")"
 hasnt "$pg" 'pnpm test' "propose: a malformed gate list is refused whole"
 has   "$pg" 'could not be read' "...and says so rather than listing half of it"
+fi
 
+if check_block s8; then
 # --- 8. stack: every label the pin accepts is reachable, and unknown is a real answer ------------
 mk() { mkdir -p "$WORK/stack-$1" && printf '%s' "${2:-}" > "$WORK/stack-$1/${3:-x}"; printf '%s' "$WORK/stack-$1"; }
 eq "$(bash "$AD" stack "$(mk node '{}' package.json)")"        node   "package.json -> node"
@@ -2432,7 +2543,9 @@ for s in node node-monorepo rust go python php php-wordpress shell unknown; do
   yes "$(bash "$AD" pin-render v1 "$FULLSHA" 2026-08-12 "$s" >/dev/null 2>&1; echo $?)" \
       "pin-render accepts the stack label '$s' that stack can emit"
 done
+fi
 
+if check_block s9 s8; then
 # --- 9. the pin: validation, round-trip, and the drift command ----------------------------------
 bash "$AD" pin-render "v0.5.0" "b6158eff2604875e1e522a57df71d7dfced7ace5" "2026-08-12" shell "claude,codex" \
   > "$WORK/upstream.toml"
@@ -2485,7 +2598,9 @@ drift="$(bash "$AD" pin-drift "$WORK/upstream.toml" "$ROOT")"
 has "$drift" "b6158eff2604875e1e522a57df71d7dfced7ace5..HEAD" "pin-drift names the pinned commit"
 has "$drift" "git -C $ROOT" "pin-drift targets the baseline clone"
 eq "$(bash "$AD" pin-drift "$WORK/upstream.toml" "$WORK/nope" >/dev/null 2>&1; echo $?)" 2 "pin-drift on a missing baseline exits 2"
+fi
 
+if check_block s9b; then
 # --- 9b. pin-describe (#464): the version DESCRIBES the commit, from one resolved object ----------
 # The defect this replaces wrote `describe --tags --abbrev=0` — the nearest tag NAME — so a clone 13
 # commits past v3.0.0 pinned `version = "v3.0.0"` beside a commit that is not v3.0.0. The assertion
@@ -2558,7 +2673,9 @@ if [ "$(git -C "$PD/race" rev-parse HEAD~1)" = "$(pd_field "$out" 2)" ]; then ok
 else bad "pin-describe: the race fixture did not move HEAD after the resolve — it is not testing anything"; fi
 eq "$(git -C "$PD/race" rev-parse --verify --quiet "$(pd_field "$out" 1)^{commit}")" "$(pd_field "$out" 2)" \
    "pin-describe: the version describes the SAME commit even when HEAD moves between the reads"
+fi
 
+if check_block s10; then
 # --- 10. hygiene: each axis fires, and the ignore axis is proven able to STAY SILENT ------------
 HY="$WORK/hygiene"; mkdir -p "$HY/.claude/state" "$HY/src"
 git -C "$HY" init -q >/dev/null 2>&1
@@ -2647,7 +2764,9 @@ mkdir -p "$BARE/.claude/state"
 bare_out="$(bash "$AD" hygiene "$BARE" --agents claude | grep '^ignore-risk' || true)"
 has   "$bare_out" "COULD NOT BE DETERMINED" "a git ERROR is reported as undetermined, not as a fact"
 hasnt "$bare_out" "is NOT gitignored"       "a git ERROR must NOT be reported as 'not gitignored'"
+fi
 
+if check_block s10b; then
 # --- 10b. agent-doc and branch-hygiene (#459) -----------------------------------------------------
 # HOME is a throwaway, so a global manifest on the developer's machine cannot supply a role the
 # fixture never declared — the axis layers the project manifest over the global one, as dispatch does.
@@ -2692,7 +2811,9 @@ hasnt "$(hyg --observed "$WORK/dbm-on.tsv")"  "branch-hygiene" "hygiene: branch-
 has   "$(hyg --observed "$WORK/dbm-unread.tsv")" "branch-hygiene axis did NOT run" \
       "hygiene: an unread delete_branch_on_merge is a warning, not silence"
 has   "$(hyg)" "branch-hygiene axis did NOT run" "hygiene: no observation at all is a warning too"
+fi
 
+if check_block s11; then
 # --- 11. plan: the ORDERING is the decision ------------------------------------------------------
 # move strictly before remove is the assertion with teeth. Reversed, the plan has the operator
 # delete a forked skill before its delta has been re-homed, and a run that stops in between has
@@ -2727,7 +2848,9 @@ has "$unk" "## keep"       "...without suppressing the sections that are valid"
 short="$(printf 'move\tskill\n' | bash "$AD" plan)"
 has   "$short" "MALFORMED RECORD" "a short record is named as malformed"
 hasnt "$short" "1.  (skill) — "   "a short record must not render as a blank-path entry"
+fi
 
+if check_block s12 s4; then
 # --- 12. no subcommand mutates the project it is given ------------------------------------------
 # THE BOUNDARY, asserted mechanically rather than trusted to review. /adopt v1 never deletes,
 # moves or edits a file in the scanned project — so every read-only subcommand is run against a
@@ -2742,7 +2865,9 @@ bash "$AD" roles-infer "$FX" >/dev/null 2>&1
 bash "$AD" stack "$FX" >/dev/null 2>&1
 after="$(snapshot "$FX")"
 eq "$after" "$before" "no read-only subcommand may alter one byte of the scanned project"
+fi
 
+if check_block s13; then
 # --- 13. the workflow still delegates to this library -------------------------------------------
 # The drift guard the sibling suites carry: a workflow that quietly stopped calling a predicate
 # and started restating it inline would pass every assertion above while shipping the untested
@@ -2779,7 +2904,9 @@ if [ -f "$WF" ]; then
 else
   bad "base/workflows/adopt.md is missing"
 fi
+fi
 
+if check_block s14; then
 # --- 14. the workflow's OWN write paths refuse rather than overwrite -----------------------------
 # The non-mutation assertion above covers the LIBRARY. It says nothing about the workflow, which is
 # where the only writes live — so the `apply` snippet is EXECUTED here, against fixtures, exactly as
@@ -2841,7 +2968,9 @@ else
     bad "apply wrote THROUGH a dangling symlink to $A3/outside/victim.toml — outside the project entirely"
   else ok; fi
 fi
+fi
 
+if check_block s14b s4 s9b; then
 # --- 14b. the workflow's propose → interview → hygiene → pin wiring, EXECUTED (#459, #464) --------
 # Each library predicate above is tested; what is not, unless it runs, is the prose that hands one's
 # output to the next — a fenced block that dropped `--observed`, split the pin's fields with `read`,
@@ -2950,6 +3079,9 @@ printf 'STALE PIN\n' > "$WFS/state/adopt-upstream.toml"
 wf_run pin readiness-ok "$PD/unreach"; no "$?" "workflow: an unidentifiable baseline stops the pin block"
 if [ -e "$WFS/state/adopt-upstream.toml" ]; then bad "workflow: a failed pin block must leave NO pin for --apply to write (a stale one survived)"
 else ok; fi
+fi
+
+check_blocks_done
 
 # --- the mutation harness (`--mutation`) --------------------------------------------------------
 # EVERY LOAD-BEARING DECISION IN adopt-lib.sh IS INJECTED WITH ITS OWN DEFECT, AND THE SUITE ABOVE
@@ -2976,15 +3108,25 @@ else ok; fi
 # The table is declared only in `--mutation` mode — this file sources shmutant there and nowhere
 # else — and the pool is a plain command inside that block, never the right side of `&&`, where
 # bash would ignore errexit inside every callback (shmutant's docs/integrating.md §4).
+#
+# EACH ROW NAMES THE BLOCK THAT HOLDS ITS WITNESS (`shmutant_mut`'s fifth argument, #631), and runs
+# that block plus the blocks it declares it needs — not the whole suite. `check_shmutant_pool`'s
+# sixth argument is what makes the selectors blocks: it refuses a row whose block is missing,
+# undeclared or does not carry its witness, and has shmutant run the controls as its baselines —
+# the whole suite once, unmutated, then each selection, which must be green and must count for
+# every block it runs what the whole-suite run counted.
+# ADB_MUTATION_FULL_SUITE=1 (the nightly) scores every mutant against the whole suite instead.
+# The suite above has already run in this checkout by the time the table is declared; the controls
+# the rows are scored against are clones of the prepared tree, as every mutant is.
 if [ "$MUTATE" = "1" ]; then
-# <dir> — build the tree copy ONCE; shmutant clones it for every row. `install.sh`/`uninstall.sh`
-# come along because the suite reads them; a copy failure for those is not fatal.
+# <dir> — build the tree copy ONCE; shmutant clones it for every control and every row.
+# `install.sh`/`uninstall.sh` come along because the suite reads them.
 _ad_mut_prepare() {
   check_copy_subtrees "$ROOT" "$1" scripts base agents templates bin >/dev/null 2>&1 || return 1
-  cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null
-  return 0
+  cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null || return 1
 }
-# <root> — run the suite recursively. NOT `--mutation`, or the child would recurse.
+# <root> — run the suite recursively. NOT `--mutation`, or the child would recurse. The selection
+# arrives in ADB_CHECK_BLOCK, set by check_shmutant_pool; nothing here reads the second argument.
 _ad_mut_run() { ( cd "$1" && bash scripts/check-adopt.sh ); }
 
 # shellcheck source=/dev/null
@@ -2993,247 +3135,307 @@ shmutant_target scripts/lib/adopt-lib.sh
 shmutant_mut prescribed-arm-order \
     'if [ "$prescribed" = yes ]; then' \
     'if [ "$prescribed" = SWAPPED ]; then' \
-    'a PRESCRIBED HOME that collides is keep'
+    'a PRESCRIBED HOME that collides is keep' \
+    s1
 shmutant_mut differs-becomes-remove \
     "printf 'move%scollides with a baseline skill" \
     "printf 'remove%scollides with a baseline skill" \
-    'collides but DIFFERS -> move, never remove'
+    'collides but DIFFERS -> move, never remove' \
+    s1
 shmutant_mut skill-compares-only-SKILL.md \
     'pl="$(_ad_dir_manifest "$proj")"; bl="$(_ad_dir_manifest "$base")"' \
     'pl=x; bl=x' \
-    'an extra project-only file makes a skill differ'
+    'an extra project-only file makes a skill differ' \
+    s2b
 # The literal runs to the end of its line: a shorter one is also a substring of a later, deeper-
 # indented arm, and shmutant refuses a literal that starts at more than one position (D125).
 shmutant_mut cmp-error-becomes-differs \
     "    *) printf 'unknown\\n' ;;" \
     "    *) printf 'differs\\n' ;;" \
-    'a cmp FAILURE (rc>1) is unknown'
+    'a cmp FAILURE (rc>1) is unknown' \
+    s2b
 shmutant_mut role-token-substring \
     'local bounded="(^|[^A-Za-z0-9_-])${agent}([^A-Za-z0-9_-]|\$)"' \
     'local bounded="$agent"' \
-    'must NOT infer that agent'
+    'must NOT infer that agent' \
+    s6
 shmutant_mut roles-default-instead-of-none \
     '_ad_emit "$role" none "no signal' \
     '_ad_emit "$role" codex "no signal' \
-    'a project with no signal proposes NOTHING'
+    'a project with no signal proposes NOTHING' \
+    s6
 shmutant_mut propose-renders-any-key \
     'gap_analysis|review|debug|primary|release|issue_author|survey) ;;' \
     '*) ;;' \
-    'propose must never render a non-role record as a TOML key'
+    'propose must never render a non-role record as a TOML key' \
+    s7
 shmutant_mut plan-order-remove-before-move \
     'for verdict in escalate move remove keep; do' \
     'for verdict in escalate remove move keep; do' \
-    'plan ordering must be escalate < move < remove < keep'
+    'plan ordering must be escalate < move < remove < keep' \
+    s11
 shmutant_mut plan-drops-unknown-verdict \
     '    bad_n=$((bad_n + 1))' \
     '    continue' \
-    'an UNRECOGNISED verdict is reported'
+    'an UNRECOGNISED verdict is reported' \
+    s11
 shmutant_mut agent-token-unvalidated \
     '*[!a-z0-9-]*|-*) die "$who: invalid agent token' \
     'NEVERMATCHES) die "$who: invalid agent token' \
-    'rejects the traversal/invalid token'
+    'rejects the traversal/invalid token' \
+    s4b
 shmutant_mut ignore-error-is-not-ignored \
     'elif [ "$igrc" -eq 1 ]; then' \
     'elif [ "$igrc" -ge 1 ]; then' \
-    'a git ERROR is reported as undetermined'
+    'a git ERROR is reported as undetermined' \
+    s10
 shmutant_mut ignore-second-probe-dropped \
     'git -C "$root" check-ignore -q --no-index ".$a/state/adb-adopt-probe" 2>/dev/null' \
     'true' \
-    'a blanket *.json IS reported'
+    'a blanket *.json IS reported' \
+    s10
 shmutant_mut credential-value-echoed \
     "| grep -oE '^(ghp_|gho_|ghu_|ghs_|github_pat_|sk-|xox[baprs]-|AKIA)' | head -n 1)\"" \
     '| head -n 1)"' \
-    'must NEVER echo the credential itself'
+    'must NEVER echo the credential itself' \
+    s10
 shmutant_mut tracked-list-status-ignored \
     'if ! git -C "$root" ls-files -z ".$a" >/dev/null 2>&1; then' \
     'if false; then' \
-    'a failed tracked-file read is REPORTED, never rendered as a clean scan'
+    'a failed tracked-file read is REPORTED, never rendered as a clean scan' \
+    s10
 shmutant_mut pin-accepts-short-commit \
     '    40|64) ;;' \
     '    40|64|10) ;;' \
-    'pin-render rejects'
+    'pin-render rejects' \
+    s9
 shmutant_mut pin-version-unvalidated \
     '*[!A-Za-z0-9._+-]*) die "pin-render: <version>' \
     'NEVERMATCHES) die "pin-render: <version>' \
-    'rejects a version containing a quote'
+    'rejects a version containing a quote' \
+    s9
 shmutant_mut pin-drift-unquoted \
     'printf '"'"'git -C %s log --oneline %s..HEAD\n'"'"' "$(adb_display_value "$root")" "$(adb_display_value "$commit")"' \
     'printf '"'"'git -C %s log --oneline %s..HEAD\n'"'"' "$root" "$(adb_display_value "$commit")"' \
-    'pin-drift must not emit the raw unquoted path'
+    'pin-drift must not emit the raw unquoted path' \
+    s9
 shmutant_mut foreign-pin-kept \
     'if [ "$kind" = foreign-pin ]; then' \
     'if false; then' \
-    'a foreign framework pin is MOVE'
+    'a foreign framework pin is MOVE' \
+    s2
 shmutant_mut other-classified-as-keep \
     'if [ "$kind" = other ]; then' \
     'if false; then' \
-    'escalates on collision=no'
+    'escalates on collision=no' \
+    s4
 shmutant_mut scan-drops-other \
     '_ad_emit other "$rel" "${rel##*/}" "$a"' \
     ':' \
-    'an unmodelled file under the agent dir is emitted as'
+    'an unmodelled file under the agent dir is emitted as' \
+    s4
 shmutant_mut stack-node-before-wordpress \
     "if grep -rqIl --include='*.php' -e 'add_action' -e 'wp_enqueue' \"\$r\" 2>/dev/null; then" \
     'if false; then' \
-    'is php-wordpress, not node'
+    'is php-wordpress, not node' \
+    s8
 
 shmutant_mut skill-ignores-symlinks \
     'find . \( -type f -o -type l \) -print 2>/dev/null' \
     'find . -type f -print 2>/dev/null' \
-    'a project-only SYMLINK makes a skill differ'
+    'a project-only SYMLINK makes a skill differ' \
+    s2c
 shmutant_mut scan-drops-vendored-lib \
     '[ -d "$root/.$a/scripts/lib" ] && _ad_emit lib ".$a/scripts/lib" lib "$a"' \
     ':' \
-    'a vendored scripts/lib is emitted as ONE lib artifact'
+    'a vendored scripts/lib is emitted as ONE lib artifact' \
+    s2c
 shmutant_mut plan-prints-raw-path \
     'printf '"'"'%s. %s (%s) — %s\n'"'"' "$n" "$(adb_display_value "$adoptpath")" "$kind" "$reason"' \
     'printf '"'"'%s. %s (%s) — %s\n'"'"' "$n" "$adoptpath" "$kind" "$reason"' \
-    'must not print a raw control byte'
+    'must not print a raw control byte' \
+    s2c
 shmutant_mut pin-drift-trusts-the-file \
     '  _ad_check_commit "$commit" pin-drift' \
     '  :' \
-    'pin-drift refuses a pin whose commit is HEAD'
+    'pin-drift refuses a pin whose commit is HEAD' \
+    s2c
 shmutant_mut ignore-axis-needs-agent-dir \
     '    _ad_ignore_axis "$root" "$a"' \
     '    [ -d "$root/.$a" ] && _ad_ignore_axis "$root" "$a"' \
-    'runs even when .<agent>/ does not exist yet'
+    'runs even when .<agent>/ does not exist yet' \
+    s2c
 
 shmutant_mut pin-describe-abbrev-zero \
     '    version="$(git -C "$root" describe --tags --abbrev=12 "$commit" 2>/dev/null)" && [ -n "$version" ] \' \
     '    version="$(git -C "$root" describe --tags --abbrev=0 "$commit" 2>/dev/null)" && [ -n "$version" ] \' \
-    'pin-describe: an off-tag clone pins the offset, not the bare tag'
+    'pin-describe: an off-tag clone pins the offset, not the bare tag' \
+    s9b
 shmutant_mut pin-describe-describes-head \
     '    version="$(git -C "$root" describe --tags --abbrev=12 "$commit" 2>/dev/null)" && [ -n "$version" ] \' \
     '    version="$(git -C "$root" describe --tags --abbrev=12 HEAD 2>/dev/null)" && [ -n "$version" ] \' \
-    'pin-describe: the version describes the SAME commit even when HEAD moves between the reads'
+    'pin-describe: the version describes the SAME commit even when HEAD moves between the reads' \
+    s9b
 shmutant_mut pin-describe-unreachable-is-empty \
     '      || die "pin-describe: $(adb_display_value "$root") has tags, but none describes' \
     '      || : "pin-describe: $(adb_display_value "$root") has tags, but none describes' \
-    'pin-describe: tags present but none reachable is an ERROR, not an empty version'
+    'pin-describe: tags present but none reachable is an ERROR, not an empty version' \
+    s9b
 shmutant_mut pin-describe-taglist-failure-is-none \
     '    || die "pin-describe: could not list the tags in' \
     '    || : "pin-describe: could not list the tags in' \
-    "pin-describe: a tag listing that fails is an error, not 'no tags'"
+    "pin-describe: a tag listing that fails is an error, not 'no tags'" \
+    s9b
 shmutant_mut propose-bots-from-unread-history \
     '  elif [ -z "$_AD_OBS_PRS" ]; then' \
     '  elif false; then' \
-    'propose: an UNREAD history never proposes bots = []'
+    'propose: an UNREAD history never proposes bots = []' \
+    s7c
 shmutant_mut propose-bots-from-empty-history \
     '  elif [ "$_AD_OBS_PRS" -eq 0 ]; then' \
     '  elif false; then' \
-    'propose: a repo with no PRs proposes a COMMENTED bots, never []'
+    'propose: a repo with no PRs proposes a COMMENTED bots, never []' \
+    s7c
 shmutant_mut observed-skips-unknown-kind \
     '      *) _AD_OBS_ERR="line $n: not a record kind this grammar has"; return 1 ;;' \
     '      *) continue ;;' \
-    'propose: a damaged observation (bad-kind) is refused whole'
+    'propose: a damaged observation (bad-kind) is refused whole' \
+    s7c
 shmutant_mut observed-field-count-unchecked \
     '    adb_sweep_split "$line" "$want" || { _AD_OBS_ERR="line $n: a $kind record with the wrong field count"; return 1; }' \
     '    adb_sweep_split "$line" "$want" || :' \
-    'propose: a damaged observation (trailing-tab) is refused whole'
+    'propose: a damaged observation (trailing-tab) is refused whole' \
+    s7c
 shmutant_mut observed-counts-inconsistent \
     '        [ "$_AD_OBS_WINDOW" -ge 1 ] && [ "$_AD_OBS_PRS" -le "$_AD_OBS_WINDOW" ] \' \
     '        true \' \
-    'propose: a damaged observation (read-past-bound) is refused whole'
+    'propose: a damaged observation (read-past-bound) is refused whole' \
+    s7c
 shmutant_mut answers-duplicate-last-wins \
     '    if [ "${count[$k]}" -gt 1 ]; then' \
     '    if false; then' \
-    'propose: a key answered twice applies neither answer'
+    'propose: a key answered twice applies neither answer' \
+    s7d
 shmutant_mut answers-write-before-validating \
     '    reason="$(_ad_answer_check "$k" "$v")" || die "answers: $reason — nothing was written"' \
     '    reason="$(_ad_answer_check "$k" "$v")" || :' \
-    'answers: a refused pair leaves the previous answers file whole'
+    'answers: a refused pair leaves the previous answers file whole' \
+    s7d
 shmutant_mut answered-bots-drops-evidence \
     "    printf '\\n[reviewers]\\nbots = [%s]     # answered in the /adopt interview\\n# observed: %s\\n' \"\$out\" \"\$summary\"" \
     "    printf '\\n[reviewers]\\nbots = [%s]     # answered in the /adopt interview\\n' \"\$out\"" \
-    'propose: an answered bots keeps the observed evidence beside it'
+    'propose: an answered bots keeps the observed evidence beside it' \
+    s7d
 shmutant_mut answers-unbounded \
     '  [ -s "$stage" ] && ! adb_bytes_whole "$stage" "$(_ad_record_max)" \' \
     '  false \' \
-    "answers: answers past the reader's bound are refused"
+    "answers: answers past the reader's bound are refused" \
+    s7d
 shmutant_mut role-empty-list-silent \
     '      \[*) if [ -z "$(adb_toml_array "$raw")" ] || [ "${raw%]}" = "$raw" ]; then' \
     '      \[*) if false; then' \
-    'hygiene: a role declared as an empty list is reported, not silently dropped'
+    'hygiene: a role declared as an empty list is reported, not silently dropped' \
+    s10b
 shmutant_mut answers-mode-dropped \
     '  adb_publish_json "$stage" "$file" --allow-empty --strict \' \
     '  mv "$stage" "$file" \' \
-    "answers: publication keeps the existing file's mode"
+    "answers: publication keeps the existing file's mode" \
+    s7d
 shmutant_mut known-agent-substring \
     "  case \"\$1\" in ''|*[!a-z0-9-]*) return 1 ;; esac   # ONE token" \
     '  : # ONE token' \
-    'answer: primary = a two-agent list is refused'
+    'answer: primary = a two-agent list is refused' \
+    s7d
 shmutant_mut observed-pr-ids-unchecked \
     '    [ "${#pr_seen[@]}" -le "$_AD_OBS_PRS" ] \' \
     '    true \' \
-    'propose: a damaged observation (more-prs-than-read) is refused whole'
+    'propose: a damaged observation (more-prs-than-read) is refused whole' \
+    s7c
 shmutant_mut detected-gate-quote-rendered-as-key \
     "        *'\"'*|*'\\'*) printf '#   %s (DETECTED" \
     "        NEVERMATCHES) printf '#   %s (DETECTED" \
-    'propose: a detected gate carrying a quote is shown as evidence'
+    'propose: a detected gate carrying a quote is shown as evidence' \
+    s7e
 shmutant_mut snapshot-skips-byte-rules \
     '  if [ "$rc" -eq 0 ] && [ -s "$tmp" ]; then adb_bytes_whole "$tmp" "$max" || rc=1; fi' \
     '  :' \
-    'propose: a damaged observation (cut-off) is refused whole'
+    'propose: a damaged observation (cut-off) is refused whole' \
+    s7c
 shmutant_mut answer-control-bytes-accepted \
     '  _ad_toml_text_ok "$k" && _ad_toml_text_ok "$v" \' \
     '  true \' \
-    'answer: a review answer carrying a newline is refused'
+    'answer: a review answer carrying a newline is refused' \
+    s7d
 shmutant_mut answer-gate-label-own-grammar \
     '      _ad_gate_label_ok "${k#*.}" \' \
     '      true \' \
-    'answer: a gate label the gate runner would ignore is refused'
+    'answer: a gate label the gate runner would ignore is refused' \
+    s7d
 shmutant_mut propose-truncated-history-empty \
     '    elif [ -n "$trunc" ]; then summary="no App was seen on $scope, but$trunc, so absence is not established"' \
     '    elif false; then summary="no App was seen on $scope, but$trunc, so absence is not established"' \
-    'propose: a truncated history with no App seen proposes a COMMENTED bots'
+    'propose: a truncated history with no App seen proposes a COMMENTED bots' \
+    s7c
 shmutant_mut agent-doc-directory-present \
     '    elif [ -e "$root/$doc" ] && [ ! -f "$root/$doc" ]; then' \
     '    elif false; then' \
-    'hygiene: a DIRECTORY named AGENTS.md is not a root doc'
+    'hygiene: a DIRECTORY named AGENTS.md is not a root doc' \
+    s10b
 shmutant_mut gates-state-header-commented \
     "  printf '\\n[gates.state]\\n'" \
     "  printf '\\n# [gates.state]\\n'" \
-    'propose: an uncommented N/A axis lands in [gates.state]'
+    'propose: an uncommented N/A axis lands in [gates.state]' \
+    s7e
 shmutant_mut answers-not-revalidated \
     '    if ! reason="$(_ad_answer_check "$k" "$v")"; then' \
     '    if false; then' \
-    'propose: a hand-planted invalid answer is refused'
+    'propose: a hand-planted invalid answer is refused' \
+    s7d
 shmutant_mut answer-gate-quote-accepted \
     "          *'\"'*|*'\\'*) printf" \
     '          NEVERMATCHES) printf' \
-    'answer: a gate command with a quote is refused'
+    'answer: a gate command with a quote is refused' \
+    s7d
 shmutant_mut answered-primary-ignored \
     '  if [ -n "${_AD_ANS[primary]:-}" ]; then' \
     '  if false; then' \
-    'propose: an answered primary is live'
+    'propose: an answered primary is live' \
+    s7d
 shmutant_mut detected-gate-pinned \
     "      printf '# %-9s = \"%s\"   # DETECTED" \
     "      printf '%-9s = \"%s\"   # DETECTED" \
-    'propose: a DETECTED gate is listed commented, not pinned'
+    'propose: a DETECTED gate is listed commented, not pinned' \
+    s7e
 shmutant_mut gate-list-read-in-part \
     '          have_gates=0; gates_why="a line is not <label>TAB<command>"; glines=(); break' \
     '          continue' \
-    'propose: a malformed gate list is refused whole'
+    'propose: a malformed gate list is refused whole' \
+    s7e
 shmutant_mut propose-drops-a-section \
     '[mcp]                          # NOT INFERRED: name the MCP servers' \
     '# mcp-section-gone             # NOT INFERRED: name the MCP servers' \
-    'propose: renders the template section [mcp]'
+    'propose: renders the template section [mcp]' \
+    s7b
 shmutant_mut agent-doc-absent-silent \
     '    elif [ ! -e "$root/$doc" ]; then' \
     '    elif false; then' \
-    'hygiene: agent-doc fires for review = codex with no AGENTS.md'
+    'hygiene: agent-doc fires for review = codex with no AGENTS.md' \
+    s10b
 shmutant_mut agent-doc-dangling-unnamed \
     '    if [ -L "$root/$doc" ] && [ ! -e "$root/$doc" ]; then' \
     '    if false; then' \
-    'hygiene: agent-doc names a DANGLING root-doc symlink'
+    'hygiene: agent-doc names a DANGLING root-doc symlink' \
+    s10b
 shmutant_mut branch-hygiene-off-silent \
     '    false) _ad_emit branch-hygiene note -' \
     '    false) : branch-hygiene note -' \
-    'hygiene: branch-hygiene reports delete_branch_on_merge off'
+    'hygiene: branch-hygiene reports delete_branch_on_merge off' \
+    s10b
 shmutant_mut branch-hygiene-unread-silent \
     '    *)     _ad_emit warning "the branch-hygiene axis did NOT run: delete_branch_on_merge was not read' \
     '    *)     : warning "the branch-hygiene axis did NOT run: delete_branch_on_merge was not read' \
-    'hygiene: an unread delete_branch_on_merge is a warning, not silence'
+    'hygiene: an unread delete_branch_on_merge is a warning, not silence' \
+    s10b
 
 # The workflow's hand-offs are behaviour too, and section 14b executes them — so they are mutated
 # the same way, in the one source every agent's skill renders from.
@@ -3241,738 +3443,917 @@ shmutant_mut branch-hygiene-unread-silent \
 shmutant_mut workflows-map-lookup-disabled \
     'tgt="${target[$name]:-}"' \
     'tgt=""' \
-    'workflows: .claude/skills/implement competes with implement-issue'
+    'workflows: .claude/skills/implement competes with implement-issue' \
+    s4c
 shmutant_mut scan-drops-shared-skill-roots \
     '    for sroot in $(adb_agent_project_skill_dirs "$a"); do' \
     '    for sroot in ; do' \
-    "workflows: Codex's .agents/skills root is walked"
+    "workflows: Codex's .agents/skills root is walked" \
+    s4c
 shmutant_mut scan-double-emits-foreign-pin \
     '      case "$nl$_ad_emitted" in *"$nl$rel$nl"*) continue ;; esac' \
     '      :' \
-    'scan emits .claude/UPSTREAM_VERSION exactly once'
+    'scan emits .claude/UPSTREAM_VERSION exactly once' \
+    s4c
 shmutant_mut workflows-claude-precedence-ignored \
     'if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link' \
     'if false && [ -n "$top_" ] && _ad_baseline_link' \
-    'the Claude copy duplicates (never runs)'
+    'the Claude copy duplicates (never runs)' \
+    s4c
 shmutant_mut workflows-every-skill-exempt \
     'elif [ "$name" = release ]; then' \
     'elif true; then' \
-    'the same body under an unmapped name is project-specific'
+    'the same body under an unmapped name is project-specific' \
+    s4c
 shmutant_mut workflows-unread-baseline-judged \
     '  if [ -n "$why" ]; then' \
     '  if false; then' \
-    'an unreadable shipped set exits 11'
+    'an unreadable shipped set exits 11' \
+    s4c
 shmutant_mut workflows-dangling-link-trusted \
     '         && [ -f "$HOME/.claude/skills/$name/SKILL.md" ] && [ -r "$HOME/.claude/skills/$name/SKILL.md" ]; then cls=duplicates; fi' \
     '         ; then cls=duplicates; fi' \
-    'a personal link to a baseline directory with no SKILL.md is not proof'
+    'a personal link to a baseline directory with no SKILL.md is not proof' \
+    s4c
 shmutant_mut classify-unjudged-kept \
     '  if [ "$kind" = skill ] && [ "$wclass" = unjudged ]; then' \
     '  if false; then' \
-    'a skill workflows could not judge -> escalate'
+    'a skill workflows could not judge -> escalate' \
+    s1
 shmutant_mut supersedes-read-grammar-unchecked \
     '    if [ -n "$line" ] && ! printf' \
     '    if false && ! printf' \
-    'supersedes refuses an installed marker the build would refuse [# adb:supersedes]'
+    'supersedes refuses an installed marker the build would refuse [# adb:supersedes]' \
+    s4e-build
 shmutant_mut workflows-pinned-helper-ignored \
     '            [ -n "$inroot" ] || continue' \
     '            continue' \
-    'a project file inside a pinned skill is a finding'
+    'a project file inside a pinned skill is a finding' \
+    s4c
 shmutant_mut workflows-override-ignored \
     '        _ad_wf_rec project-specific "$rel" "$agent" - owner "a compose-override, retired' \
     '        : _ad_wf_rec project-specific "$rel" "$agent" - owner "a compose-override, retired' \
-    'a lone overrides.md is a finding'
+    'a lone overrides.md is a finding' \
+    s4c
 shmutant_mut supersedes-agent-coverage-unchecked \
     '      die "supersedes: the shipped skills of $agent could not be listed' \
     '      : "supersedes: the shipped skills of $agent could not be listed' \
-    'a baseline whose codex skills cannot be listed exits 11'
+    'a baseline whose codex skills cannot be listed exits 11' \
+    s4e-build
 shmutant_mut supersedes-body-marker-ignored \
     '      /adb:supersedes/ { if (fm) print; else { print "ERR body-marker"; exit } }' \
     '      /adb:supersedes/ { if (fm) print }' \
-    'supersedes refuses an installed marker in the skill body'
+    'supersedes refuses an installed marker in the skill body' \
+    s4e-build
 shmutant_mut scan-partial-walk-silent \
     '      printf '"'"'warning%sthe agent directory .%s could not be walked in full' \
     '      : '"'"'warning%sthe agent directory .%s could not be walked in full' \
-    'an unreadable .claude/commands is not judged clean'
+    'an unreadable .claude/commands is not judged clean' \
+    s4c
 shmutant_mut scan-sort-status-dropped \
     '      printf '"'"'\0%s'"'"' "$(( _ad_ps[0] | _ad_ps[1] ))")' \
     '      printf '"'"'\0%s'"'"' "$(( _ad_ps[0] ))")' \
-    'an inventory walk whose sort failed is unjudged'
+    'an inventory walk whose sort failed is unjudged' \
+    s4c
 shmutant_mut supersedes-skill-sets-unchecked \
     '    elif [ "$this_set" != "$first_set" ]; then die "supersedes: the baseline agents ship different skill sets' \
     '    elif false; then die "supersedes: the baseline agents ship different skill sets' \
-    'supersedes refuses agents that ship different skill sets'
+    'supersedes refuses agents that ship different skill sets' \
+    s4e-build
 shmutant_mut classify-project-skill-kept \
     "printf 'move%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
     "printf 'keep%sthe baseline carries no project skills — capture what it does as a baseline issue or project config (root doc, agents.toml), then retire it to .ai-dev-baseline/retired/<date>/\\n'" \
-    'a project-specific skill -> move'
+    'a project-specific skill -> move' \
+    s1
 
 # #535 second slice — pointers, mirrors, user roots, and the carried edge cases.
 shmutant_mut pointer-word-boundary-dropped \
     '[^[:space:]:/]+:|[/$])" re "([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '[^[:space:]:/]+:|[/$])" re' \
-    'are not pointers (word boundary)'
+    'are not pointers (word boundary)' \
+    s4d
 shmutant_mut pointer-reads-fenced-text \
     '! prose_="$(adb_md_prose text < "$root/$doc_" 2>/dev/null)"' \
     '! prose_="$(cat "$root/$doc_")"' \
-    'a pointer inside a fenced block is not prose'
+    'a pointer inside a fenced block is not prose' \
+    s4d
 shmutant_mut pointer-ignores-project-skills \
     'for n_ in "${!target[@]}" "${!found[@]}"; do pnames' \
     'for n_ in "${!target[@]}"; do pnames' \
-    "a pointer to the project's own skill counts"
+    "a pointer to the project's own skill counts" \
+    s4d
 shmutant_mut mirror-retired-not-excluded \
     '          .ai-dev-baseline/retired/*) continue ;;' \
     '          .ai-dev-baseline/retired/NOPE) continue ;;' \
-    'the retirement folder is never a mirror'
+    'the retirement folder is never a mirror' \
+    s4d
 shmutant_mut mirror-reads-untracked \
     "      git ls-files -z -- '*SKILL.md' 2>/dev/null" \
     "      git ls-files -z --cached --others -- '*SKILL.md' 2>/dev/null" \
-    'an untracked copy is not a mirror'
+    'an untracked copy is not a mirror' \
+    s4d
 shmutant_mut mirror-unreadable-git-not-evaluated \
     '  elif _ad_in_git_tree "$root"; then' \
     '  elif false; then' \
-    'a .git git cannot read leaves mirrors unjudged'
+    'a .git git cannot read leaves mirrors unjudged' \
+    s4d
 shmutant_mut mirror-git-ancestry-unwalked \
     '    d="${d%/*}"; [ -n "$d" ] || d=/' \
     '    return 1' \
-    'a project inside a repository git cannot read leaves mirrors unjudged'
+    'a project inside a repository git cannot read leaves mirrors unjudged' \
+    s4d
 shmutant_mut user-global-any-link-is-baseline \
     '          _ad_baseline_link "$ue_" "$broot" && continue' \
     '          [ -L "$ue_" ] && continue' \
-    'a user link outside the baseline is a finding'
+    'a user link outside the baseline is a finding' \
+    s4d
 shmutant_mut user-global-walked-in-project-scope \
     '  if [ "$scope" = all ]; then' \
     '  if true; then' \
-    'workflows --scope project: no user-global record'
+    'workflows --scope project: no user-global record' \
+    s4d
 shmutant_mut scan-parent-unsearchable-is-absent \
     '      if ! _ad_parents_searchable "$root" "$sroot"; then' \
     '      if false; then' \
-    'an unsearchable .agents makes .agents/skills unjudged'
+    'an unsearchable .agents makes .agents/skills unjudged' \
+    s4d
 shmutant_mut workflows-charset-before-relevance \
     '        # RELEVANCE FIRST, THEN THE CHARSET: an unrelated file under an agent directory whose name' \
     '        case "$rel" in *[!A-Za-z0-9._/-]*) nunk=$((nunk + 1)); continue ;; esac' \
-    'an unrelated out-of-charset file under .claude is not judged at all'
+    'an unrelated out-of-charset file under .claude is not judged at all' \
+    s4e-roots
 shmutant_mut scan-skips-symlinks \
     'find ".$a" \( -type f -o -type l \) -print0' \
     'find ".$a" -type f -print0' \
-    'a symlink added inside a pinned skill is a finding'
+    'a symlink added inside a pinned skill is a finding' \
+    s4e-roots
 shmutant_mut supersedes-frontmatter-rule-ignored \
     '      bad"$TAB"*) die "supersedes: $name ($agent) fails the skill frontmatter rule' \
     '      bad"$TAB"*) : "supersedes: $name ($agent) fails the skill frontmatter rule' \
-    'supersedes refuses a shipped skill that fails the skill frontmatter rule'
+    'supersedes refuses a shipped skill that fails the skill frontmatter rule' \
+    s4e-build
 
 shmutant_mut wclass-final-byte-unchecked \
     '  if ! adb_bytes_whole "$f" 1073741824; then printf '"'"'unjudged\n'"'"'; return 0; fi' \
     '  :' \
-    'wclass: a file without its final newline is not whole'
+    'wclass: a file without its final newline is not whole' \
+    s4e-wclass
 shmutant_mut wclass-grammar-unchecked \
     '    !rowok() { bad = 1 }' \
     '    0 { bad = 1 }' \
-    'wclass: a record missing fields is not whole'
+    'wclass: a record missing fields is not whole' \
+    s4e-wclass
 shmutant_mut wclass-duplicates-unchecked \
     'if (k in seen) bad = 1; seen[k] = 1' \
     'seen[k] = 1' \
-    'wclass: a path judged twice for one agent is not whole'
+    'wclass: a path judged twice for one agent is not whole' \
+    s4e-wclass
 shmutant_mut pointer-dotted-prefix-matches \
     '([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '[^A-Za-z0-9_/-]"' \
-    'a dotted name that merely starts with a legacy name is not a pointer'
+    'a dotted name that merely starts with a legacy name is not a pointer' \
+    s4e-roots
 shmutant_mut pointer-dot-terminator-loose \
     '([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_-])"' \
-    '/implement..foo and /implement./file are another name and a path'
+    '/implement..foo and /implement./file are another name and a path' \
+    s4e-roots
 shmutant_mut user-link-unsearchable-is-dangling \
     '            if [ -n "$lt_" ] && _ad_parents_searchable "" "${lt_#/}"; then continue; fi' \
     '            continue' \
-    'a user link into an unsearchable folder is unjudged'
+    'a user link into an unsearchable folder is unjudged' \
+    s4e-wclass
 shmutant_mut wclass-target-grammar-loose \
     't = ($4 ~ /^[a-z0-9][a-z0-9-]*$/)' \
     't = ($4 ~ /^[a-z0-9-]+$/)' \
-    "a '-' target is not a workflow name"
+    "a '-' target is not a workflow name" \
+    s4e-wclass
 shmutant_mut user-global-non-skill-counted \
     '          [ -f "$ue_/SKILL.md" ] || continue' \
     '          :' \
-    'an empty user directory or a regular file named like a workflow is not a skill'
+    'an empty user directory or a regular file named like a workflow is not a skill' \
+    s4e-roots
 shmutant_mut user-roots-newline-split \
     "      mapfile -d '' -t urlist_ < <(adb_agent_user_skill_roots \"\$a\")" \
     "      mapfile -t urlist_ < <(adb_agent_user_skill_roots \"\$a\" | tr '\\0' '\\n')" \
-    'a CODEX_HOME holding a newline is still walked whole'
+    'a CODEX_HOME holding a newline is still walked whole' \
+    s4e-roots
 shmutant_mut workflows-symlinked-commands-trusted \
     '            if [ -L "$root/$rel" ] && [ -d "$root/$rel" ]; then' \
     '            if false; then' \
-    'a symlinked .claude/commands is unjudged'
+    'a symlinked .claude/commands is unjudged' \
+    s4e-roots
 shmutant_mut scan-symlinked-pinned-skill-trusted \
     '    if _ad_owns "$_ad_owned" "$sroot/$n/SKILL.md" && _ad_has_link "$root" "$sroot/$n"; then' \
     '    if false; then' \
-    'a symlinked receipt-owned pinned skill is unjudged'
+    'a symlinked receipt-owned pinned skill is unjudged' \
+    s4e-roots
 shmutant_mut baseline-link-compared-as-text \
     '  case "$t" in "$b"/*) return 0 ;; esac' \
     '  case "$(readlink "$1")" in "$2"/*) return 0 ;; esac' \
-    'a user link naming the baseline but resolving outside it is a finding'
+    'a user link naming the baseline but resolving outside it is a finding' \
+    s4e-roots
 
 shmutant_mut scan-linked-ancestor-unchecked \
     '&& _ad_has_link "$root" "$sroot/$n"; then' \
     '&& [ -L "${d%/}" ]; then' \
-    'a pinned skill under a symlinked .claude/skills is unjudged'
+    'a pinned skill under a symlinked .claude/skills is unjudged' \
+    s4e-wclass
 shmutant_mut scan-symlinked-agent-dir-trusted \
     '    if [ -L "$root/.$a" ]; then' \
     '    if false; then' \
-    'a symlinked .claude directory is unjudged'
+    'a symlinked .claude directory is unjudged' \
+    s4e-wclass
 shmutant_mut git-tree-capture-strips-newline \
     'd="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 0' \
     'd="$(cd "$1" 2>/dev/null && pwd -P)" || return 0' \
-    'in a directory ending in a newline, is unjudged'
+    'in a directory ending in a newline, is unjudged' \
+    s4e-wclass
 shmutant_mut codex-home-shown-by-location \
     '          if [ "$a" = codex ] && [ -n "${CODEX_HOME:-}" ] && [ "$ur_" = "$CODEX_HOME/skills" ]; then' \
     '          if false; then' \
-    'a CODEX_HOME under HOME holding a space is judged'
+    'a CODEX_HOME under HOME holding a space is judged' \
+    s4e-wclass
 shmutant_mut root-doc-unbounded \
     ' || ! _ad_size_ok "$root/$doc_" 1048576' \
     '' \
-    'a root doc over 1 MiB is unjudged'
+    'a root doc over 1 MiB is unjudged' \
+    s4e-wclass
 
 shmutant_mut mirror-stages-counted-twice \
     '        [ -z "${mseen_[$t_]:-}" ] || continue' \
     '        :' \
-    'an unmerged path is one mirror'
+    'an unmerged path is one mirror' \
+    s4e-wclass
 shmutant_mut mirror-roots-fixed-agent-set \
     '    for ag_ in ${agents//,/ } $( [ -z "$broot" ] || _ad_agents_from_baseline "$broot") ${shipags_}; do' \
     '    for ag_ in claude codex gemini; do' \
-    "another agent's skill root is not a mirror of itself"
+    "another agent's skill root is not a mirror of itself" \
+    s4e-wclass
 
 shmutant_mut workflows-dangling-command-counted \
     '            if [ -L "$root/$rel" ] && [ ! -e "$root/$rel" ]; then continue; fi' \
     '            :' \
-    'a dangling .claude/commands/pr.md link supplies no command'
+    'a dangling .claude/commands/pr.md link supplies no command' \
+    s4e-wclass
 shmutant_mut baseline-ownership-needs-leaf-link \
     '  t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"' \
     '  [ -L "$1" ] || return 1; t="$(cd "$1" 2>/dev/null && pwd -P && printf x)" || return 1; t="${t%x}"; t="${t%?}"' \
-    'a user skill root linked into the baseline is not a finding'
+    'a user skill root linked into the baseline is not a finding' \
+    s4e-wclass
 shmutant_mut root-doc-nul-unchecked \
     '       || ! adb_nul_free "$root/$doc_" \' \
     '       \' \
-    'a root doc holding a NUL byte is unjudged'
+    'a root doc holding a NUL byte is unjudged' \
+    s4e-wclass
 
 shmutant_mut size-read-status-ignored \
     '  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || return 1' \
     '  sz="$(LC_ALL=C wc -c < "$1" 2>/dev/null)" || :' \
-    'a root doc whose size read failed is unjudged'
+    'a root doc whose size read failed is unjudged' \
+    s4e-wclass
 
 shmutant_mut wclass-bound-below-writer \
     '  if ! adb_bytes_whole "$f" 1073741824; then' \
     '  if ! adb_bytes_whole "$f" 8388608; then' \
-    "the reader's bound covers the writer's output"
+    "the reader's bound covers the writer's output" \
+    s4e-agree
 shmutant_mut workflows-agents-not-deduplicated \
     '  agents="$(_ad_unique_agents "$agents")"   # workflows judges what scan emits: a repeat here is a repeat there' \
     '  :' \
-    'a repeated --agents token still yields a file wclass judges'
+    'a repeated --agents token still yields a file wclass judges' \
+    s4e-agree
 
 shmutant_mut git-status-ignored \
     '  elif gout_="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)" && [ "$gout_" = true ]; then' \
     '  elif gout_="$(git -C "$root" rev-parse --is-inside-work-tree 2>/dev/null)"; [ "$gout_" = true ]; then' \
-    'a repository whose rev-parse failed is unjudged'
+    'a repository whose rev-parse failed is unjudged' \
+    s4e-agree
 shmutant_mut pointer-ellipsis-not-a-terminator \
     '"([^A-Za-z0-9_./-]|[.]+[^A-Za-z0-9_./-])"' \
     '"([^A-Za-z0-9_./-]|[.][^A-Za-z0-9_./-])"' \
-    "'/implement...' ending a sentence is a pointer"
+    "'/implement...' ending a sentence is a pointer" \
+    s4e-agree
 
 shmutant_mut mirror-only-installed-clone-is-self \
     '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || _ad_same_history "$root" "$broot"; then self_=1; fi' \
     '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; }; then self_=1; fi' \
-    'another clone of the baseline is not a mirror'
+    'another clone of the baseline is not a mirror' \
+    s4e-clone
 shmutant_mut mirror-self-by-layout \
     '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || _ad_same_history "$root" "$broot"; then self_=1; fi' \
     '    if { [ -n "$broot" ] && [ "$root" -ef "$broot" ]; } || [ -f "$root/install.sh" ]; then self_=1; fi' \
-    'copies the baseline'"'"'s layout but not its history'
+    'copies the baseline'"'"'s layout but not its history' \
+    s4e-clone
 shmutant_mut same-history-any-repo \
     '    case "$nl_$theirs$nl_" in *"$nl_$c$nl_"*) return 0 ;; esac' \
     '    return 0' \
-    'only exempt against the baseline it shares history with'
+    'only exempt against the baseline it shares history with' \
+    s4e-clone
 
 # #535, third slice: nested roots, the pinned map, CDPATH, the empty-baseline guard.
 shmutant_mut nested-walk-disabled \
     '  if [ "${#_ad_npat[@]}" -gt 0 ]; then' \
     '  if false; then' \
-    'a nested <subdir>/.claude/skills is walked'
+    'a nested <subdir>/.claude/skills is walked' \
+    s4e-nested
 shmutant_mut nested-retired-not-pruned \
     '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
     '        find "${_ad_starts[@]}" \( -name .git "${_ad_nprune[@]}" \) -prune \' \
-    'the retirement folder is never walked for nested roots'
+    'the retirement folder is never walked for nested roots' \
+    s4e-nested
 shmutant_mut nested-git-not-pruned \
     '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
     '        find "${_ad_starts[@]}" \( -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
-    'a root inside .git under a skill root is never reported'
+    'a root inside .git under a skill root is never reported' \
+    s4e-nested
 shmutant_mut nested-agent-dirs-not-pruned \
     '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired "${_ad_nprune[@]}" \) -prune \' \
     '        find "${_ad_starts[@]}" \( -name .git -o -path ./.ai-dev-baseline/retired \) -prune \' \
-    'the top-level agent directories are not walked for nested roots'
+    'the top-level agent directories are not walked for nested roots' \
+    s4e-nested
 shmutant_mut nested-walk-status-ignored \
     '      printf '"'"'\0%s'"'"' "$(( _ad_nps[0] | _ad_nps[1] ))")' \
     '      printf '"'"'\0%s'"'"' 0)' \
-    'a project tree that could not be walked in full is unjudged'
+    'a project tree that could not be walked in full is unjudged' \
+    s4e-nested
 shmutant_mut nested-root-reported-as-mirror \
     '        for r_ in $nestroots_; do case "$t_" in */"$r_"/*) inr_=1 ;; esac; done' \
     '        :' \
-    'a nested .agents/skills is a skill root, never a mirror'
+    'a nested .agents/skills is a skill root, never a mirror' \
+    s4e-nested
 shmutant_mut pin-map-ignored \
     '  shipped="$( (_ad_pin_shipped "$root") 2>/dev/null )" || pinrc=$?' \
     '  pinrc=1' \
-    'the project'"'"'s pin supplies the map even when --baseline names another release'
+    'the project'"'"'s pin supplies the map even when --baseline names another release' \
+    s4e-pinmap
 shmutant_mut pin-edited-skill-trusted \
     '    _ad_owns "$owned" "$rel" || return 3' \
     '    :' \
-    'a pinned skill whose digest no longer matches makes the map unjudged'
+    'a pinned skill whose digest no longer matches makes the map unjudged' \
+    s4e-pinmap
 shmutant_mut cdpath-not-unset \
     'unset CDPATH' \
     ':' \
-    'with an exported CDPATH, a relative root is still the directory named'
+    'with an exported CDPATH, a relative root is still the directory named' \
+    s4e-roots
 shmutant_mut nested-claude-same-name-duplicates \
     '      if [ "$agent" = claude ] && [ -n "$top_" ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
     '      if [ "$agent" = claude ] && _ad_baseline_link "$HOME/.claude/skills/$name" "$broot" \' \
-    'a nested same-name Claude skill shadows'
+    'a nested same-name Claude skill shadows' \
+    s4e-nested
 shmutant_mut pin-mode-read-failure-unpinned \
     '  [ "$rc" -lt 2 ] || return 3' \
     '  [ "$rc" -lt 2 ] || return 1' \
-    'a pin whose mode cannot be read is unjudged'
+    'a pin whose mode cannot be read is unjudged' \
+    s4e-pinmap
 shmutant_mut pin-receipt-not-whole \
     '  [ ! -L "$receipt" ] && adb_bytes_whole "$receipt" 8388608 || return 3' \
     '  [ -f "$receipt" ] || return 3' \
-    'a pinned receipt with no final newline is unjudged'
+    'a pinned receipt with no final newline is unjudged' \
+    s4e-pinmap
 shmutant_mut pin-mirror-roots-ignore-shipped \
     '    for k_ in "${!ships[@]}"; do case " $shipags_ " in *" ${k_%%/*} "*) ;; *) shipags_="$shipags_ ${k_%%/*}" ;; esac; done' \
     '    :' \
-    'with only a pin, a nested root of an agent the pin ships is not a mirror'
+    'with only a pin, a nested root of an agent the pin ships is not a mirror' \
+    s4e-pinmap
 shmutant_mut nested-linked-root-skipped \
     '             -o \( -type d -o -type l \) \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -zu' \
     '             -o -type d \( "${_ad_npat[@]}" \) -print0 2>/dev/null | LC_ALL=C sort -zu' \
-    'a nested skill root that is a symlink is walked'
+    'a nested skill root that is a symlink is walked' \
+    s4e-nested
 shmutant_mut map-agent-enumeration-unchecked \
     '  sagents="$(printf '"'"'%s\n'"'"' "$shipped" | awk -F'"'"'\t'"'"' '"'"'$1=="skill" && !s[$3]++ {print $3}'"'"')" && [ -n "$sagents" ] \' \
     '  sagents="" \' \
-    'supersedes refuses agents that ship different skill sets'
+    'supersedes refuses agents that ship different skill sets' \
+    s4e-build
 shmutant_mut pin-parent-unsearchable-unpinned \
     '  _ad_parents_searchable "$root" .ai-dev-baseline/upstream.toml || return 3' \
     '  :' \
-    'an unsearchable .ai-dev-baseline is unjudged'
+    'an unsearchable .ai-dev-baseline is unjudged' \
+    s4e-pinmap
 shmutant_mut nested-unselected-unreadable-skipped \
     '          [ -n "$_ad_sel" ] || _ad_fail=1; continue' \
     '          continue' \
-    'an unlistable top-level root of an agent not asked about makes nested roots unjudged'
+    'an unlistable top-level root of an agent not asked about makes nested roots unjudged' \
+    s4e-nested
 shmutant_mut pointer-qualified-ascii-only \
     '[/])*[^[:space:]:/]+:|[/$])"' \
     '[/])*[A-Za-z0-9._-]+:|[/$])"' \
-    'a directory-qualified pointer with a non-ASCII directory is a stale-pointer'
+    'a directory-qualified pointer with a non-ASCII directory is a stale-pointer' \
+    s4e-nested
 shmutant_mut nested-linked-seed-root-walked \
     '        _ad_has_link "$root" "$_ad_r" && continue' \
     '        :' \
-    'a top-level skill root under a linked agent directory'
+    'a top-level skill root under a linked agent directory' \
+    s4e-nested
 shmutant_mut nested-trailer-measured-zero \
     '              "the skill root "*|"a nested skill root "*|*"under a nested skill root "*)' \
     '              "a nested skill root "*|*"under a nested skill root "*)' \
-    'leaves nested=not judged, never 0'
+    'leaves nested=not judged, never 0' \
+    s4e-nested
 shmutant_mut nested-file-root-fails \
     '        [ -d "$root/$_ad_r" ] || continue' \
     '        :' \
-    'a file where a skill root or its parent would be does not make the walk unjudged [wf-file-root]'
+    'a file where a skill root or its parent would be does not make the walk unjudged [wf-file-root]' \
+    s4e-nested
 shmutant_mut nested-file-parent-fails \
     '        [ -z "$_ad_blk" ] || continue' \
     '        :' \
-    'a file where a skill root or its parent would be does not make the walk unjudged [wf-file-parent]'
+    'a file where a skill root or its parent would be does not make the walk unjudged [wf-file-parent]' \
+    s4e-nested
 shmutant_mut pin-not-a-file-unpinned \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 3   # there, but not a readable file: not "no pin"' \
     '  [ -f "$pin" ] && [ -r "$pin" ] || return 1' \
-    'a pin path that is not a regular file is unjudged'
+    'a pin path that is not a regular file is unjudged' \
+    s4e-pinmap
 shmutant_mut same-history-any-directory \
     '  [ -n "$top" ] && [ "$top" -ef "$1" ] || return 1' \
     '  :' \
-    'a directory inside a baseline checkout is not itself one'
+    'a directory inside a baseline checkout is not itself one' \
+    s4e-clone
 shmutant_mut pin-row-recorded-twice \
     '    [ -z "${seen[$rel]:-}" ] || return 3' \
     '    :' \
-    'a receipt that records a skill twice is unjudged'
+    'a receipt that records a skill twice is unjudged' \
+    s4e-pinmap
 shmutant_mut nested-count-includes-commands \
     '    if [ -n "$nd_" ]; then case "$rel" in */"$nd_"/*) top_=""; nnest=$((nnest + 1)) ;; esac; fi' \
     '    top_=""; for r_ in ${roots//,/ }; do case "$rel" in "$r_"/*) top_=1 ;; esac; done; [ -n "$top_" ] || nnest=$((nnest + 1))' \
-    'a top-level legacy command is not nested'
+    'a top-level legacy command is not nested' \
+    s4e-nested
 shmutant_mut pointer-qualified-form-dropped \
     '"[^A-Za-z0-9_.~/$-]([/]([^[:space:]:/]+[/])*[^[:space:]:/]+:|[/$])" re' \
     '"[^A-Za-z0-9_.~/$-][/$]" re' \
-    'a directory-qualified /pkg/web:implement is a stale-pointer'
+    'a directory-qualified /pkg/web:implement is a stale-pointer' \
+    s4e-nested
 
 shmutant_mut conformance-same-model-ignored \
     '    0:same-model)' \
     '    0:SAME-MODEL-NEVER)' \
-    'conformance: primary = claude, review = [claude] is a finding'
+    'conformance: primary = claude, review = [claude] is a finding' \
+    s4f
 shmutant_mut conformance-live-rung \
     'review-rung --configured 2>/dev/null)" || rrc=$?' \
     'review-rung 2>/dev/null)" || rrc=$?' \
-    'conformance: the same-model finding does not depend on which agent CLIs are installed'
+    'conformance: the same-model finding does not depend on which agent CLIs are installed' \
+    s4f
 shmutant_mut conformance-deviation-clears-any-rule \
     '_AD_CONF_CLEARABLE=" same-model-review "' \
     '_AD_CONF_CLEARABLE=" same-model-review root-doc-workflow "' \
-    'conformance: a DEVIATION never clears root-doc-workflow'
+    'conformance: a DEVIATION never clears root-doc-workflow' \
+    s4f
 shmutant_mut conformance-incomplete-deviation-honoured \
     '    if [ "$miss" != - ]; then' \
     '    if false; then' \
-    'conformance: a DEVIATION missing a required field does not clear the finding'
+    'conformance: a DEVIATION missing a required field does not clear the finding' \
+    s4f
 shmutant_mut conformance-deviation-read-from-fences \
     'adb_md_prose text < "$f" 2>/dev/null)" || return 1' \
     'cat "$f")" || return 1' \
-    'conformance: a DEVIATION inside a fenced block declares nothing'
+    'conformance: a DEVIATION inside a fenced block declares nothing' \
+    s4f
 shmutant_mut conformance-pointers-dropped \
     '$1 == "stale-pointer" { print $2' \
     '$1 == "NEVER" { print $2' \
-    'conformance: a root-doc pointer in the workflows record is a finding'
+    'conformance: a root-doc pointer in the workflows record is a finding' \
+    s4f
 shmutant_mut conformance-workflows-record-unvalidated \
     '[ "$(cmd_wclass "$snap" - - 2>/dev/null)" = none ]' \
     'true' \
-    'conformance: a workflows record with no summary is not judged'
+    'conformance: a workflows record with no summary is not judged' \
+    s4f
 shmutant_mut conformance-unknown-drops-pointers \
     '      END-WHOLE|END-UNKNOWN)' \
     '      END-WHOLE)' \
-    'conformance: ...and the pointers it did establish are still reported'
+    'conformance: ...and the pointers it did establish are still reported' \
+    s4f
 shmutant_mut deviation-audit-rule-grammar-unchecked \
     '        r = F["audit-rule"]; if (r !~ /^[a-z0-9][a-z0-9-]*$/) { r = "-"; miss = add(miss, "bad-audit-rule") }' \
     '        r = F["audit-rule"]' \
-    'answers: a deviation whose audit-rule carries a tab is refused'
+    'answers: a deviation whose audit-rule carries a tab is refused' \
+    s4f
 shmutant_mut deviation-unsearchable-is-absent \
     '  if ! _ad_parents_searchable "$root" .ai-dev-baseline/decisions.md; then' \
     '  if false; then' \
-    "conformance: an unsearchable .ai-dev-baseline is not judged"
+    "conformance: an unsearchable .ai-dev-baseline is not judged" \
+    s4f
 shmutant_mut conformance-link-read \
     '    if [ -f "$wf" ] && [ ! -L "$wf" ] && head -c 1073741825' \
     '    if [ -f "$wf" ] && head -c 1073741825' \
-    'conformance: a linked workflows record is refused'
+    'conformance: a linked workflows record is refused' \
+    s4f
 shmutant_mut deviation-tabbed-id-accepted \
     '                if (id !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) { id = "-"; bad = "bad-id" }' \
     '                if (0) { id = "-"; bad = "bad-id" }' \
-    'answers: a DEVIATION heading whose id carries tabs is refused'
+    'answers: a DEVIATION heading whose id carries tabs is refused' \
+    s4f
 shmutant_mut deviation-duplicate-counts-audited-only \
     '                else seen[id]++' \
     '                else seen[""]++' \
-    'conformance: an id shared with a DEVIATION that names no audit-rule is still a duplicate'
+    'conformance: an id shared with a DEVIATION that names no audit-rule is still a duplicate' \
+    s4f
 shmutant_mut deviation-entry-runs-past-its-fields \
     '    id != "" { flush() }' \
     '    id != "" { next }' \
-    'conformance: a field after [Other] does not complete the entry above it'
+    'conformance: a field after [Other] does not complete the entry above it' \
+    s4f
 shmutant_mut deviation-date-unchecked \
     '        if (F["date"] != "" && F["date"] !~' \
     '        if (0 && F["date"] !~' \
-    'conformance: a DEVIATION whose date is not YYYY-MM-DD is refused'
+    'conformance: a DEVIATION whose date is not YYYY-MM-DD is refused' \
+    s4f
 shmutant_mut answers-deviation-unverified \
     '    printf '"'"'%s\n'"'"' "$devs" | LC_ALL=C awk' \
     '    true || LC_ALL=C awk' \
-    'answers: a review-deviation naming no entry in the decision log is refused'
+    'answers: a review-deviation naming no entry in the decision log is refused' \
+    s7d
 shmutant_mut propose-inferred-same-model-live \
     '    if [ "$role" = review ] && [ -n "${_AD_ANS[primary]:-}" ] && _ad_known_agent "$tok" \' \
     '    if false && [ "$role" = review ] && [ -n "${_AD_ANS[primary]:-}" ] && _ad_known_agent "$tok" \' \
-    'propose: an inferred review naming only the answered primary is not live'
+    'propose: an inferred review naming only the answered primary is not live' \
+    s7d
 shmutant_mut answers-same-model-accepted \
     '  if [ "$same" -eq 1 ] && [ -z "$d" ]; then' \
     '  if false; then' \
-    'answers: review = primary is refused without a deviation'
+    'answers: review = primary is refused without a deviation' \
+    s7d
 shmutant_mut propose-same-model-not-rechecked \
     '  if ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}"' \
     '  if false && ! reason="$(_ad_answers_cross "${_AD_ANS[primary]:-}"' \
-    'propose: a planted review = primary with no deviation is not rendered'
+    'propose: a planted review = primary with no deviation is not rendered' \
+    s7d
 
 shmutant_mut specialized-nested-needs-manifest \
     '      S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag")' \
     '      _adb_has_project_manifest "$root/${rel%/*}" && { S_PATH+=("$rel"); S_KIND+=(nested-doc); S_AGENT+=("$ag"); }' \
-    'with NO manifest beside it is still enumerated'
+    'with NO manifest beside it is still enumerated' \
+    s4g
 shmutant_mut scan-nested-needs-manifest \
     '      _ad_emit nested-doc "$_ad_ent" "$_ad_b" "$_ad_ag"' \
     '      _adb_has_project_manifest "$root/${_ad_ent%/*}" && _ad_emit nested-doc "$_ad_ent" "$_ad_b" "$_ad_ag"' \
-    'scan: a tracked nested root doc with no manifest is enumerated'
+    'scan: a tracked nested root doc with no manifest is enumerated' \
+    s4g
 shmutant_mut specialized-keeps-not-exact \
     '      if [ -z "${IDX[$kp]:-}" ]; then kprob=no-surface' \
     '      if false; then kprob=no-surface' \
-    'the match is exact, never a prefix'
+    'the match is exact, never a prefix' \
+    s4g
 shmutant_mut specialized-fence-only-workflow \
     "\$1 >= s && \$1 <= e { f = 1 } END { exit !f }" \
     'END { exit 0 }' \
-    'a workflow range holding only a fenced block is refused'
+    'a workflow range holding only a fenced block is refused' \
+    s4g-judgment
 shmutant_mut specialized-mirror-by-name \
     '      else st="unhomed:rules"; fi' \
     '      else st="mirror:${rel##*/}"; fi' \
-    'a hand-mirror location that copies nothing is a fact surface outside its home'
+    'a hand-mirror location that copies nothing is a fact surface outside its home' \
+    s4g
 shmutant_mut specialized-frontmatter-malformed-is-unscoped \
     '      if (!closed || bad) exit 1' \
     '      if (0) exit 1' \
-    'frontmatter is not judged, never read as unscoped'
+    'frontmatter is not judged, never read as unscoped' \
+    s4g
 shmutant_mut classify-specialized-arm-dropped \
     '  if [ "$kind" = rule ] || [ "$kind" = nested-doc ]; then' \
     '  if false; then' \
-    'classify: a globs: rule is move (respell)'
+    'classify: a globs: rule is move (respell)' \
+    s4g-judgment
 shmutant_mut specialized-key-spelling-dropped \
     '    case "$st" in respell|extra-key) _ad_sp_rec key-spelling' \
     '    case "$st" in NEVERMATCHES) _ad_sp_rec key-spelling' \
-    'carries a key-spelling finding naming paths'
+    'carries a key-spelling finding naming paths' \
+    s4g
 shmutant_mut specialized-keeps-path-unchecked \
     '        if (v ~ /^[A-Za-z0-9._\/-]+$/ && v !~ /^\// && v !~ /\/$/ && v !~ /(^|\/)\.\.(\/|$)/ && v !~ /\/\//) { KV[nk] = v; KP[nk] = "-" }' \
     '        if (v != "") { KV[nk] = v; KP[nk] = "-" }' \
-    'keeps: with a space in the path is refused'
+    'keeps: with a space in the path is refused' \
+    s4g
 shmutant_mut specialized-fences-judged \
     '  printf '"'"'%s\n'"'"' "$pre" | adb_md_prose text 2>/dev/null' \
     '  printf '"'"'%s\n'"'"' "$pre"' \
-    'a pointer inside a fenced block is not prose'
+    'a pointer inside a fenced block is not prose' \
+    s4g
 shmutant_mut specialized-judgment-cover-unchecked \
     '          [ "${JEND[$jp]:-x}" = "${LINES[$jp]}" ] || { jok=0; break; }' \
     '          :' \
-    'a range that stops short of the last line is refused'
+    'a range that stops short of the last line is refused' \
+    s4g-judgment
 shmutant_mut specialized-empty-judgment-refused \
     '{ [ -s "$t" ] && ! adb_bytes_whole "$t" "$max"; }' \
     '! adb_bytes_whole "$t" "$max"' \
-    'an empty judgment file is not refused'
+    'an empty judgment file is not refused' \
+    s4g-paths
 shmutant_mut specialized-mirror-sources-by-agent \
     '    [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"' \
     '    _sp_sel "${S_AGENT[$i]}" || continue; [ -n "${SRC[${WHOLE[$rel]}]:-}" ] || SRC["${WHOLE[$rel]}"]="$rel"' \
-    'its source is found when only codex is asked about'
+    'its source is found when only codex is asked about' \
+    s4g-shapes
 shmutant_mut specialized-dotdot-glob-accepted \
     '|| v ~ /(^|\/)\.\.(\/|$)/) { bad = 1; return }' \
     ') { bad = 1; return }' \
-    'a glob with a .. component is refused'
+    'a glob with a .. component is refused' \
+    s4g-shapes
 shmutant_mut specialized-crlf-frontmatter-is-prose \
     '  LC_ALL=C awk '"'"'{ sub(/\r$/, "") }' \
     '  LC_ALL=C awk '"'"'{ }' \
-    'CRLF frontmatter is not prose'
+    'CRLF frontmatter is not prose' \
+    s4g-shapes
 shmutant_mut specialized-destination-unchecked \
     '        case "$jdest" in rule:*|nested:*) _ad_sp_path_ok "${jdest#*:}" || { jok=0; break; } ;; esac' \
     '        :' \
-    'a destination that leaves the repository is refused'
+    'a destination that leaves the repository is refused' \
+    s4g-shapes
 shmutant_mut sclass-location-outranks-split \
     '      if (jd == "mixed" || jd == "workflows") { print "split"; exit }' \
     '      if (0) { print "split"; exit }' \
-    'a judged split outranks its location'
+    'a judged split outranks its location' \
+    s4g-shapes
 shmutant_mut sclass-fields-unchecked \
     '      if ($1 == "surface")' \
     '      if ($1 == "surface") return 1; if (0)' \
-    'an unknown reach judges nothing'
+    'an unknown reach judges nothing' \
+    s4g-links
 shmutant_mut specialized-keeps-bad-id-normalized \
     '        if (badid) p = "bad-id"' \
     '        if (0) p = "bad-id"' \
-    'an entry whose id is not a plain token is refused'
+    'an entry whose id is not a plain token is refused' \
+    s4g-shapes
 shmutant_mut classify-rootdoc-split-kept \
     '  if [ "$kind" = rootdoc ] && [ "$wclass" = split ]; then' \
     '  if false; then' \
-    'a mixed root doc is move (split)'
+    'a mixed root doc is move (split)' \
+    s4g-shapes
 shmutant_mut specialized-package-beside-manifest-only \
     '      if [ -n "$(_ad_sp_package "$root" "${rel%/*}")" ]; then st=homed;' \
     '      if _adb_has_project_manifest "$root/${rel%/*}"; then st=homed;' \
-    'a doc anywhere inside a package is in its home'
+    'a doc anywhere inside a package is in its home' \
+    s4g-shapes
 shmutant_mut specialized-rule-arm-dropped \
     '        _ad_emit rule "$rel" "${rel##*/}" "$a"' \
     '        :' \
-    'scan: a project rule is a rule record'
+    'scan: a project rule is a rule record' \
+    s4g
 shmutant_mut specialized-body-digest-adds-newline \
     '  out="$(tail -n "+$((n + 1))" "$1" | adb_sha256_stdin; printf '"'"' %s %s'"'"' "${PIPESTATUS[0]}" "${PIPESTATUS[1]}")" || return 1' \
     '  out="$(LC_ALL=C awk -v n="$n" '"'"'NR > n'"'"' "$1" | adb_sha256_stdin; printf '"'"' %s %s'"'"' 0 0)" || return 1' \
-    'a body that adds a final newline is not the same bytes'
+    'a body that adds a final newline is not the same bytes' \
+    s4g-shapes
 shmutant_mut specialized-empty-row-workflow \
     '            [ "$jc" = fact ] || { jok=0; break; }   # an empty file has no prose, so no workflow' \
     '            :' \
-    'cannot be a workflow'
+    'cannot be a workflow' \
+    s4g-links
 shmutant_mut specialized-mirror-judgment-dropped \
     '    case "${ST[$rel]}" in mirror:*) JUD["$rel"]="${JUD[${ST[$rel]#mirror:}]:--}" ;; esac' \
     '    :' \
-    'a mirror of a split source is split'
+    'a mirror of a split source is split' \
+    s4g-links
 shmutant_mut sclass-scope-unchecked \
     '$5 ~ /^(paths|globs|both|none|-)$/ && scp($6) && rch($7)' \
     '$5 ~ /^(paths|globs|both|none|-)$/ && rch($7)' \
-    'a scope outside the glob charset judges nothing'
+    'a scope outside the glob charset judges nothing' \
+    s4g-links
 shmutant_mut specialized-keeps-incomplete-accepted \
     '(F["date"] !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ || F["decision"] == "" || F["reason"] == "")' \
     '(0)' \
-    'an entry with no reason is refused'
+    'an entry with no reason is refused' \
+    s4g-shapes
 shmutant_mut specialized-keeps-duplicate-id-accepted \
     '((MP[i] == "-" && ids[MI[i]] > 1) ? "duplicate-id" : MP[i])' \
     'MP[i]' \
-    'an entry whose id another entry uses'
+    'an entry whose id another entry uses' \
+    s4g-shapes
 shmutant_mut specialized-list-under-scalar-accepted \
     '      if (!open) { bad = 1; next }' \
     '      if (0) { bad = 1; next }' \
-    'a list item under a scalar is malformed'
+    'a list item under a scalar is malformed' \
+    s4g-shapes
 shmutant_mut specialized-linked-rule-read \
     '        case "$rel" in L:*) _sp_unk "$a" "${rel#L:}" rule linked-rule; continue ;; esac' \
     '        rel="${rel#L:}"' \
-    'a linked rule file is not judged'
+    'a linked rule file is not judged' \
+    s4g-links
 shmutant_mut specialized-linked-rules-dir-read \
     '      if [ -L "$root/$f" ]; then _sp_unk "$a" "$f" rule linked-rule; continue; fi' \
     '      :' \
-    'a linked rules directory is not judged'
+    'a linked rules directory is not judged' \
+    s4g-links
 shmutant_mut specialized-other-key-unchecked \
     '        if (i > length(v) || q != "") { bad = 1; return }' \
     '        if (0) { bad = 1; return }' \
-    'an unclosed flow value under another key'
+    'an unclosed flow value under another key' \
+    s4g-links
 shmutant_mut scan-linked-rules-dir-is-other \
     '        _ad_emit rule "$_ad_rf" "${_ad_rf##*/}" "$a"; _ad_emitted="$_ad_emitted$_ad_rf$nl"; continue' \
     '        continue' \
-    'scan: a linked rules directory is one rule record'
+    'scan: a linked rules directory is one rule record' \
+    s4g-links
 shmutant_mut sclass-truncated-judged \
     '      if (bad || n != 1 || last != NR || hits > 1) { print "unjudged"; exit }' \
     '      if (0) { print "unjudged"; exit }' \
-    'sclass: a truncated file (no summary) judges nothing'
+    'sclass: a truncated file (no summary) judges nothing' \
+    s4g-judgment
 shmutant_mut sclass-pending-not-first \
     '      if (jd == "unjudged" || jd == "stale") { print "pending"; exit }' \
     '      if (0) { print "pending"; exit }' \
-    'under a judgment, an unjudged surface is pending'
+    'under a judgment, an unjudged surface is pending' \
+    s4g-judgment
 shmutant_mut sclass-summary-loose \
     '$9 ~ SUMRE)' \
     '$9 ~ /^specialized: /)' \
-    'a summary missing a count judges nothing'
+    'a summary missing a count judges nothing' \
+    s4g-links
 shmutant_mut sclass-reach-agent-unchecked \
     '        if ($7 != "none" && substr($7, 1, length($4) + 1) != $4 ":") return 0' \
     '' \
-    'a reach for another agent judges nothing'
+    'a reach for another agent judges nothing' \
+    s4g-links
 shmutant_mut yaml-dq-escape-accepted \
     '        if (f == D && index(body, "\\")) { bad = 1; return "" }' \
     '' \
-    'a double-quoted escape is outside the subset'
+    'a double-quoted escape is outside the subset' \
+    s4g-links
 shmutant_mut yaml-alias-accepted \
     'v ~ /^[*&!|>' \
     'v ~ /^[&!|>' \
-    'a plain scalar starting with * is a YAML alias'
+    'a plain scalar starting with * is a YAML alias' \
+    s4g-links
 shmutant_mut scan-dot-claude-claude-md-other \
     '  if [ -f "$root/.claude/CLAUDE.md" ]; then' \
     '  if false; then' \
-    'scan: .claude/CLAUDE.md is a root doc'
+    'scan: .claude/CLAUDE.md is a root doc' \
+    s4g-shapes
 shmutant_mut specialized-rootdoc-pointers-skipped \
     '    case "$kind:$rel" in rootdoc:CLAUDE.md|rootdoc:AGENTS.md|rootdoc:GEMINI.md) continue ;; esac' \
     '    case "$kind" in rootdoc) continue ;; esac' \
-    '.claude/CLAUDE.md is read for pointers'
+    '.claude/CLAUDE.md is read for pointers' \
+    s4g-pointers
 shmutant_mut specialized-current-link-ignored \
     '      if [ "$mode" = 120000 ] || _ad_has_link "$root" "$rel"; then' \
     '      if [ "$mode" = 120000 ]; then' \
-    'a tracked doc now a link in the working tree is not judged'
+    'a tracked doc now a link in the working tree is not judged' \
+    s4g-pointers
 shmutant_mut specialized-mirror-source-unreported \
     '    case "${ST[$rel]}" in mirror:*) [ -n "${REP[$rel]:-}" ] && REP["${ST[$rel]#mirror:}"]=1 ;; esac' \
     '    :' \
-    'its source is reported beside it'
+    'its source is reported beside it' \
+    s4g-shapes
 shmutant_mut scan-claude-agents-md-dropped \
     '        *",claude,"*) _ad_sp_claude_reads "$root" "$_ad_ent" || continue ;;   # an AGENTS.md Claude reads' \
     '        *",claude,"*) continue ;;' \
-    'scan: --agents claude lists an AGENTS.md Claude reads'
+    'scan: --agents claude lists an AGENTS.md Claude reads' \
+    s4g-pointers
 shmutant_mut specialized-agents-md-claude-reach-dropped \
     '      else REACH["$rel"]="${REACH[$rel]}+claude:on-demand"; fi' \
     '      else :; fi' \
-    'a nested AGENTS.md with NO manifest beside it is still enumerated'
+    'a nested AGENTS.md with NO manifest beside it is still enumerated' \
+    s4g
 shmutant_mut yaml-tab-indent-accepted \
     '    /^ *\t/ { bad = 1; next }' \
     '    /^ *\tNEVERMATCHES/ { bad = 1; next }' \
-    'a tab-indented list is not YAML'
+    'a tab-indented list is not YAML' \
+    s4g-pointers
 shmutant_mut specialized-skipped-exemption-refused \
     '    [ "$kprob" = - ] && [ -n "${SKIP[$kp]:-}" ] && continue' \
     '    :' \
-    'an exemption for another agent'
+    'an exemption for another agent' \
+    s4g-foreign
 shmutant_mut specialized-skipped-judgment-refused \
     '        [ -n "${SKIP[$jp]:-}" ] && continue   # another agent' \
     '        :   # another agent' \
-    'a row for another agent'
+    'a row for another agent' \
+    s4g-foreign
 shmutant_mut specialized-claude-unknowns-dropped \
     '    [ "$1" = - ] || _sp_sel "$1" || { _sp_sel claude && _ad_sp_claude_reads "$root" "$2"; } || return 0' \
     '    [ "$1" = - ] || _sp_sel "$1" || return 0' \
-    'a linked AGENTS.md Claude reads is reported under --agents claude'
+    'a linked AGENTS.md Claude reads is reported under --agents claude' \
+    s4g-foreign
 shmutant_mut yaml-uneven-list-accepted \
     '        if (lind < 0) lind = ind; else if (ind != lind) { bad = 1; next }' \
     '        lind = ind' \
-    'list items at uneven indentation are malformed'
+    'list items at uneven indentation are malformed' \
+    s4g-nested
 shmutant_mut specialized-nested-dot-claude-dropped \
     '      case "/${rel%/.claude/CLAUDE.md}" in' \
     '      case "/$rel" in' \
-    'a tracked pkg/.claude/CLAUDE.md is a nested root doc'
+    'a tracked pkg/.claude/CLAUDE.md is a nested root doc' \
+    s4g-nested
 shmutant_mut specialized-override-from-index \
     '[ -f "$root/${rel%/*}/AGENTS.override.md" ]; then' \
     'false; then' \
-    'an untracked override on disk shadows'
+    'an untracked override on disk shadows' \
+    s4g-nested
 shmutant_mut sclass-key-reach-unrelated \
     '          if (($5 == "paths" || $5 == "both") != ($7 == "claude:on-path-match")) return 0' \
     '' \
-    'a globs: rule that claims to load on a match'
+    'a globs: rule that claims to load on a match' \
+    s4g-nested
 shmutant_mut sclass-mirror-source-unchecked \
     '      for (m in need) if (!(m in listed)) bad = 1   # a mirror whose source row is absent' \
     '' \
-    'a mirror whose source row is absent'
+    'a mirror whose source row is absent' \
+    s4g-nested
 shmutant_mut specialized-unprintable-path-dropped \
     '    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" "$rel" "$kind" path-outside-charset; continue; fi' \
     '    if ! _ad_sp_path_ok "$rel"; then _sp_unk "$a" - "$kind" path-outside-charset; continue; fi' \
-    'an unprintable AGENTS.md path Claude reads is reported'
+    'an unprintable AGENTS.md path Claude reads is reported' \
+    s4g-paths
 shmutant_mut yaml-dash-scope-accepted \
     '      if (v == "" || v == "-" || v !~' \
     '      if (v == "" || v !~' \
-    'a scope of - alone is refused'
+    'a scope of - alone is refused' \
+    s4g-paths
 shmutant_mut specialized-dot-claude-agents-dropped \
     '  for f in CLAUDE.md .claude/CLAUDE.md .claude/AGENTS.md AGENTS.md' \
     '  for f in CLAUDE.md .claude/CLAUDE.md AGENTS.md' \
-    '.claude/AGENTS.md is a Claude root doc'
+    '.claude/AGENTS.md is a Claude root doc' \
+    s4g-paths
 shmutant_mut specialized-override-dir-counts \
     '[ -f "$root/${rel%/*}/AGENTS.override.md" ]; then' \
     '[ -e "$root/${rel%/*}/AGENTS.override.md" ]; then' \
-    'a directory named AGENTS.override.md shadows nothing'
+    'a directory named AGENTS.override.md shadows nothing' \
+    s4g-paths
 shmutant_mut specialized-stale-workflow-fence-checked \
     '        if [ "$jc" = workflow ] && [ "$jd" != "${WHOLE[$jp]}" ]; then' \
     '        if false; then' \
-    "is never refused against the file's new text"
+    "is never refused against the file's new text" \
+    s4g-judgment
 
 shmutant_target scripts/lib/common.sh
 shmutant_mut bytes-whole-size-status-ignored \
     '  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || return 20' \
     '  sz="$(LC_ALL=C wc -c < "$f" 2>/dev/null)" || :' \
-    'a file whose size read failed is not whole'
+    'a file whose size read failed is not whole' \
+    s4e-wclass
 shmutant_mut user-roots-drop-antigravity \
     "    gemini) printf '%s\\n' 'home .gemini/config/skills' 'home .gemini/antigravity-cli/skills' 'home .gemini/skills' ;;" \
     "    gemini) printf '%s\\n' 'home .gemini/config/skills' ;;" \
-    "workflows: ~/.gemini/antigravity-cli/skills is walked"
+    "workflows: ~/.gemini/antigravity-cli/skills is walked" \
+    s4e-roots
 shmutant_mut nested-claude-root-dropped \
     "    claude) printf '%s' '.claude/skills' ;;" \
     "    claude) printf '' ;;" \
-    "a nested <subdir>/.claude/skills is walked"
+    "a nested <subdir>/.claude/skills is walked" \
+    s4e-nested
 shmutant_mut user-roots-drop-agents-skills \
     "    codex)  printf '%s\\n' 'codex skills' 'home .agents/skills' ;;" \
     "    codex)  printf '%s\\n' 'codex skills' ;;" \
-    "Codex's ~/.agents/skills user root is walked"
+    "Codex's ~/.agents/skills user root is walked" \
+    s4d
 
 shmutant_target base/workflows/adopt.md
 shmutant_mut workflow-classify-rule-unjudged \
     '      wclass="$({{ADOPT_LIB}} sclass "{{STATE_DIR}}/adopt-specialized.tsv" "$rel" "$agent")" || wclass=unjudged ;;' \
     '      wclass=homed ;;' \
-    'workflow classify: a rule with no specialized record is unjudged, never keep'
+    'workflow classify: a rule with no specialized record is unjudged, never keep' \
+    s14b
 shmutant_mut workflow-classify-missing-record-kept \
     '    skill:*) wclass=unjudged ;;' \
     '    skill:*) wclass=- ;;' \
-    'workflow classify: a skill with no record is unjudged, never keep'
+    'workflow classify: a skill with no record is unjudged, never keep' \
+    s14b
 shmutant_mut workflow-classify-wclass-unchecked \
     '"$({{ADOPT_LIB}} wclass "{{STATE_DIR}}/adopt-workflows.tsv" "$rel" "$agent")" || wclass=unjudged' \
     '"$(awk -F"\t" -v r="$rel" -v g="$agent" '"'"'$2==r && $3==g {print ($1=="competes" ? $1 ":" $4 : $1); exit}'"'"' "{{STATE_DIR}}/adopt-workflows.tsv")"' \
-    'workflow classify: a truncated adopt-workflows.tsv (no summary) judges no skill'
+    'workflow classify: a truncated adopt-workflows.tsv (no summary) judges no skill' \
+    s14b
 shmutant_mut workflow-propose-skips-observe \
     'if ! ( cd "$PROJECT" && {{ADOPT_READINESS}} observe ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \
     'if ! ( cd "$PROJECT" && : ) > "{{STATE_DIR}}/adopt-observed.tsv"; then' \
-    'workflow: the propose block hands the observation to propose'
+    'workflow: the propose block hands the observation to propose' \
+    s14b
 shmutant_mut workflow-hygiene-drops-observed \
     '  --observed "{{STATE_DIR}}/adopt-observed.tsv" > "{{STATE_DIR}}/adopt-hygiene.tsv"' \
     '  > "{{STATE_DIR}}/adopt-hygiene.tsv"' \
-    'workflow: the hygiene block hands the observation to hygiene'
+    'workflow: the hygiene block hands the observation to hygiene' \
+    s14b
 shmutant_mut workflow-pin-split-by-read \
     '{{ADOPT_LIB}} pin-render "${PIN_ID%%"$TABC"*}" "${PIN_ID#*"$TABC"}" \' \
     'IFS="$TABC" read -r PV PC <<< "$PIN_ID"; {{ADOPT_LIB}} pin-render "$PV" "$PC" \' \
-    'workflow: the pin block runs for a tagless baseline'
+    'workflow: the pin block runs for a tagless baseline' \
+    s14b
 shmutant_mut workflow-interview-failure-unchecked \
     '  || { echo "STOP: an answer was refused or could not be recorded' \
     '  || true; false && { echo "STOP: an answer was refused or could not be recorded' \
-    'workflow: a refused interview answer stops the block'
+    'workflow: a refused interview answer stops the block' \
+    s14b
 shmutant_mut workflow-stale-gates-kept \
     '  rm -f "{{STATE_DIR}}/adopt-gates.tsv"' \
     '  : "{{STATE_DIR}}/adopt-gates.tsv"' \
-    'workflow: a failed gate detection does not stop the propose block'
+    'workflow: a failed gate detection does not stop the propose block' \
+    s14b
 shmutant_mut workflow-pin-stale-survives \
     'rm -f -- "{{STATE_DIR}}/adopt-upstream.toml"' \
     ': -- "{{STATE_DIR}}/adopt-upstream.toml"' \
-    'workflow: a failed pin block must leave NO pin'
+    'workflow: a failed pin block must leave NO pin' \
+    s14b
 
-# Width from `adb_pool_size` (min(cpu, 8)); each row costs a full suite run (D66, D68).
+# Width from `adb_pool_size` (min(cpu, 8)); each row costs its block and that block's dependencies,
+# or a full suite run under ADB_MUTATION_FULL_SUITE=1 (D66, D68).
 # `--mutation` as a flag, not an env var: `selfcheck.sh`'s `add` takes a command's words, so an
 # env-var prefix would be executed as a command name.
-check_shmutant_pool "check-adopt" "$WORK/pool" _ad_mut_prepare _ad_mut_run 8
+check_shmutant_pool "check-adopt" "$WORK/pool" _ad_mut_prepare _ad_mut_run 8 scripts/check-adopt.sh
 fi
 
 check_summary "check-adopt"

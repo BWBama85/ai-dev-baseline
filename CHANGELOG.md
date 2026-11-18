@@ -165,6 +165,23 @@ only by a release it upgrades to. These entries are the notes for both.
   11 lists every harness: a `git diff` that failed for one harness used to list that one alone,
   beside harnesses that had decided to skip.
 
+- **`adopt-mutation` runs each row against its own block, and the nightly runs it as five jobs
+  (#631).** The harness ran the whole `check-adopt.sh` suite once for each of its 238 rows, 185
+  minutes in the nightly. The suite is now 43 blocks and each row
+  names the block that holds its witness, so a row runs that block and the blocks it depends on.
+  `check_shmutant_pool` takes the suite's path as a sixth argument to turn this on. It refuses a
+  row whose block is missing, undeclared or does not carry its witness, and has shmutant run the
+  controls as its baselines: the whole suite once, unmutated, then each selection, which must be
+  green and must count, for every block it runs, what the whole-suite run counted. A row under a
+  baseline that is not green is scored `baseline`, never run. `ADB_MUTATION_FULL_SUITE=1` still
+  scores every row against the whole suite, which is what the nightly does. `check_shmutant_pool` also reads
+  `ADB_MUTATION_SHARD=<k>/<K>` now, handing its pool the rows whose index modulo K is k-1, and the
+  nightly's plan gives `adopt-mutation` five shards, named
+  `mutation-nightly (adopt-mutation, shard <k> of 5)`. On the maintainer's machine the per-block
+  run took 22m40s where every mutant against the whole suite took 3h43m37s, on one commit, and the
+  five hosted shards took between 25 and 48 minutes. No row was added, dropped or given another
+  witness (D159).
+
 - **A plain selfcheck runs the steps your change touches, and so does the macOS leg of a pull
   request (#629).** Every registry step now declares the paths its verdict depends on (the fifth
   field of `bash scripts/selfcheck.sh --list`), and a plain step runs only when the change under
