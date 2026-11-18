@@ -352,7 +352,7 @@ the run without a success conclusion, as any harness does. Measured on run 40431
 shards took 66, 77 and 110 minutes for 99, 98 and 98 rows.
 
 `adopt-mutation` is five shards since #631 (`adopt-mutation=5`): one job of it took 185 minutes at
-238 rows (run 43056694625). Its pool is the vendored shmutant's, and `check_shmutant_pool` applies
+238 rows (run 43056694625), and the five took 25, 33, 41, 34 and 48 minutes (run 44311674904). Its pool is the vendored shmutant's, and `check_shmutant_pool` applies
 the same `<k>/<K>` rule to the rows it hands that pool. Every shard of it checks the whole table's
 block declarations and runs its own unmutated control; whether a row's literal still occurs once in
 its target is checked by the shard that runs the row.

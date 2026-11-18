@@ -161,7 +161,8 @@ jobs:
     # jobs took 66, 77 and 110 minutes (run 40431642069), so the slowest left about 250 minutes.
     # Nearly equal row counts spread 1.7x, so size by the slowest shard. A harness that nears
     # this bound gets another shard, not a longer one. `adopt-mutation`, unsharded, took 185 minutes
-    # at 238 rows (run 43056694625); it is five shards since #631.
+    # at 238 rows (run 43056694625); it is five shards since #631, which took 25, 33, 41, 34 and 48
+    # minutes for 48, 48, 48, 47 and 47 rows (run 44311674904).
     timeout-minutes: 360
     strategy:
       # Every harness reports, whichever fails: a red in one is not a reason to cancel the answer

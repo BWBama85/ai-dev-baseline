@@ -177,7 +177,9 @@ only by a release it upgrades to. These entries are the notes for both.
   scores every row against the whole suite, which is what the nightly does. `check_shmutant_pool` also reads
   `ADB_MUTATION_SHARD=<k>/<K>` now, handing its pool the rows whose index modulo K is k-1, and the
   nightly's plan gives `adopt-mutation` five shards, named
-  `mutation-nightly (adopt-mutation, shard <k> of 5)`. No row was added, dropped or given another
+  `mutation-nightly (adopt-mutation, shard <k> of 5)`. On the maintainer's machine the per-block
+  run took 22m40s where every mutant against the whole suite took 3h43m37s, on one commit, and the
+  five hosted shards took between 25 and 48 minutes. No row was added, dropped or given another
   witness (D159).
 
 - **A plain selfcheck runs the steps your change touches, and so does the macOS leg of a pull
