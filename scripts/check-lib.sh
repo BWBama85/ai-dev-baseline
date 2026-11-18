@@ -508,7 +508,8 @@ check_register_pool() {
 # location that cannot be used refuses the pool, and a directory that cannot be removed is a failure.
 #
 # Rows are declared BEFORE the call. shmutant also accepts rows declared inside `prepare`; this adapter
-# does not, because it reads the table's size first and checks the stream against it.
+# does not, because it reads the table's size first and checks the stream against it. <workdir>'s
+# parent must exist: the stream, and in block mode the count directory, are made beside the workdir.
 #
 # ADB_MUTATION_SHARD=<k>/<K> keeps only shard k's rows (#631; `_check_row_shard`, the per-block rows'
 # own rule: row i, from 0, is shard k's when i % K == k - 1). The pool is handed those rows and no
@@ -534,9 +535,10 @@ check_register_pool() {
 #     included — what the reference counted. The block counts reach shmutant through its count
 #     descriptor, and it refuses a count line that is not `<unit><TAB><digits>`. A row whose
 #     selection's baseline is not green is scored `baseline`, never run;
-#   * BY THE WRAPPER around <run-fn>: a green run that reported no count for a block it runs — a
-#     dependency as much as a selected one, and every block for the unselected run — is turned red,
-#     since shmutant compares only the units a run reports.
+#   * BY THE WRAPPER around <run-fn>: a green run whose counts cannot be handed to shmutant whole,
+#     or that reported none for a block it runs — a dependency as much as a selected one, and every
+#     block for the unselected run — is turned red, since shmutant compares only the units a run
+#     reports. A run that was not green keeps its own status: its counts are never read.
 # The stream must then carry exactly those baseline records, ahead of the rows and in shmutant's
 # order, and each one that is not green is a failure named here. ADB_MUTATION_FULL_SUITE=1 (the nightly's mode) runs every
 # mutant against the whole suite: the rows are handed to the pool under ONE selector, so the only
@@ -874,16 +876,17 @@ _check_shm_decls() {
 
 # _check_shm_row_run <root> <select> — the <run-fn> shmutant is handed in block mode: it calls the
 # caller's run with the selection in ADB_CHECK_BLOCK. <select> is a row's selector, or empty for the
-# unselected baseline; in full-suite mode nothing is selected, whatever shmutant passes. When
-# shmutant is counting (SHMUTANT_COUNTS_FD), the run's block counts are collected in a file of its
-# own under CHECK_SHM_COUNTS_DIR — which check_shmutant_pool makes and removes, so a run that is
-# killed leaves nothing behind for long — and handed to that descriptor whole. A green run that
-# reported no count for a block it runs, a dependency as much as a selected one, is turned red:
-# shmutant compares the units a run reports, never the ones it should have. The file is read ONCE:
-# what is checked for every block is the text that was handed over, so a line something appends
-# after the run returned can neither reach shmutant nor satisfy the check.
+# unselected baseline; in full-suite mode nothing is selected, whatever shmutant passes.
+#
+# When shmutant is counting (SHMUTANT_COUNTS_FD), the run writes its block counts to a file of its
+# own under CHECK_SHM_COUNTS_DIR, and ONLY A RUN THAT EXITED 0 HAS THEM READ: shmutant compares
+# counts for green baselines alone, so a red or an aborted run goes back with the status its
+# callback gave it, whatever became of its counts. A green run whose counts cannot be handed over
+# whole, or that reported none for a block it runs, is turned red (`_check_shm_counts`). The run's
+# files are removed before this returns; `check_shmutant_pool` removes the directory, which is what
+# clears a run that was killed.
 _check_shm_row_run() {
-  local sel="$2" cf rc one counts
+  local sel="$2" cf rc
   [ "$CHECK_SHM_FULL" -eq 0 ] || sel=""
   if [ -z "${SHMUTANT_COUNTS_FD:-}" ]; then
     ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="" "$CHECK_SHM_RUN" "$1" "$sel"
@@ -894,24 +897,47 @@ _check_shm_row_run() {
     return 1
   fi
   ADB_CHECK_BLOCK="$sel" ADB_CHECK_BLOCK_COUNTS="$cf" "$CHECK_SHM_RUN" "$1" "$sel"; rc=$?
-  if ! counts="$(cat "$cf" 2>/dev/null)"; then
-    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read back\n'
-    return 1
+  if [ "$rc" -eq 0 ]; then
+    _check_shm_counts "$cf" "$sel" || rc=1
   fi
-  # A line per record, as the file had them: the substitution dropped the last newline.
-  if [ -n "$counts" ] && ! printf '%s\n' "$counts" >&"$SHMUTANT_COUNTS_FD"; then
-    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
+  rm -f "$cf" "$cf.snap" 2>/dev/null
+  if [ -e "$cf" ] || [ -e "$cf.snap" ]; then
+    printf 'FAIL: check-blocks: this run'"'"'s block-count files could not be removed\n'
     [ "$rc" -ne 0 ] || rc=1
   fi
-  if [ "$rc" -eq 0 ]; then
-    for one in $(_check_blocks_closure "$sel"); do
-      if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' <<< "$counts" 2>/dev/null; then
-        printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
-        rc=1
-      fi
-    done
-  fi
   return "$rc"
+}
+
+# _check_shm_counts <count-file> <selection> — hand one green run's block counts to shmutant. ONE
+# snapshot is taken, bounded and byte for byte (`head -c` into a file of its own, the idiom
+# check_shmutant_pool uses for the verdict stream), and everything below reads that snapshot: the
+# byte rules of common.sh's `adb_bytes_whole` (a regular file of 1 byte to 1 MiB, no NUL, a final
+# newline), a count for every block the selection runs, and then the hand-over, untouched, so the
+# record grammar is shmutant's to judge on the bytes the run wrote. Checking the file and then
+# reading it again would judge one set of bytes and forward another. Returns 1, with a `FAIL:`
+# line saying why, when the counts cannot stand for the run.
+_check_shm_counts() {
+  local cf="$1" sel="$2" snap="$1.snap" one missing=0
+  if [ -L "$cf" ] || [ ! -f "$cf" ] || ! head -c 1048577 "$cf" > "$snap" 2>/dev/null; then
+    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
+    return 1
+  fi
+  if ! adb_bytes_whole "$snap" 1048576; then
+    printf 'FAIL: check-blocks: this run'"'"'s block counts are not whole (none at all, a NUL, no final newline, or past 1 MiB), so they cannot be compared\n'
+    return 1
+  fi
+  for one in $(_check_blocks_closure "$sel"); do
+    if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' "$snap" 2>/dev/null; then
+      printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
+      missing=1
+    fi
+  done
+  [ "$missing" -eq 0 ] || return 1
+  if ! cat "$snap" >&"$SHMUTANT_COUNTS_FD"; then
+    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
+    return 1
+  fi
+  return 0
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------
