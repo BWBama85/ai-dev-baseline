@@ -664,7 +664,8 @@ check_shmutant_pool() {
     SHMUTANT_ROWS_NAME=("${all_name[@]}"); SHMUTANT_ROWS_FILE=("${all_file[@]}"); SHMUTANT_ROWS_OLD=("${all_old[@]}")
     SHMUTANT_ROWS_NEW=("${all_new[@]}"); SHMUTANT_ROWS_WIT=("${all_wit[@]}"); SHMUTANT_ROWS_SEL=("${all_sel[@]}")
   fi
-  [ "$errexit" -eq 0 ] || set -e
+  # BEFORE the caller's errexit is put back: under it a removal that failed would end the shell here,
+  # ahead of its own diagnostic and of every verdict below.
   if [ -n "$CHECK_SHM_COUNTS_DIR" ]; then
     rm -rf "$CHECK_SHM_COUNTS_DIR" 2>/dev/null
     if [ -e "$CHECK_SHM_COUNTS_DIR" ] || [ -L "$CHECK_SHM_COUNTS_DIR" ]; then
@@ -672,6 +673,7 @@ check_shmutant_pool() {
     fi
     CHECK_SHM_COUNTS_DIR=""
   fi
+  [ "$errexit" -eq 0 ] || set -e
   # An absent or empty stream carries no records (status 2 can leave either); anything else must be
   # whole — no NUL, a final newline, inside a bound no real table approaches. It is judged as ONE
   # bounded snapshot (`<workdir>.snap.*`, one byte past the bound), and the checks and the parse both
@@ -830,7 +832,7 @@ CHECK_SHM_RUN=""; CHECK_SHM_FULL=0; CHECK_SHM_WHOLE="whole-suite"; CHECK_SHM_COU
 # _check_shm_decls <label> <suite-path> — every row of shmutant's table names declared blocks whose
 # source carries its witness. Returns 1, with every problem named, when any does not.
 _check_shm_decls() {
-  local label="$1" suite="$2" i errs=0 nm sel wit one seen dup
+  local label="$1" suite="$2" i errs=0 nm sel wit one seen dup trc
   if ! _check_blocks_parse "${ROOT:-}/$suite"; then bad "$label --mutation: $CHECK_BLOCK_ERR"; return 1; fi
   if [ "${#CHECK_PB_IDS[@]}" -eq 0 ]; then
     bad "$label --mutation: $suite declares no blocks, so no row's selector can name one"; return 1
@@ -841,8 +843,8 @@ _check_shm_decls() {
     if [ "$sel" = "$wit" ]; then
       bad "row '$nm': its selector equals its witness — shmutant_mut's fifth argument, the block, was not given"; errs=$((errs + 1)); continue
     fi
-    _check_blocks_text "$ROOT/$suite" "$sel"
-    case "$?" in
+    trc=0; _check_blocks_text "$ROOT/$suite" "$sel" || trc=$?
+    case "$trc" in
       0) ;;
       2) bad "row '$nm': the source of block(s) '$sel' could not be read from $suite"; errs=$((errs + 1)); continue ;;
       *) bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$sel}' is not declared in $suite"; errs=$((errs + 1)); continue ;;
@@ -866,25 +868,6 @@ _check_shm_decls() {
     esac
   done
   [ "$errs" -eq 0 ] || { bad "$label --mutation: $errs row declaration(s) are invalid — nothing was built or run"; return 1; }
-}
-
-# _check_blocks_closure <selection> — the blocks a selection RUNS, space-separated: the ones it names
-# and everything they need, or every declared block when the selection is empty. Read after
-# `_check_blocks_parse`, whose table it uses; a dependency is always declared earlier, so one pass
-# from the last block backwards closes the set.
-_check_blocks_closure() {
-  local set=" " i one dep
-  if [ -z "$1" ]; then printf '%s' "${CHECK_PB_IDS[*]}"; return 0; fi
-  for one in ${1//,/ }; do set="$set$one "; done
-  for (( i = ${#CHECK_PB_IDS[@]} - 1; i >= 0; i-- )); do
-    case "$set" in
-      *" ${CHECK_PB_IDS[$i]} "*)
-        for dep in ${CHECK_PB_DEPS[$i]}; do
-          case "$set" in *" $dep "*) ;; *) set="$set$dep " ;; esac
-        done ;;
-    esac
-  done
-  printf '%s' "$set"
 }
 
 # _check_shm_row_run <root> <select> — the <run-fn> shmutant is handed in block mode: it calls the
@@ -1001,11 +984,34 @@ _check_blocks_parse() {
   return 0
 }
 
+# _check_blocks_closure <selection> — the blocks a selection RUNS, as ` <id> <id> … `: the ones it
+# names and everything they need, or every declared block when the selection is empty. Read after
+# `_check_blocks_parse`, whose table it uses. A dependency is always declared earlier, so one pass
+# from the last block backwards closes the set. The ONE closure: `check_blocks_init` runs by it, and
+# a counted run is required to report every block in it.
+_check_blocks_closure() {
+  local set=" " i one dep
+  if [ -z "$1" ]; then
+    for one in ${CHECK_PB_IDS[@]+"${CHECK_PB_IDS[@]}"}; do set="$set$one "; done
+    printf '%s' "$set"; return 0
+  fi
+  for one in ${1//,/ }; do set="$set$one "; done
+  for (( i = ${#CHECK_PB_IDS[@]} - 1; i >= 0; i-- )); do
+    case "$set" in
+      *" ${CHECK_PB_IDS[$i]} "*)
+        for dep in ${CHECK_PB_DEPS[$i]}; do
+          case "$set" in *" $dep "*) ;; *) set="$set$dep " ;; esac
+        done ;;
+    esac
+  done
+  printf '%s' "$set"
+}
+
 # check_blocks_init <suite-file> — scan the declarations and resolve ADB_CHECK_BLOCK. Call once, after
 # sourcing this file and before the first block. Exits 2 on any declaration problem or unknown id.
 # Globals: CHECK_BLOCK_* (written).
 check_blocks_init() {
-  local i sel=-1 id dep
+  local i sel=-1
   if ! _check_blocks_parse "$1"; then printf '%s\n' "$CHECK_BLOCK_ERR" >&2; exit 2; fi
   CHECK_BLOCK_IDS=(); CHECK_BLOCK_DEPS=(); CHECK_BLOCK_LINES=()
   for (( i = 0; i < ${#CHECK_PB_IDS[@]}; i++ )); do
@@ -1030,16 +1036,7 @@ check_blocks_init() {
     [ "$found" -gt "$sel" ] && sel=$found
     CHECK_BLOCK_SELSET="$CHECK_BLOCK_SELSET$want "
   done
-  # Dependencies are always EARLIER, so one pass from the last selected block backwards closes the set.
-  CHECK_BLOCK_RUNSET="$CHECK_BLOCK_SELSET"
-  for (( i = sel; i >= 0; i-- )); do
-    id="${CHECK_BLOCK_IDS[$i]}"
-    case "$CHECK_BLOCK_RUNSET" in
-      *" $id "*) for dep in ${CHECK_BLOCK_DEPS[$i]}; do
-                   case "$CHECK_BLOCK_RUNSET" in *" $dep "*) ;; *) CHECK_BLOCK_RUNSET="$CHECK_BLOCK_RUNSET$dep " ;; esac
-                 done ;;
-    esac
-  done
+  CHECK_BLOCK_RUNSET="$(_check_blocks_closure "$CHECK_BLOCK_SEL")"
   return 0
 }
 
@@ -1221,7 +1218,7 @@ _check_block_ctl() {
 #      independent, and the nightly turns gating off with ADB_MUTATION_RUN_ALL rather than with this.
 check_mutation_rows() {
   local label="$1" wd="$2" suite="$3" prep="$4" run="$5" cap="$6"
-  local n i j pool running=0 errs=0 cnt rc b wit full=0 root blocks=" " nblocks=0
+  local n i j pool running=0 errs=0 cnt rc b wit full=0 root blocks=" " nblocks=0 trc
   local applied=0 red=0 scored=0 verdict why outside=0
   local gate_out gate_rc gate_line gi gd gate_bad=0 gated=0 gated_tgts=""
   local -a gate_dec=()
@@ -1266,8 +1263,8 @@ check_mutation_rows() {
     elif [ "$cnt" -gt 1 ]; then
       bad "row '$nm': its literal occurs $cnt times in '$tg' — a first-match rewrite could mutate the wrong one (witness: $wit)"; errs=$((errs + 1)); continue
     fi
-    _check_blocks_text "$ROOT/$suite" "$b"
-    case "$?" in
+    trc=0; _check_blocks_text "$ROOT/$suite" "$b" || trc=$?
+    case "$trc" in
       0) ;;
       2) bad "row '$nm': the source of block(s) '$b' could not be read from $suite"; errs=$((errs + 1)); continue ;;
       *) bad "row '$nm': block '${CHECK_BLOCK_UNDECL:-$b}' is not declared in $suite"; errs=$((errs + 1)); continue ;;

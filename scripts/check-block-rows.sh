@@ -936,6 +936,9 @@ for _c in "omitted|shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value'|its selector
     eq "$(copies "decl-$_m$_f")" 0 "shmutant blocks: a refused declaration builds no tree (full-suite '$_f')"
   done
 done
+# A caller under `set -e` still gets the refusal named.
+shm decl-errexit "shmutant_mut neg '0 - \$1' '0 + \$1' 'neg-value' nope" ADB_T_SUITE=suite.sh ADB_T_ERREXIT=1
+has "$out" "row 'neg': block 'nope' is not declared in suite.sh" "shmutant blocks: a caller's errexit does not end the shell before a refused declaration is named"
 # A witness that SPELLS a block id: the block's own declaration line carries it, so only the equality
 # rule can tell an omitted fifth argument from a real selector.
 shm decl-spelled "shmutant_mut neg '0 - \$1' '0 + \$1' 'uses-helper'" ADB_T_SUITE=suite.sh
@@ -972,7 +975,11 @@ if [ "$(id -u)" -ne 0 ]; then
   shm ctl-keep "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-keep"
   eq "$rc" 1 "shmutant blocks: a block-count directory that cannot be removed fails the suite"
   has "$out" "pool.counts could not be removed" "shmutant blocks: …saying which"
-  chmod -R u+w "$work/shm-ctl-keep" 2>/dev/null
+  # A caller under `set -e` gets the same diagnostic: the removal is tried before errexit is put back.
+  shm ctl-keep-e "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-keep" ADB_T_ERREXIT=1
+  has "$out" "pool.counts could not be removed" "shmutant blocks: a caller's errexit does not end the shell before the removal failure is named"
+  has "$out" "1/1 mutation(s) killed" "shmutant blocks: …or before the rows are scored"
+  chmod -R u+w "$work/shm-ctl-keep" "$work/shm-ctl-keep-e" 2>/dev/null
 fi
 # The selection is set around <run-fn>, so it has to be something that can be called from the wrapper.
 shm decl-run "$shm_three" ADB_T_SUITE=suite.sh ADB_T_RUN_CB=/bin/cat

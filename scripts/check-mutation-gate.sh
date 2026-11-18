@@ -1547,8 +1547,9 @@ if [ -f "$NIGHTLY" ]; then
   # count that was sized against the job bound, so fewer is a regression and every index must be there.
   eq "$(printf '%s' "$PLAN_OUT" | jq '[.include[] | select(.step == "adopt-mutation") | .shard] | length > 1')" "true" \
      "the published matrix splits adopt-mutation into more than one shard"
-  eq "$(printf '%s' "$PLAN_OUT" | jq -c '[.include[] | select(.step == "adopt-mutation") | .shard] | (length >= 5) and (. == [range(1; length + 1)])')" "true" \
-     "the published matrix gives adopt-mutation at least five shards, numbered from 1 with none missing"
+  eq "$(printf '%s' "$PLAN_OUT" | jq -c '[.include[] | select(.step == "adopt-mutation")] | length as $n
+        | ($n >= 5) and ([.[].shard] == [range(1; $n + 1)]) and all(.[]; .shards == $n)')" "true" \
+     "the published matrix gives adopt-mutation at least five shards, numbered from 1 with none missing, each of that many"
   run_plan fact-mutation
   eq "$PLAN_OUT" '{"include":[{"step":"fact-mutation","shard":1,"shards":1}]}' "the plan PUBLISHES exactly the one dispatched step"
   run_plan settings-fragment-mutation
