@@ -25,10 +25,14 @@
 #
 # WHAT COUNTS, exactly, because a line-oriented scan is only as good as its stated edges:
 #
-#   * Comment lines, trailing comments (` #…`) and here-document bodies are not code and are not
-#     scanned. Quoting is modelled only to find where a here-document opens, and only within one
-#     line: a banned shape spelled at the start of a line of a multi-line string is a finding. A
-#     statement continued with a trailing `\` or a trailing `|` is read as one line.
+#   * Each line is read as the shell reads it: quotes, `$( )`, `${ }` and backquotes nest, a `#`
+#     starts a comment only where it starts a word outside quotes, and a here-document opens only
+#     at an unquoted `<<` whose whole delimiter word closes it on a later line (several on one line
+#     close in order). Comments and here-document bodies are not scanned. THE STATE DOES NOT CARRY
+#     ACROSS LINES: every line starts as command text, so a banned shape at the start of a line
+#     inside a multi-line string is a finding, and a `(` or `)` in a `case` pattern inside a
+#     capture can end it early. A statement continued with a trailing `\` or a trailing `|` is read
+#     as one line.
 #   * pipefail is ON for a suite when a line starting at column 0 reads `set … -o pipefail`
 #     (`set -o pipefail`, `set -uo pipefail`, `set -eu -o pipefail`). A suite that enables it any
 #     other way — indented, through `shopt`, `bash -o pipefail`, an exported SHELLOPTS — is not
@@ -40,19 +44,17 @@
 #   * pwd-capture and mktemp-unchecked need the assignment at the start of a statement: at the start
 #     of the line, or after `;` `&` `|` `(` `{` `!` or `then`/`do`/`else`/`if`/`elif`/`while`/
 #     `until`. A bare `$(pwd)` passed as an argument is not seen.
-#   * A capture is CHECKED when `||` follows it directly; when `&&` follows it and a `||` comes
-#     before the statement's next `;`; or when the line opens with `if`/`elif`/`while`/`until` and
-#     the capture sits before that line's `; then` or `; do`. What the `||` runs is not judged, so
-#     `|| true` passes. `local x="$(mktemp -d)" || …` is a finding whatever follows: the
-#     declaration's status replaces mktemp's.
+#   * A capture is CHECKED when `||` follows it directly and runs something other than `true` or
+#     `:`; when `&&` follows it and a `||` comes before the statement's next `;`; or when the line
+#     opens with `if`/`elif`/`while`/`until` and nothing but an `&&` chain lies between the capture
+#     and that line's `; then` or `; do` (a later `;` or `||` would replace or mask its status).
+#     Beyond `true` and `:`, what the `||` runs is not judged. `local x="$(mktemp -d)" || …` is a
+#     finding whatever follows: the declaration's status replaces mktemp's.
 #   * Only `mktemp -d` (or `--directory`) captures. A helper that RETURNS a path it allocated is not
 #     followed to its callers: `d="$(new_repo)"` is read by review, not by this scan.
 #
-#   * A `<<WORD` opens a here-document only when WORD closes it on a later line; otherwise it is
-#     text, and the lines after it are scanned as code.
-#
-# A file that cannot be read and a tree with no `scripts/check-*.sh` at all are exit 2, never a
-# clean scan.
+# A file that cannot be read, a listing git could not produce whole, and a tree with no
+# `scripts/check-*.sh` at all are exit 2, never a clean scan.
 #
 # THE PROOF (the bare invocation). After scanning the tree:
 #   1. every rule is driven red on a fixture suite, and each accepted spelling is required clean;
@@ -86,36 +88,39 @@ cd "$(dirname "$0")/.." || exit 1
 check_init "suite-hygiene"
 ROOT="$PWD"
 
-# suite_files <root> — the suites under <root>, NUL-delimited, as paths relative to it. Tracked
+# suite_files <root> — fill HY_FILES with the suites under <root>, as paths relative to it. Tracked
 # files where <root> is a worktree (CI sees nothing else); the directory listing where it is not,
-# which is how the fixtures below are read. Returns 1 when there are none.
+# which is how the fixtures below are read. Returns 0 · 1 there are none · 2 git could not list
+# them, so a listing cut short is never scanned as if it were whole.
+HY_FILES=()
 suite_files() {
-  local root="$1" f
-  local -a files=()
+  local root="$1" f listing
+  HY_FILES=()
   if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
      && [ -z "$(git -C "$root" rev-parse --show-prefix 2>/dev/null)" ]; then
-    mapfile -d '' -t files < <(git -C "$root" ls-files -z -- 'scripts/check-*.sh' 2>/dev/null)
+    listing="$(git -C "$root" ls-files -- 'scripts/check-*.sh')" || return 2
+    [ -z "$listing" ] || mapfile -t HY_FILES <<< "$listing"
   else
     for f in "$root"/scripts/check-*.sh; do
-      [ -e "$f" ] && files+=("${f#"$root"/}")
+      [ -e "$f" ] && HY_FILES+=("${f#"$root"/}")
     done
   fi
-  [ "${#files[@]}" -gt 0 ] || return 1
-  printf '%s\0' "${files[@]}"
+  [ "${#HY_FILES[@]}" -gt 0 ]
 }
 
 # hygiene_scan <root> — one line per finding on stdout, `<path>:<line>: <class>: <text>`, then a
-# count line on stderr. Returns 0 clean · 1 a finding · 2 nothing to scan, or a file the scan
-# could not read to its end.
+# count line on stderr. Returns 0 clean · 1 a finding · 2 the suites could not be listed or read.
 hygiene_scan() {
   local root="$1" out rc f
-  local -a files=()
-  mapfile -d '' -t files < <(suite_files "$root")
-  if [ "${#files[@]}" -eq 0 ]; then
+  suite_files "$root"; rc=$?
+  if [ "$rc" -eq 2 ]; then
+    printf 'suite-hygiene: git could not list the suites under %s — nothing was scanned\n' "$root" >&2
+    return 2
+  elif [ "$rc" -ne 0 ]; then
     printf 'suite-hygiene: no scripts/check-*.sh under %s — nothing was scanned, which is not a pass\n' "$root" >&2
     return 2
   fi
-  for f in "${files[@]}"; do
+  for f in "${HY_FILES[@]}"; do
     if [ ! -f "$root/$f" ] || [ ! -r "$root/$f" ]; then
       printf 'suite-hygiene: %s is not a readable file — the scan would be short by one suite\n' "$f" >&2
       return 2
@@ -125,64 +130,149 @@ hygiene_scan() {
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function emit(class, at, text) { printf "%s:%d: %s: %s\n", file, at, class, trim(text); found = 1 }
 
-    # The end of a `$(` or `${ ` capture: the offset in s of its closing bracket, 0 if it never
-    # closes on this line. s begins just after the opening bracket.
-    function capture_end(s, open,    close_, depth, i, c) {
-      close_ = (open == "(") ? ")" : "}"; depth = 1
-      for (i = 1; i <= length(s); i++) {
-        c = substr(s, i, 1)
-        if (c == open) depth++
-        else if (c == close_ && --depth == 0) return i
-      }
-      return 0
-    }
+    # --- the lexer: one line, read as the shell reads it -------------------------------------
+    # Every function takes the whole line and an index into it, and returns the index after what
+    # it consumed (length + 1 when the line ends first).
 
-    # A here-document opens on this line when an UNQUOTED `<<` (not `<<<`) is followed by a word.
-    # Its body starts on the next line. Quotes are tracked within the line only.
-    function heredoc_open(l,    i, n, c, q, j, w) {
-      n = length(l); q = ""
-      for (i = 1; i <= n; i++) {
-        c = substr(l, i, 1)
-        if (q == "\047") { if (c == "\047") q = ""; continue }
-        if (c == "\\") { i++; continue }
-        if (q == "\"") { if (c == "\"") q = ""; continue }
-        if (c == "\047" || c == "\"") { q = c; continue }
-        if (c == "#" && (i == 1 || substr(l, i - 1, 1) ~ /[[:space:]]/)) return
-        if (c != "<" || substr(l, i, 2) != "<<") continue
-        if (substr(l, i, 3) == "<<<") { i += 2; continue }
-        j = i + 2; hd_dash = 0
-        if (substr(l, j, 1) == "-") { hd_dash = 1; j++ }
-        while (substr(l, j, 1) ~ /[[:space:]]/) j++
-        if (substr(l, j, 1) ~ /["\047\\]/) j++
-        w = substr(l, j)
-        if (match(w, /^[A-Za-z_][A-Za-z0-9_]*/)) { hd = substr(w, 1, RLENGTH); return }
+    # Just after an opening single quote.
+    function skip_sq(s, i,    j) { j = index(substr(s, i), "\047"); return j ? i + j : length(s) + 1 }
+    # Just after the opening quote of $-quoted text, where a backslash escapes.
+    function skip_ansi(s, i,    n, c) {
+      n = length(s)
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "\047") return i + 1
         i++
       }
+      return n + 1
+    }
+    # Just after an opening double quote: substitutions inside it are command text again.
+    function skip_dq(s, i,    n, c, c2) {
+      n = length(s)
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "\"") return i + 1
+        if (c == "`") { i = walk(s, i + 1, "`"); continue }
+        if (c == "$") {
+          c2 = substr(s, i + 1, 1)
+          if (c2 == "(") { i = walk(s, i + 2, ")"); continue }
+          if (c2 == "{") { i = (substr(s, i + 2, 1) ~ /[[:space:]|]/) ? walk(s, i + 2, "}") : skip_param(s, i + 2); continue }
+        }
+        i++
+      }
+      return n + 1
+    }
+    # Just after the `${` of a parameter expansion: braces nest, quotes and substitutions apply.
+    function skip_param(s, i,    n, c, c2, depth) {
+      n = length(s); depth = 0
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "\047") { i = skip_sq(s, i + 1); continue }
+        if (c == "\"") { i = skip_dq(s, i + 1); continue }
+        if (c == "$") {
+          c2 = substr(s, i + 1, 1)
+          if (c2 == "(") { i = walk(s, i + 2, ")"); continue }
+          if (c2 == "{") { i = skip_param(s, i + 2); continue }
+        }
+        if (c == "{") depth++
+        else if (c == "}") { if (depth == 0) return i + 1; depth-- }
+        i++
+      }
+      return n + 1
+    }
+    # The word after a here-document operator, in full: quotes removed, any characters a word may
+    # hold. Queues it and returns the index after it, or 0 when no word follows.
+    function heredoc_word(s, j,    dash, c, k, w, any) {
+      dash = 0
+      if (substr(s, j, 1) == "-") { dash = 1; j++ }
+      while (substr(s, j, 1) ~ /[ \t]/) j++
+      w = ""; any = 0
+      while (j <= length(s)) {
+        c = substr(s, j, 1)
+        if (c == "\047") {
+          k = index(substr(s, j + 1), "\047"); if (!k) return 0
+          w = w substr(s, j + 1, k - 1); j += k + 1; any = 1; continue
+        }
+        if (c == "\"") {
+          k = index(substr(s, j + 1), "\""); if (!k) return 0
+          w = w substr(s, j + 1, k - 1); j += k + 1; any = 1; continue
+        }
+        if (c == "\\") { w = w substr(s, j + 1, 1); j += 2; any = 1; continue }
+        if (c ~ /[[:space:];&|<>()]/) break
+        w = w c; j++; any = 1
+      }
+      if (!any) return 0
+      HQ[++nq] = w; HDASH[nq] = dash
+      return j
+    }
+    # Command text from i up to its unnested terminator: ")" "}" or a backquote, or "" for the
+    # whole line. Sets CUT where a comment starts, queues here-document words, sets CLOSED when
+    # the terminator was reached.
+    function walk(s, i, term,    n, c, c2, depth, j) {
+      n = length(s); depth = 0
+      while (i <= n) {
+        if (CUT) return n + 1
+        c = substr(s, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "\047") { i = skip_sq(s, i + 1); continue }
+        if (c == "\"") { i = skip_dq(s, i + 1); continue }
+        if (c == "`") { if (term == "`") { CLOSED = 1; return i + 1 } i = walk(s, i + 1, "`"); CLOSED = 0; continue }
+        if (c == "$") {
+          c2 = substr(s, i + 1, 1)
+          if (c2 == "\047") { i = skip_ansi(s, i + 2); continue }
+          if (c2 == "(") { i = walk(s, i + 2, ")"); CLOSED = 0; continue }
+          if (c2 == "{") {
+            if (substr(s, i + 2, 1) ~ /[[:space:]|]/) { i = walk(s, i + 2, "}"); CLOSED = 0 } else i = skip_param(s, i + 2)
+            continue
+          }
+          i++; continue
+        }
+        if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:];&|()]/)) { CUT = i; return n + 1 }
+        if (c == "<" && substr(s, i, 2) == "<<") {
+          if (substr(s, i, 3) == "<<<") { i += 3; continue }
+          j = heredoc_word(s, i + 2)
+          i = j ? j : i + 2
+          continue
+        }
+        if (term == ")") { if (c == "(") depth++; else if (c == ")") { if (depth == 0) { CLOSED = 1; return i + 1 } depth-- } }
+        else if (term == "}") { if (c == "{") depth++; else if (c == "}") { if (depth == 0) { CLOSED = 1; return i + 1 } depth-- } }
+        i++
+      }
+      return n + 1
     }
 
-    function scan_mktemp(l, at,    s, off, head, open, rest, end, cap, after, decl, checked, p, q, t, why) {
-      s = l; off = 0
+    # --- the rules ---------------------------------------------------------------------------
+    function scan_mktemp(l, at,    s, base, head, open, rest, e, cap, after, decl, checked, q, t, tail, why, snq) {
+      s = l; base = 0
       while (match(s, STMT "=\"?\\$[({]")) {
         head = substr(s, RSTART, RLENGTH); open = substr(head, length(head), 1)
         rest = substr(s, RSTART + RLENGTH)
-        p = off + RSTART                       # where this assignment starts in the whole line
-        off += RSTART + RLENGTH - 1; s = rest
+        base += RSTART + RLENGTH - 1; s = rest          # l, from base + 1 on, is rest
         if (rest !~ ((open == "(") ? "^[[:space:]]*mktemp([[:space:]]|\\))" : "^[[:space:]|]+mktemp([[:space:]]|;)")) continue
-        end = capture_end(rest, open)
-        if (end == 0) { emit("mktemp-unchecked", at, l " (the capture does not close on this line)"); return }
-        cap = substr(rest, 1, end - 1); after = substr(rest, end + 1)
+        snq = nq; CUT = 0; CLOSED = 0
+        e = walk(rest, 1, (open == "(") ? ")" : "}")
+        nq = snq; CUT = 0
+        if (!CLOSED) { emit("mktemp-unchecked", at, l " (the capture does not close on this line)"); return }
+        cap = substr(rest, 1, e - 2); after = substr(rest, e)
         if (cap !~ /[[:space:]](-[A-Za-z]*d[A-Za-z]*|--directory)([[:space:];]|$)/) continue
-        sub(/^"/, "", after)
+        if (substr(after, 1, 1) == "\"") { after = substr(after, 2); e++ }
         decl = (head ~ /(local|readonly|export|declare|typeset)[[:space:]]/)
         checked = 0
-        if (after ~ /^[[:space:]]*\|\|/) checked = 1
-        else if (after ~ /^[[:space:]]*&&/) {
+        if (after ~ /^[[:space:]]*\|\|/) {
+          if (after !~ /^[[:space:]]*\|\|[[:space:]]*(true|:)[[:space:]]*([;)]|$)/) checked = 1
+        } else if (after ~ /^[[:space:]]*&&/) {
           q = index(after, "||"); t = index(after, ";")
           if (q > 0 && (t == 0 || q < t)) checked = 1
         }
         if (!checked && l ~ /^[[:space:]]*(if|elif|while|until)[[:space:]]/) {
+          # The capture decides the condition only when nothing but an `&&` chain separates it
+          # from `; then`: a later `;` or `||` would replace or mask its status.
           t = match(l, /;[[:space:]]*(then|do)([[:space:]]|$)/)
-          if (t == 0 || p < t) checked = 1
+          tail = (t > 0) ? ((base + e <= t) ? substr(l, base + e, t - (base + e)) : ";") : after
+          if (tail !~ /[;|]/) checked = 1
         }
         why = ""
         if (decl) { checked = 0; why = " (declared and assigned at once, so mktemp status is lost)" }
@@ -199,32 +289,38 @@ hygiene_scan() {
       if (l ~ /mktemp/) scan_mktemp(l, at)
     }
 
-    # A candidate opener is a here-document only if its word closes it on a later line. One that
-    # never closes is text that looks like an opener (a quoted `<<EOF` in an assertion), and the
-    # lines after it are code.
-    function closes(from, n,    j, probe) {
-      for (j = from; j <= n; j++) {
-        probe = L[j]
-        if (hd_dash) sub(/^\t+/, "", probe)
-        if (probe == hd) return 1
+    # --- one file ----------------------------------------------------------------------------
+    # Is line j the terminator of queued here-document k?
+    function ends(j, k,    probe) {
+      probe = L[j]
+      if (HDASH[k]) sub(/^\t+/, "", probe)
+      return probe == HQ[k]
+    }
+    # Keep only the queued words that close, in order, on later lines. A word that never closes
+    # is text that looks like an opener, and the lines after it are code.
+    function confirm(from, n,    k, j, hit) {
+      j = from
+      for (k = 1; k <= nq; k++) {
+        hit = 0
+        for (; j <= n; j++) if (ends(j, k)) { hit = 1; j++; break }
+        if (!hit) { nq = k - 1; return }
       }
-      return 0
     }
 
-    function end_file(    i, n, line, at, pending, pending_at, probe) {
+    function end_file(    i, n, line, at, pending, pending_at) {
       if (file == "") return
-      n = nl; hd = ""; pending = ""; pipefail = 0; ng = 0
+      n = nl; nq = 0; hk = 1; pending = ""; pipefail = 0; ng = 0
       for (i = 1; i <= n; i++) {
-        if (hd != "") {
-          probe = L[i]
-          if (hd_dash) sub(/^\t+/, "", probe)
-          if (probe == hd) hd = ""
+        if (hk <= nq) {                                  # inside a here-document body
+          if (ends(i, hk)) { hk++; if (hk > nq) { nq = 0; hk = 1 } }
           continue
         }
         line = L[i]
-        if (line ~ /^[[:space:]]*#/) line = ""
-        else sub(/[[:space:]]#.*$/, "", line)
-        if (line != "" && index(L[i], "<<")) { heredoc_open(L[i]); if (hd != "" && !closes(i + 1, n)) hd = "" }
+        if (index(line, "#") || index(line, "<<")) {
+          CUT = 0; walk(line, 1, "")
+          if (CUT) line = substr(line, 1, CUT - 1)
+          if (nq) confirm(i + 1, n)
+        }
         if (pending != "") { line = pending " " trim(line); at = pending_at } else at = i
         if (line ~ /\\$/) { sub(/\\$/, "", line); pending = line; pending_at = at; continue }
         if (line ~ /(^|[^|])\|[[:space:]]*$/) { pending = line; pending_at = at; continue }
@@ -233,7 +329,7 @@ hygiene_scan() {
       }
       if (pending != "") scan(pending, pending_at)
       if (pipefail) { np++; for (i = 1; i <= ng; i++) { print gq[i]; found = 1 } }
-      nfiles++; nl = 0
+      nl = 0
     }
 
     BEGIN {
@@ -244,12 +340,13 @@ hygiene_scan() {
     { L[++nl] = $0 }
     END {
       end_file()
-      printf "suite-hygiene: scanned %d suite(s), %d under pipefail\n", nfiles, np > "/dev/stderr"
+      # ARGC - 1, not a count of files that had a first line: an empty suite was read too.
+      printf "suite-hygiene: scanned %d suite(s), %d under pipefail\n", ARGC - 1, np > "/dev/stderr"
       exit (found ? 1 : 0)
     }
-  ' "${files[@]}")"; rc=$?
+  ' "${HY_FILES[@]}" </dev/null)"; rc=$?
   [ -z "$out" ] || printf '%s\n' "$out"
-  case "$rc" in 0|1|2) return "$rc" ;; *) return 2 ;; esac
+  case "$rc" in 0|1) return "$rc" ;; *) return 2 ;; esac
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -386,6 +483,25 @@ clean "mk comment"       "# was: cd x && work=\"$MK\""
 clean "mk trailing comment" "ok  # was: cd x && work=\"$MK\""
 clean "mk heredoc body"  "cat > f <<'SH'" "work=\"$MK\"" 'SH'
 
+# --- the lexer's edges (each found by review of the first cut) ---
+flagged "# inside double quotes"  pwd-capture 2 "printf '%s\\n' \"value # text\"; ROOT=\"$PW\""
+flagged "# inside single quotes"  pwd-capture 2 "printf '%s\\n' 'value # text'; ROOT=\"$PW\""
+flagged "# inside quotes, piped"  grep-q-pipe 3 "$PF" "printf '%s' \"a #b\" $GQ a"
+flagged "\$# is not a comment"    pwd-capture 2 "[ \$# -gt 0 ] && ROOT=\"$PW\""
+flagged "# inside a word"         pwd-capture 2 "x=a#b; ROOT=\"$PW\""
+flagged "\${x#y} is not a comment" pwd-capture 2 "x=\"\${y#z}\"; ROOT=\"$PW\""
+flagged "delimiter read in full"  pwd-capture 5 "cat <<'EOF-X'" 'fixture' 'EOF-X' "ROOT=\"$PW\"" "cat <<'EOF'" 'fixture' 'EOF'
+flagged "bare delimiter in full"  pwd-capture 5 'cat <<EOF-X' 'fixture' 'EOF-X' "ROOT=\"$PW\"" 'cat <<EOF' 'fixture' 'EOF'
+flagged "opener in a nested string" pwd-capture 3 "order \"x\" \"\$(line_of \"\$f\" \"--finding - <<'FINDING' x\")\" y" "ROOT=\"$PW\"" 'FINDING'
+clean "two heredocs on one line"  "cat <<'A' <<'B'" 'one' 'A' "ROOT=\"$PW\"" 'B'
+clean "escaped delimiter"         'cat <<\EOF' "ROOT=\"$PW\"" 'EOF'
+clean "mk quoted parenthesis"     'work="$(mktem''p -d "$base/(x.XXXXXX")" || exit 1'
+flagged "mk if masked by ;"       mktemp-unchecked 2 "if work=\"$MK\"; true; then echo \"\$work\"; fi"
+flagged "mk if masked by ||"      mktemp-unchecked 2 "if work=\"$MK\" || true; then echo \"\$work\"; fi"
+flagged "mk || true"              mktemp-unchecked 2 "work=\"$MK\" || true"
+flagged "mk || :"                 mktemp-unchecked 2 "work=\"$MK\" || :"
+clean "mk if, then on next line"  "if work=\"$MK\" &&" '   [ -d "$work" ]' 'then ok; fi'
+
 # --- what the scan cannot read is 2, never clean ---
 empty="$work/empty"; mkdir -p "$empty/scripts"
 hygiene_scan "$empty" >/dev/null 2>&1; eq "$?" 2 "a tree with no suite is 2, not a clean scan"
@@ -401,6 +517,25 @@ else
   hygiene_scan "$d" >/dev/null 2>&1; eq "$?" 2 "an unreadable suite is 2"
   chmod 644 "$d/scripts/check-fx.sh"
 fi
+# A listing git cut short is 2: one suite named, then a failing status.
+d="$(fx short 'ok')" || bad "could not build the short-listing fixture"
+mkdir -p "$work/gitstub"
+cat > "$work/gitstub/git" <<'SH'
+#!/bin/sh
+case "$*" in
+  *rev-parse*--is-inside-work-tree*) echo true; exit 0 ;;
+  *rev-parse*--show-prefix*) echo; exit 0 ;;
+  *ls-files*) echo scripts/check-fx.sh; exit 1 ;;
+esac
+exit 1
+SH
+chmod +x "$work/gitstub/git"
+( PATH="$work/gitstub:$PATH"; hygiene_scan "$d" >/dev/null 2>&1 ); eq "$?" 2 "a listing git could not finish is 2, not a scan of the part that arrived"
+# An empty suite is read, and counted.
+d="$(fx blank 'ok')" || bad "could not build the empty-suite fixture"
+: > "$d/scripts/check-fx.sh"
+out="$(hygiene_scan "$d" 2>&1)"; eq "$?" 0 "an empty suite carries no finding"
+has "$out" "scanned 1 suite(s)" "…and is counted as scanned"
 # Two suites, one finding: the clean one does not hide it and the count names both.
 d="$(fx two "work=\"$MK\"")" || bad "could not build the two-suite fixture"
 printf '%s\n' '#!/usr/bin/env bash' "$PF" 'grep -q x <<< "$y"' > "$d/scripts/check-other.sh"
@@ -465,7 +600,8 @@ eq "$(probe "$CD_LINE" "ROOT=\"$PW\"")" "sibling-tree" "the banned capture, run 
 eq "$(probe "$CD_LINE" 'ROOT="$PWD"')" "newline-tree" "…and \$PWD reads its own"
 
 probed=0
-while IFS= read -r -d '' rel; do
+suite_files "$ROOT" || bad "the suites could not be listed for the clone<NL> probes"
+for rel in "${HY_FILES[@]}"; do
   cd_line="$(grep -m1 -E '^cd "\$\(dirname "\$0"\)' "$ROOT/$rel")"
   root_line="$(grep -m1 -E '^ROOT=' "$ROOT/$rel")"
   [ -n "$root_line" ] || continue
@@ -476,7 +612,7 @@ while IFS= read -r -d '' rel; do
   case "$root_line" in *'$ADB_T_FIX'*) continue ;; esac   # a fixture root handed in by a harness
   probed=$((probed + 1))
   eq "$(probe "$cd_line" "$root_line")" "newline-tree" "$rel: its ROOT capture, run in clone<NL>, reads its own tree"
-done < <(suite_files "$ROOT")
+done
 [ "$probed" -ge 30 ] && ok || bad "only $probed suite(s) had a ROOT capture to probe — the enumeration is short"
 
 check_summary "check-suite-hygiene"

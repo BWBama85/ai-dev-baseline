@@ -335,7 +335,8 @@ jobs:
         run: bash scripts/check-tmp-paths.sh
 
       # A lint over the check suites themselves, riding this job for the branch-protection reason
-      # the steps above give.
+      # the steps above give. It adds about 4s (measured 2026-11-18, the maintainer's macOS
+      # machine) to a job that took 55s of its 10 minutes on run 44404920461.
       - name: No check suite pipes into grep -q under pipefail, captures $(pwd), or leaves mktemp -d unchecked (#458)
         run: bash scripts/check-suite-hygiene.sh
 

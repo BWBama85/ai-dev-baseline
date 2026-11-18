@@ -836,11 +836,13 @@ printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analys
 has   "$(first_substantive "$work/prefix.err")" "FIRSTLINE-provenance-header" "the cap keeps the HEAD of the stream (the provenance header)"
 hasnt "$(cat  "$work/prefix.err")"    "TAILMARKER"                  "...and drops the tail, which is what a head cap means"
 # OBSERVED DISCRIMINATING, on the real dispatch. With the diagnostic injected ahead of the header,
-# line one is the diagnostic (what the old `head -1` form read, and failed on) and the first
-# substantive line is still the header...
+# line one is not the header (what the old `head -1` form read, and failed on) and the first
+# substantive line still is. Neither assertion names a line NUMBER for the injected diagnostic: a
+# real one can precede it, which is the condition under test.
 printf 'x' | rd_env RD_SETPGID_FIRST=1 ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/prefix-pgid.err"
-has   "$(head -1 "$work/prefix-pgid.err")" "child setpgid (4242 to 4242)" "a leading setpgid diagnostic is line one of the capped stream"
+has   "$(awk '/FIRSTLINE-provenance-header/{ exit } { print }' "$work/prefix-pgid.err")" "child setpgid (4242 to 4242)" "the injected setpgid diagnostic is in the capped stream, ahead of the header"
+hasnt "$(head -1 "$work/prefix-pgid.err")" "FIRSTLINE-provenance-header" "...so line one is not the header"
 has   "$(first_substantive "$work/prefix-pgid.err")" "FIRSTLINE-provenance-header" "...and the header is still the first substantive line behind it"
 hasnt "$(tr -d '\000' < "$work/prefix-pgid.err")" "TAILMARKER" "...with the tail still dropped"
 # ...while any OTHER line ahead of the header is not skipped: a displaced header stays a failure.
