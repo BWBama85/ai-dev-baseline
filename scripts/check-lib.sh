@@ -900,44 +900,59 @@ _check_shm_row_run() {
   if [ "$rc" -eq 0 ]; then
     _check_shm_counts "$cf" "$sel" || rc=1
   fi
-  rm -f "$cf" "$cf.snap" 2>/dev/null
-  if [ -e "$cf" ] || [ -e "$cf.snap" ]; then
-    printf 'FAIL: check-blocks: this run'"'"'s block-count files could not be removed\n'
+  if ! _check_shm_gone "$cf"; then
+    printf 'FAIL: check-blocks: this run'"'"'s block-count file could not be removed\n'
     [ "$rc" -ne 0 ] || rc=1
   fi
   return "$rc"
 }
 
+# _check_shm_gone <file> — remove one of a run's count files: the command's own status AND nothing
+# left at the path, a dangling link included. An `rm` that failed has not been shown to have removed
+# what it was asked to.
+_check_shm_gone() {
+  rm -f "$1" 2>/dev/null || return 1
+  [ ! -e "$1" ] && [ ! -L "$1" ]
+}
+
 # _check_shm_counts <count-file> <selection> — hand one green run's block counts to shmutant. ONE
-# snapshot is taken, bounded and byte for byte (`head -c` into a file of its own, the idiom
-# check_shmutant_pool uses for the verdict stream), and everything below reads that snapshot: the
+# snapshot is taken, bounded and byte for byte (`head -c` into a `mktemp` file, the idiom
+# check_shmutant_pool uses for the verdict stream: a name nothing could have put a link at, and
+# owner-only whatever the umask), and everything below reads that snapshot: the
 # byte rules of common.sh's `adb_bytes_whole` (a regular file of 1 byte to 1 MiB, no NUL, a final
 # newline), a count for every block the selection runs, and then the hand-over, untouched, so the
 # record grammar is shmutant's to judge on the bytes the run wrote. Checking the file and then
 # reading it again would judge one set of bytes and forward another. Returns 1, with a `FAIL:`
 # line saying why, when the counts cannot stand for the run.
 _check_shm_counts() {
-  local cf="$1" sel="$2" snap="$1.snap" one missing=0
-  if [ -L "$cf" ] || [ ! -f "$cf" ] || ! head -c 1048577 "$cf" > "$snap" 2>/dev/null; then
+  local cf="$1" sel="$2" snap one bad=0
+  if [ -L "$cf" ] || [ ! -f "$cf" ] || ! snap="$(mktemp "$CHECK_SHM_COUNTS_DIR/snap.XXXXXX" 2>/dev/null)"; then
     printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
     return 1
   fi
-  if ! adb_bytes_whole "$snap" 1048576; then
+  if ! head -c 1048577 "$cf" > "$snap" 2>/dev/null; then
+    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be read into a snapshot\n'
+    bad=1
+  elif ! adb_bytes_whole "$snap" 1048576; then
     printf 'FAIL: check-blocks: this run'"'"'s block counts are not whole (none at all, a NUL, no final newline, or past 1 MiB), so they cannot be compared\n'
-    return 1
-  fi
-  for one in $(_check_blocks_closure "$sel"); do
-    if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' "$snap" 2>/dev/null; then
-      printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
-      missing=1
+    bad=1
+  else
+    for one in $(_check_blocks_closure "$sel"); do
+      if ! awk -F '\t' -v id="$one" '$1 == id { f = 1 } END { exit !f }' "$snap" 2>/dev/null; then
+        printf "FAIL: check-blocks: the selection '%s' reported no count for block '%s', which it runs\n" "${sel:-<the whole suite>}" "$one"
+        bad=1
+      fi
+    done
+    if [ "$bad" -eq 0 ] && ! cat "$snap" >&"$SHMUTANT_COUNTS_FD"; then
+      printf 'FAIL: check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
+      bad=1
     fi
-  done
-  [ "$missing" -eq 0 ] || return 1
-  if ! cat "$snap" >&"$SHMUTANT_COUNTS_FD"; then
-    printf 'FAIL: check-blocks: this run'"'"'s block counts could not be handed to shmutant\n'
-    return 1
   fi
-  return 0
+  if ! _check_shm_gone "$snap"; then
+    printf 'FAIL: check-blocks: the snapshot of this run'"'"'s block counts could not be removed\n'
+    bad=1
+  fi
+  return "$bad"
 }
 
 # --- blocks and per-test mutation rows (#468) --------------------------------------------------

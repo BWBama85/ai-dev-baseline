@@ -537,6 +537,21 @@ prep() { printf 'copy\n' >> "$ADB_T_PREP_LOG"; cp -R "$ADB_T_FIX/." "$1/" || ret
 # "$BASH", never a bare `bash`: on macOS a PATH without Homebrew first resolves /bin/bash 3.2, which
 # shmutant refuses to load and the fixture suite was never written for.
 run() { ADB_T_LIB="$ADB_T_LIB" "$BASH" "$1/suite.sh"; }
+# ADB_T_RM: an `rm` that removes a run's count file and then fails (`status`), or leaves a dangling
+# link where it was (`link`). The adapter calls `rm` by name; shmutant's own calls are `command -p`.
+if [ -n "${ADB_T_RM:-}" ]; then
+  rm() {
+    local rc a
+    command rm "$@"; rc=$?
+    for a in "$@"; do
+      case "$a" in
+        */pool.counts/run.??????)
+          case "$ADB_T_RM" in status) return 77 ;; link) ln -s /nonexistent/adb "$a" ;; esac ;;
+      esac
+    done
+    return "$rc"
+  }
+fi
 [ -z "${ADB_T_ERREXIT:-}" ] || set -e
 if [ -n "${ADB_T_STUB:-}" ]; then
   # A stand-in for shmutant_pool: it records what it was handed, then writes the stream ADB_T_STUB
@@ -1054,6 +1069,22 @@ shm ctl-blank "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_
 eq "$rc" 1 "shmutant blocks: a count file with an empty record fails the suite"
 has "$out" "baseline [mult]: incomplete" "shmutant blocks: …because the empty record reached shmutant, whose reader refuses it"
 has "$out" "its count lines are unusable" "shmutant blocks: …saying the counts could not be used"
+# The snapshot is a file of this run's own making: owner-only, and at a name nothing could have
+# put a link at. The suite leaves a link where a predictable name would have been, and the file it
+# points at must still be untouched afterwards.
+variant_after shm-link 'check_blocks_done' '[ -z "${ADB_CHECK_BLOCK_COUNTS:-}" ] || ln -s "$ADB_T_VICTIM" "$ADB_CHECK_BLOCK_COUNTS.snap"'
+printf 'untouched\n' > "$work/victim"
+shm ctl-link "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-link" ADB_T_VICTIM="$work/victim"
+eq "$rc" 0 "shmutant blocks: a link left beside a run's count file does not stop the pool"
+eq "$(cat "$work/victim")" "untouched" "shmutant blocks: …and what it points at is not written through"
+# A count file's removal is judged by `rm`'s own status AND by what is left at the path. The driver's
+# `rm` (ADB_T_RM) removes a run's count file and then returns 77, or leaves a dangling link in its
+# place. A function, not a stub on PATH: a real pool leaves `rm` hashed to the system's own.
+for _m in status link; do
+  shm "ctl-rm-$_m" "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_RM="$_m" SHMUTANT_KEEP=1
+  eq "$rc" 1 "shmutant blocks: a count file whose removal fails ($_m) fails the suite"
+  has "$(cat "$work/shm-ctl-rm-$_m"/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so ($_m)"
+done
 # A RUN THAT WAS NOT GREEN KEEPS ITS OWN STATUS. This mutant prints the row's witness, removes its
 # count file and exits 2: an abort, which no trouble with its counts may turn into a red.
 shm ctl-abort "shmutant_mut dies 'T_A=1' 'printf \"FAIL: neg-value\\n\"; rm -f \"\$ADB_CHECK_BLOCK_COUNTS\"; exit 2' 'neg-value' uses-helper" ADB_T_SUITE=suite.sh
@@ -1064,7 +1095,7 @@ if [ "$(id -u)" -ne 0 ]; then
   variant_after shm-stuck 'check_blocks_done' '[ -z "${ADB_CHECK_BLOCK_COUNTS:-}" ] || chmod 555 "$(dirname "$ADB_CHECK_BLOCK_COUNTS")"'
   shm ctl-stuck "shmutant_mut mul '\$1 * \$2' '\$1 + \$2' 'mul-product' mult" ADB_T_SUITE=suite.sh ADB_T_FIX="$work/shm-stuck" SHMUTANT_KEEP=1
   eq "$rc" 1 "shmutant blocks: a run whose count files cannot be removed fails the suite"
-  has "$(cat "$work"/shm-ctl-stuck/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block-count files could not be removed" "shmutant blocks: …and the run's own output says so"
+  has "$(cat "$work"/shm-ctl-stuck/pool/base-*/output 2>/dev/null)" "FAIL: check-blocks: this run's block-count file could not be removed" "shmutant blocks: …and the run's own output says so"
   chmod -R u+w "$work/shm-ctl-stuck" 2>/dev/null
 fi
 # …and the same for a block the selection only DEPENDS on, and for any block of the unselected run.
