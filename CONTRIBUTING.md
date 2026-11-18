@@ -199,13 +199,14 @@ may not exceed its smallest table.
 
 **A shmutant pool can select by block too** (#631). Give `check_shmutant_pool` a sixth argument,
 the suite's path, and each row's fifth `shmutant_mut` argument names the block (or comma-separated
-blocks) that hold its witness. The pool then refuses a row whose block is missing, undeclared or
-does not carry its witness, runs the unmutated suite once on a prepared tree, and requires each
-selection to pass unmutated with the assertion count that run recorded, before any row runs. Each
-control calls `prepare` for a tree of its own, so it runs more than once here. A control that
-fails stops the pool. The selection reaches the suite as `ADB_CHECK_BLOCK`, so the
-`run` callback is unchanged, and `ADB_MUTATION_FULL_SUITE=1` scores every row against the whole
-suite. `check-adopt.sh` is the first such harness. A label a loop builds from its variable is
+blocks) that hold its witness. The adapter refuses a row whose block is missing, undeclared or
+does not carry its witness before anything is built. The controls are shmutant's own baselines
+(`SHMUTANT_BASELINE=1`, `SHMUTANT_COUNTS=1`): one unselected run of the whole suite, then one run
+per distinct selection, which must be green and must count, for every block it runs, what the
+whole-suite run counted. A row whose selection's baseline is not green is scored `baseline` and
+never run. The selection reaches the suite as `ADB_CHECK_BLOCK`, set around the `run` callback,
+which must be a shell function and is otherwise unchanged. `ADB_MUTATION_FULL_SUITE=1` scores
+every row against the whole suite, behind one whole-suite baseline. `check-adopt.sh` is the first such harness. A label a loop builds from its variable is
 spelled out in a comment beside the loop, because the witness has to be in the block's source.
 
 **Nothing is awaited in silence** (#445). Every suite run either pool makes — each mutant, each

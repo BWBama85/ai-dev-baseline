@@ -166,14 +166,15 @@ only by a release it upgrades to. These entries are the notes for both.
   beside harnesses that had decided to skip.
 
 - **`adopt-mutation` runs each row against its own block, and the nightly runs it as five jobs
-  (#631).** The harness ran the whole `check-adopt.sh` suite once for each of its 238 rows, about
-  three hours locally and 185 minutes in the nightly. The suite is now 43 blocks and each row
+  (#631).** The harness ran the whole `check-adopt.sh` suite once for each of its 238 rows, 185
+  minutes in the nightly. The suite is now 43 blocks and each row
   names the block that holds its witness, so a row runs that block and the blocks it depends on.
   `check_shmutant_pool` takes the suite's path as a sixth argument to turn this on. It refuses a
-  row whose block is missing, undeclared or does not carry its witness, runs the unmutated suite
-  once on a prepared tree, and requires each selection to pass unmutated with the assertion count
-  that run recorded, before any row runs. `ADB_MUTATION_FULL_SUITE=1` still scores every row
-  against the whole suite, which is what the nightly does. `check_shmutant_pool` also reads
+  row whose block is missing, undeclared or does not carry its witness, and has shmutant run the
+  controls as its baselines: the whole suite once, unmutated, then each selection, which must be
+  green and must count, for every block it runs, what the whole-suite run counted. A row under a
+  baseline that is not green is scored `baseline`, never run. `ADB_MUTATION_FULL_SUITE=1` still
+  scores every row against the whole suite, which is what the nightly does. `check_shmutant_pool` also reads
   `ADB_MUTATION_SHARD=<k>/<K>` now, handing its pool the rows whose index modulo K is k-1, and the
   nightly's plan gives `adopt-mutation` five shards, named
   `mutation-nightly (adopt-mutation, shard <k> of 5)`. No row was added, dropped or given another

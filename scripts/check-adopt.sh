@@ -3112,14 +3112,15 @@ check_blocks_done
 # EACH ROW NAMES THE BLOCK THAT HOLDS ITS WITNESS (`shmutant_mut`'s fifth argument, #631), and runs
 # that block plus the blocks it declares it needs — not the whole suite. `check_shmutant_pool`'s
 # sixth argument is what makes the selectors blocks: it refuses a row whose block is missing,
-# undeclared or does not carry its witness, runs the unmutated suite once on a prepared tree, and
-# requires each selection, unmutated, to reproduce the assertion count that run recorded for it.
+# undeclared or does not carry its witness, and has shmutant run the controls as its baselines —
+# the whole suite once, unmutated, then each selection, which must be green and must count for
+# every block it runs what the whole-suite run counted.
 # ADB_MUTATION_FULL_SUITE=1 (the nightly) scores every mutant against the whole suite instead.
-# The suite above has already run in this checkout by the time the table is declared; the control
-# the rows are scored against is the prepared tree's, which is the tree every mutant is a clone of.
+# The suite above has already run in this checkout by the time the table is declared; the controls
+# the rows are scored against are clones of the prepared tree, as every mutant is.
 if [ "$MUTATE" = "1" ]; then
-# <dir> — build the tree copy; shmutant clones the pool's for every row, and each control gets one
-# of its own. `install.sh`/`uninstall.sh` come along because the suite reads them.
+# <dir> — build the tree copy ONCE; shmutant clones it for every control and every row.
+# `install.sh`/`uninstall.sh` come along because the suite reads them.
 _ad_mut_prepare() {
   check_copy_subtrees "$ROOT" "$1" scripts base agents templates bin >/dev/null 2>&1 || return 1
   cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$1/" 2>/dev/null || return 1
