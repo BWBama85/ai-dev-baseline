@@ -4200,12 +4200,14 @@ af_run() {
 }
 # The two calling conventions the helpers' comments state, held: a caller that drops the check, or
 # calls remote_pair inside `$( )`, would carry an empty path on.
-# Counted by OCCURRENCE, so a capture later on its line (`:; d=…`) is counted too. The needle is
-# spelled in two pieces, or this line would be one of the captures it counts.
-AF_NR='="$(new_''repo)"'
-af_count() { grep -oF -- "$1" "$work/af-pristine.sh" | wc -l | tr -d ' '; }
-eq "$(af_count "$AF_NR")" "$(af_count "$AF_NR || exit 1")" \
-   "55 every capture of new_repo stops the suite when the helper allocates nothing"
+# Counted by OCCURRENCE, so a capture later on its line is counted too, and in ANY spelling:
+# every call inside a `$(`, a `${ ` or backquotes, on a line that is not a comment, must be one of
+# the checked statements. The name is spelled in two pieces here, or these lines would be
+# captures they count.
+AF_NR='new_''repo'
+af_count() { grep -vE '^[[:space:]]*#' "$work/af-pristine.sh" | grep -oE -- "$1" | wc -l | tr -d ' '; }
+eq "$(af_count "(\\\$\\(|\\\$\\{ |\`)[[:space:]]*${AF_NR}([^A-Za-z0-9_]|\$)")" "$(af_count "=\"\\\$\\(${AF_NR}\\)\" \\|\\| exit 1")" \
+   "55 every capture of the fixture helper, however it is spelled, is a checked statement"
 eq "$(grep -cE '\$\(remote_pair\)' "$work/af-pristine.sh")" "0" "55 remote_pair is never called inside a \$( ) substitution, where its exit could not end the suite"
 af_run all
 no "$AF_RC" "55 the suite exits non-zero when its scratch root cannot be created"
@@ -4248,8 +4250,8 @@ else
     rm -rf "$AF_HOST/.claude"
   }
   if [ "$AF_CUT" -gt 0 ]; then
-    af_mutant "callers that do not check new_repo" "s/=\"\\\$(new_repo)\" || exit 1/=\"\$(new_repo)\"/" \
-      '"$(new_repo)" || exit 1' "refs/heads/issue-99-live"
+    af_mutant "callers that do not check the helper" "s/=\"\\\$($AF_NR)\" || exit 1/=\"\$($AF_NR)\"/" \
+      "\"\$($AF_NR)\" || exit 1" "refs/heads/issue-99-live"
     af_mutant "a new_repo that does not refuse" 's/^  d="\$(mktemp -d "\$work\/r\.XXXXXX")" && \[ -n "\$d" \] && \[ -d "\$d" \] || {$/  d="$(mktemp -d "$work\/r.XXXXXX")"; : || {/' \
       '[ -n "$d" ] && [ -d "$d" ] || {' "user.email=t@example.com"
   fi

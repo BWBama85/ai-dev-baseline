@@ -37,7 +37,11 @@
 #   * THE STATE DOES NOT CARRY ACROSS LINES: every line starts as command text, so a banned shape
 #     at the start of a line inside a multi-line string is a finding, and a `(` or `)` in a `case`
 #     pattern inside a capture can end it early. A statement continued with a trailing `\` or a
-#     trailing `|` is read as one line.
+#     trailing `|` is read as one line; one continued after a trailing `&&` or `||` is not.
+#   * Blanking has a cost: a command name or option that is itself quoted (`$('pwd')`,
+#     `mktemp "-d"`, `pw""d`) is blanked with the rest and not seen. A here-document delimiter
+#     loses every backslash inside double quotes, and a `$'…'` escape other than a quote is not
+#     decoded, so `<<"E\OF"` and `<<$'E\x4fF'` are read under the wrong word.
 #   * pipefail is ON for a suite when a line starting at column 0 reads `set … -o pipefail`
 #     (`set -o pipefail`, `set -uo pipefail`, `set -eu -o pipefail`). A suite that enables it any
 #     other way — indented, through `shopt`, `bash -o pipefail`, an exported SHELLOPTS — is not
@@ -47,19 +51,26 @@
 #     other wrapper (`xargs`, `timeout`, a function) hides it.
 #   * grep-q-pipe needs `grep`/`egrep`/`fgrep` directly after the pipe, and the `q` among the
 #     option words that directly follow it (`-q`, `-Eq`, `-qx`, `--quiet`, `--silent`).
-#     `grep -e x -q` and `| { grep -q x; }` are not seen. Other early-exit readers (`head -n1`,
-#     `grep -m1`, `sed q`, an awk `exit`) have the same hazard and are not scanned.
+#     `grep -e x -q` and `| { grep -q x; }` are not seen, and `grep -e -q`, where `-q` is the
+#     pattern, is read as quiet. Other early-exit readers (`head -n1`, `grep -m1`, `sed q`, an awk
+#     `exit`) have the same hazard and are not scanned.
 #   * pwd-capture and mktemp-unchecked need the assignment at the start of a statement: at the start
 #     of the line, or after `;` `&` `|` `(` `{` `!` or `then`/`do`/`else`/`if`/`elif`/`while`/
-#     `until`. A bare `$(pwd)` passed as an argument is not seen.
+#     `until`. A bare `$(pwd)` passed as an argument is not seen, nor is a pwd with anything after
+#     it but `-L`/`-P` (`$(pwd 2>/dev/null)`), nor one behind `command --`.
 #   * A `mktemp -d` capture must run mktemp and nothing else (redirections and nested
-#     substitutions aside): `$(mktemp -d; true)` is a finding whatever follows it. It is then CHECKED when `||` follows it directly and
-#     runs something other than `true` or `:`; when `&&` follows it and a `||` comes before the
-#     statement's next `;`; or when the line opens with `if`/`elif`/`while`/`until` and nothing but
-#     an `&&` chain lies between the capture and that line's `; then` or `; do` (a later `;`, `||`
-#     or `&`, or a command the assignment merely prefixes, would replace or mask its status). Beyond `true` and `:`, what the `||` runs is not
-#     judged. `local x="$(mktemp -d)" || …` is a finding whatever follows: the declaration's
-#     status replaces mktemp's.
+#     substitutions aside): `$(mktemp -d; true)` is a finding whatever follows it. It is then
+#     CHECKED when `||` follows it directly and runs something other than a bare `true` or `:`;
+#     when `&&` follows it and a `||` comes before the statement's next `;`; or when the line opens
+#     with `if`/`elif`/`while`/`until` and nothing but an `&&` chain lies between the capture and
+#     that line's first `; then` or `; do` (a later `;`, `||` or `&`, or a command the assignment
+#     merely prefixes, would replace or mask its status). `local x="$(mktemp -d)" || …` is a
+#     finding whatever follows: the declaration's status replaces mktemp's.
+#   * THE CHECKED FORMS ARE THOSE SPELLINGS AND NO OTHERS, in both directions. What a handler
+#     runs is not judged beyond a bare `true` or `:`, so `|| true x` and a no-op behind an `&&`
+#     chain pass. And a capture with a redirection or a second assignment between it and its
+#     `||`, or in an `elif` written on the same line as its `if`, is a finding although the shell
+#     would check it.
 #   * Only `mktemp -d` (or `--directory`) captures. A helper that RETURNS a path it allocated is not
 #     followed to its callers: `d="$(new_repo)"` is not this scan's to read. The two suites that
 #     have such a helper assert of their own text that every capture of it is checked.
@@ -129,7 +140,7 @@ suite_files() {
     esac
   fi
   for f in "$root"/scripts/check-*.sh; do
-    [ -e "$f" ] && HY_FILES+=("${f#"$root"/}")
+    { [ -e "$f" ] || [ -L "$f" ]; } && HY_FILES+=("${f#"$root"/}")
   done
   [ "${#HY_FILES[@]}" -gt 0 ]
 }
@@ -478,7 +489,9 @@ if [ "$MODE" = scan ]; then
   esac
 fi
 work="$(mktemp -d)" || { echo "check-suite-hygiene: mktemp failed" >&2; exit 1; }
-check_exit_guard "check-suite-hygiene" "rm -rf \"$work\""
+# The cleanup is single-quoted: expanded when the trap fires, so the path is never read as code.
+# shellcheck disable=SC2016
+check_exit_guard "check-suite-hygiene" 'rm -rf "$work"'
 if [ "$tree_rc" -eq 0 ]; then ok; else
   bad "the shipped suites carry a banned shape, or could not be scanned (rc $tree_rc):
 $tree_out"
@@ -718,6 +731,10 @@ if check_git "$d" init -q >/dev/null 2>&1 && check_git "$d" add -A >/dev/null 2>
 else
   bad "could not make the quoted-name fixture a repository"
 fi
+# A suite that is a dangling link is listed, and then refused as unreadable.
+d="$(fx dangling 'ok')" || bad "could not build the dangling-link fixture"
+ln -s "$work/no-such-suite" "$d/scripts/check-broken.sh"
+hygiene_scan "$d" dir >/dev/null 2>&1; eq "$?" 2 "a suite that is a dangling link is 2, not left out of the scan"
 # An empty suite is read, and counted.
 d="$(fx blank 'ok')" || bad "could not build the empty-suite fixture"
 : > "$d/scripts/check-fx.sh"
@@ -736,20 +753,21 @@ hygiene_scan "$d" dir >/dev/null 2>&1; eq "$?" 0 "pipefail is decided per suite,
 # ---------------------------------------------------------------------------------------------
 # 2. The pre-fix spelling, put back into a copy of a real suite, is caught.
 # ---------------------------------------------------------------------------------------------
-# revert <label> <suite> <fixed-line> <pre-fix-line> <class> — <fixed-line> must be exactly one
-# line of the real suite; the copy carries <pre-fix-line> in its place.
+# revert <label> <suite> <fixed-line> <pre-fix-line> <class> — a copy of the real suite with
+# <fixed-line> rewritten to <pre-fix-line> by check-lib's `check_mutate_literal`. That rewrites
+# the first occurrence of a literal, so the line must occur exactly once, as a substring too.
 revert() {
   local label="$1" suite="$2" fixed="$3" prefix="$4" class="$5" d="$work/revert" n at out rc
-  rm -rf "$d"; mkdir -p "$d/scripts" || { bad "$label: could not build the copy"; return; }
-  n="$(grep -Fxc -- "$fixed" "$ROOT/scripts/$suite")"
-  if [ "$n" -ne 1 ]; then
-    bad "$label: expected exactly 1 line [$fixed] in $suite, found $n — the control no longer describes the suite"
+  rm -rf "$d"
+  mkdir -p "$d/scripts" && cp "$ROOT/scripts/$suite" "$d/scripts/$suite" || { bad "$label: could not build the copy"; return; }
+  n="$(grep -Fc -- "$fixed" "$d/scripts/$suite")"
+  if [ "$n" -ne 1 ] || [ "$(grep -Fxc -- "$fixed" "$d/scripts/$suite")" -ne 1 ]; then
+    bad "$label: expected exactly 1 line [$fixed] in $suite, found $n holding it — the control no longer describes the suite"
     return
   fi
-  at="$(grep -Fxn -- "$fixed" "$ROOT/scripts/$suite")"; at="${at%%:*}"
-  ADB_HY_OLD="$fixed" ADB_HY_NEW="$prefix" awk '
-    $0 == ENVIRON["ADB_HY_OLD"] { print ENVIRON["ADB_HY_NEW"]; next } { print }
-  ' "$ROOT/scripts/$suite" > "$d/scripts/$suite" || { bad "$label: could not write the copy"; return; }
+  at="$(grep -Fxn -- "$fixed" "$d/scripts/$suite")"; at="${at%%:*}"
+  check_mutate_literal "$d/scripts/$suite" "$fixed" "$prefix"; rc=$?
+  [ "$rc" -eq 0 ] || { bad "$label: the pre-fix spelling could not be put back (rc $rc)"; return; }
   out="$(hygiene_scan "$d" dir 2>/dev/null)"; rc=$?
   eq "$rc" 1 "$label: the scan is red on the pre-fix spelling"
   has "$out" "scripts/$suite:$at: $class: " "$label: it names $suite:$at and the class"
