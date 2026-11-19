@@ -488,19 +488,19 @@ else
   eq "$(LC_ALL=C grep -c "— ${_nel}\$" "$L5u")" 2 "5u the stored U+0085 summaries keep their bytes"
 
   # A BYTE THAT IS NOT VALID UTF-8, in a summary: the next record's insert reads that row too.
-  L5b="$work/l5b.md"
-  LC_ALL="$U8" bash "$PL" record --ledger "$L5b" --class hb-class --site b1.sh --fix ddd4444 \
+  L5ff="$work/l5ff.md"
+  LC_ALL="$U8" bash "$PL" record --ledger "$L5ff" --class hb-class --site b1.sh --fix ddd4444 \
     --pr 1 --thread T-b1 --summary "$_hb" --date 2026-08-24 >/dev/null 2>&1
   eq "$?" 0 "5b a summary carrying a 0xFF byte is recorded under a UTF-8 locale"
-  LC_ALL="$U8" bash "$PL" record --ledger "$L5b" --class hb-class --site b2.sh --fix ddd4444 \
+  LC_ALL="$U8" bash "$PL" record --ledger "$L5ff" --class hb-class --site b2.sh --fix ddd4444 \
     --pr 1 --thread T-b2 --date 2026-08-24 >/dev/null 2>&1
   eq "$?" 0 "5b the insert after a 0xFF summary succeeds under a UTF-8 locale"
-  eq "$(LC_ALL=C grep -c "— ${_hb}\$" "$L5b")" 1 "5b the stored 0xFF summary keeps its bytes after the next insert"
+  eq "$(LC_ALL=C grep -c "— ${_hb}\$" "$L5ff")" 1 "5b the stored 0xFF summary keeps its bytes after the next insert"
 
   # …in a promoted rule: the checklist parser reads it.
-  LC_ALL="$U8" bash "$PL" promote --threshold 2 --ledger "$L5b" --class hb-class --rule "sweep $_hb" >/dev/null 2>&1
+  LC_ALL="$U8" bash "$PL" promote --threshold 2 --ledger "$L5ff" --class hb-class --rule "sweep $_hb" >/dev/null 2>&1
   eq "$?" 0 "5b a rule carrying a 0xFF byte is promoted under a UTF-8 locale"
-  _o="$(LC_ALL="$U8" bash "$PL" checklist --ledger "$L5b" 2>/dev/null)"; _r=$?
+  _o="$(LC_ALL="$U8" bash "$PL" checklist --ledger "$L5ff" 2>/dev/null)"; _r=$?
   eq "$_r" 0 "5b checklist exits 0 on a 0xFF rule under a UTF-8 locale"
   has "$_o" "sweep $_hb" "5b checklist reads a 0xFF rule under a UTF-8 locale"
 
