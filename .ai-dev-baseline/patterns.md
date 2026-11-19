@@ -1,7 +1,7 @@
 # Pattern ledger
 
-**What this project has already learned from its own review threads.** Every entry below was a
-review finding somebody fixed: the class of defect, where it was found, and the commit that closed
+**What this project has already learned from its own review threads.** Every entry below is a
+finding somebody fixed, nearly always raised in a review thread: the class of defect, where it was found, and the commit that closed
 it. It is written automatically by `/resolve-pr-threads` as each thread is resolved, and read
 automatically by `/implement-issue` — the gap-analysis dispatch and the pre-PR self-review sweep
 both receive the promoted checklist.
@@ -19,7 +19,7 @@ around them is yours.
 
 **Two branches can both append here, and that is handled by ordinary means.** Git may report a
 conflict when two pull requests add hits at the same point — take both sides; the entries are
-independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
+independent and are keyed on their thread ids, so nothing is lost by keeping them. Promotion
 is decided by *reading this file*, never by a counter carried in a branch: two branches that each
 recorded a class's first hit merge into a file holding two, and the next run promotes it. The
 mechanism converges rather than missing the class permanently.
@@ -53,11 +53,15 @@ Sweep each of these before opening a pull request.
 - `silent-permission-change` — When a write publishes a staged file by rename, or copies content into a new file, name the mode the result will carry and check it against the original: carry an existing file's mode onto the stage and refuse the write if it cannot be read or applied; create a copy outside the checkout (TMPDIR) owner-only. A stage or copy made under the umask silently widens what the operator restricted.
 - `unbounded-resource` — For every resource the diff makes a process consume — disk staged in TMPDIR, the wall clock a CI job or dispatch spends, a pool of workers — name the bound that governs it and check the bound still covers the WHOLE workload with every gate forced on: stream instead of staging an unbounded input, and when a job gains a step, re-measure and resize its timeout-minutes in the same change with the figure in its comment. A bound sized for yesterday cancels today silently.
 - `path-divergence` — When a fix or a rule applies on one path of a decision, find every sibling path that decides the same thing — the success and the failure path, the reported and the skipped item, each consumer of a shared filter — and apply it there too, or route them all through one helper. Grep the diff for the predicate the fix added and ask of each place the same question is answered whether it asks it.
+- `timing-assertion-under-load` — a timing or concurrency assertion bounds time WITHOUT PROGRESS, never elapsed wall or queue time that load on a shared runner can eat; its failure message carries the exit code and stderr of every failing worker, so one flap is diagnosable from its own log
 <!-- adb:checklist:end -->
 
 ## Hits
 
-One line per resolved review thread, newest last.
+One line per finding, newest last. `/resolve-pr-threads` records review threads only. A finding
+with no review thread — a local review's, or a defect fixed in a branch to turn CI green — enters
+only when someone records it by hand, keyed on a synthetic id: `self-review-pr<N>-r<R>-<slug>` for
+local review round R of PR N, `self-found-pr<N>-<slug>` otherwise. Never an invented node id.
 
 <!-- adb:hits:begin -->
 - `partial-validation` `scripts/lib/docs-lib.sh:192` `a119e75` `PRRT_kwDOTfywrM6b1wrA` PR #429 2026-08-24 — checked that a newline existed, not that the FINAL byte was one; read dropped the last line, awk read it
@@ -809,4 +813,5 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `bin/baseline:962` `a176e2b` `PRRT_kwDOTfywrM62anOl` PR #628 2026-11-12 — A heal that left the command allowlist refused exited 0, and the session-start wrapper reads only the exit code, so the refusal reached nobody
 - `status-swallowed` `scripts/check-step-inputs.sh:577` `07233ec` `PRRT_kwDOTfywrM63QeK7` PR #645 2026-11-14 — si_shipped recorded no failure for a verdict that exited non-zero without output
 - `declared-inputs-incomplete` `scripts/selfcheck.sh` `07233ec` `PRRT_kwDOTfywrM63QeLE` PR #645 2026-11-14 — release-skill omitted the libraries its release driver runs through $LIB
+- `timing-assertion-under-load` `scripts/lib/pattern-ledger.sh:712` `3638543` `self-found-pr452-lock-wait` PR #452 2026-09-03 — the ledger lock's wait bound counted elapsed queue time, so the 20- and 25-writer assertions (scripts/check-pattern-ledger.sh:990 and :1066) flapped under load; the clock now restarts when the holder changes, and both assertions print every failing writer's rc and stderr
 <!-- adb:hits:end -->
