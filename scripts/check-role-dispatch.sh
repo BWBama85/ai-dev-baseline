@@ -826,19 +826,19 @@ chmod +x "$BIN/codex"
 # first_substantive <file> — the first line that is not bash's own job-control diagnostic. The
 # bounded runner launches its child under `set -m`; when bash's `setpgid` on that child loses a
 # race with it, bash says so on this same stderr, AHEAD of the agent's first byte, so the header
-# is then line two. Only that one diagnostic is skipped, and only while it leads the stream (#496).
-first_substantive() { awk '!/: child setpgid \([0-9]+ to [0-9]+\): /{ print; exit }' "$1"; }
-# The cap is 2048 bytes, not the 120 it used to be: the diagnostic goes through the cap too, and at
-# 120 one such line used the whole budget and left no header to find. The stream is ~116 KiB, so
-# the tail is still dropped.
+# is then line two. Only a line that is that diagnostic from end to end is skipped —
+# `<script>: child setpgid (<pid> to <pgid>): <errno text>` — and only while it leads the stream.
+first_substantive() { awk '!/^.+: child setpgid \([0-9]+ to [0-9]+\): [^:]+$/{ print; exit }' "$1"; }
+# The cap is 2048 bytes because the diagnostic goes through it too: one such line must not use the
+# whole budget and leave no header to find. The stream is ~116 KiB, so the tail is still dropped.
 printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/prefix.err"
 has   "$(first_substantive "$work/prefix.err")" "FIRSTLINE-provenance-header" "the cap keeps the HEAD of the stream (the provenance header)"
 hasnt "$(cat  "$work/prefix.err")"    "TAILMARKER"                  "...and drops the tail, which is what a head cap means"
 # OBSERVED DISCRIMINATING, on the real dispatch. With the diagnostic injected ahead of the header,
-# line one is not the header (what the old `head -1` form read, and failed on) and the first
-# substantive line still is. Neither assertion names a line NUMBER for the injected diagnostic: a
-# real one can precede it, which is the condition under test.
+# line one is not the header and the first substantive line still is. Neither assertion names a
+# line NUMBER for the injected diagnostic: a real one can precede it, which is the condition
+# under test.
 printf 'x' | rd_env RD_SETPGID_FIRST=1 ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/prefix-pgid.err"
 has   "$(awk '/FIRSTLINE-provenance-header/{ exit } { print }' "$work/prefix-pgid.err")" "child setpgid (4242 to 4242)" "the injected setpgid diagnostic is in the capped stream, ahead of the header"
@@ -849,6 +849,11 @@ hasnt "$(tr -d '\000' < "$work/prefix-pgid.err")" "TAILMARKER" "...with the tail
 printf 'x' | rd_env RD_NOISE_FIRST=1 ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/prefix-noise.err"
 hasnt "$(first_substantive "$work/prefix-noise.err")" "FIRSTLINE-provenance-header" "a line that is not the setpgid diagnostic is not skipped, so it displaces the header"
+# …and neither is a line that merely CONTAINS the diagnostic's text.
+printf '%s\n' 'unrelated output: child setpgid (1 to 1): then more: and more' 'FIRSTLINE-provenance-header' > "$work/prefix-embedded.err"
+hasnt "$(first_substantive "$work/prefix-embedded.err")" "FIRSTLINE-provenance-header" "a line that only contains the diagnostic's text is not skipped"
+printf '%s\n' '/x/common.sh: child setpgid (7 to 7): Operation not permitted' 'FIRSTLINE-provenance-header' > "$work/prefix-exact.err"
+has   "$(first_substantive "$work/prefix-exact.err")" "FIRSTLINE-provenance-header" "…while the diagnostic itself is"
 # A NUL must not silently end the stream. BSD awk treats it as a string terminator, so before
 # `tr -d` this dropped everything after it AND emitted no notice — a truncated log indistinguishable
 # from a complete one, on macOS only. The bytes AROUND the NUL must still come through.

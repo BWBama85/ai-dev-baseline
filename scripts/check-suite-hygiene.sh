@@ -13,11 +13,13 @@
 #                     `… && ok || bad` then reports a failure that did not happen, and one written
 #                     `if … ; then bad` passes over the text it exists to refuse. Write
 #                     `grep -q … <<< "$text"`, or a `case`.
-#   pwd-capture       `ROOT="$(pwd)"` (any name; `$(pwd -P)`, `${ pwd; }` and backquotes too). A
+#   pwd-capture       `ROOT="$(pwd)"` (any name; `$(pwd -P)`, `${ pwd; }` and backquotes too; not
+#                     `${| pwd; }`, which expands REPLY and captures nothing). A
 #                     command substitution drops trailing newlines, so in a checkout named
 #                     `clone<NL>` the variable names the sibling `clone` and the suite tests that
 #                     tree. Write `ROOT="$PWD"`.
-#   mktemp-unchecked  `name="$(mktemp -d …)"` with no failure branch in the same statement. An empty
+#   mktemp-unchecked  `name="$(mktemp -d …)"` (`${ …; }` and backquotes too) with no failure branch
+#                     in the same statement. An empty
 #                     path turns `git -C "$name"` into a write to the checkout the suite runs from,
 #                     since git leaves the directory unchanged for `-C ""`. Write
 #                     `name="$(mktemp -d)" || { echo "…" >&2; exit 1; }`, or make the capture the
@@ -25,12 +27,13 @@
 #
 # WHAT COUNTS, exactly, because a line-oriented scan is only as good as its stated edges:
 #
-#   * Each line is read as the shell reads it: quotes, `$( )`, `${ }` and backquotes nest, a `#`
-#     starts a comment only where it starts a word outside quotes, and a here-document opens only
-#     at an unquoted `<<` whose whole delimiter word closes it on a later line (several on one line
-#     close in order). Comments and here-document bodies are not scanned, and THE RULES READ THE
-#     LINE WITH ITS LITERAL TEXT BLANKED: what is inside quotes, or escaped, is never a command or
-#     an operator, while a substitution inside double quotes still is.
+#   * Each line is read as the shell reads it: quotes, `$( )`, `${ }`, `$(( ))` and backquotes
+#     nest, a `#` starts a comment only where it starts a word outside quotes, and a here-document
+#     opens only at an unquoted `<<` outside arithmetic whose whole delimiter word, quotes removed,
+#     closes it on a later line (several on one line close in order). Comments and here-document
+#     bodies are not scanned, and THE RULES READ THE LINE WITH ITS LITERAL TEXT BLANKED: what is
+#     inside quotes or a parameter expansion, or escaped, is never a command or an operator, while
+#     a substitution inside double quotes still is.
 #   * THE STATE DOES NOT CARRY ACROSS LINES: every line starts as command text, so a banned shape
 #     at the start of a line inside a multi-line string is a finding, and a `(` or `)` in a `case`
 #     pattern inside a capture can end it early. A statement continued with a trailing `\` or a
@@ -49,12 +52,12 @@
 #   * pwd-capture and mktemp-unchecked need the assignment at the start of a statement: at the start
 #     of the line, or after `;` `&` `|` `(` `{` `!` or `then`/`do`/`else`/`if`/`elif`/`while`/
 #     `until`. A bare `$(pwd)` passed as an argument is not seen.
-#   * A `mktemp -d` capture must run mktemp and nothing else (redirections aside): `$(mktemp -d;
-#     true)` is a finding whatever follows it. It is then CHECKED when `||` follows it directly and
+#   * A `mktemp -d` capture must run mktemp and nothing else (redirections and nested
+#     substitutions aside): `$(mktemp -d; true)` is a finding whatever follows it. It is then CHECKED when `||` follows it directly and
 #     runs something other than `true` or `:`; when `&&` follows it and a `||` comes before the
 #     statement's next `;`; or when the line opens with `if`/`elif`/`while`/`until` and nothing but
-#     an `&&` chain lies between the capture and that line's `; then` or `; do` (a later `;` or
-#     `||` would replace or mask its status). Beyond `true` and `:`, what the `||` runs is not
+#     an `&&` chain lies between the capture and that line's `; then` or `; do` (a later `;`, `||`
+#     or `&`, or a command the assignment merely prefixes, would replace or mask its status). Beyond `true` and `:`, what the `||` runs is not
 #     judged. `local x="$(mktemp -d)" || …` is a finding whatever follows: the declaration's
 #     status replaces mktemp's.
 #   * Only `mktemp -d` (or `--directory`) captures. A helper that RETURNS a path it allocated is not
@@ -150,7 +153,8 @@ hygiene_scan() {
       return 2
     fi
   done
-  out="$(cd "$root" && awk '
+  # LC_ALL=C: the suites hold bytes that are not valid UTF-8, and awk stops on one in a UTF-8 locale.
+  out="$(cd "$root" && LC_ALL=C awk '
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function emit(class, at, why) { printf "%s:%d: %s: %s%s\n", file, at, class, trim(L[at]), why; found = 1 }
 
@@ -189,7 +193,7 @@ hygiene_scan() {
         if (c == "`" || c2 == "(" || c2 == "{") {
           lit(a, i - 1)
           if (c == "`") i = walk(s, i + 1, "`")
-          else if (c2 == "(") i = walk(s, i + 2, ")")
+          else if (c2 == "(") i = (substr(s, i + 2, 1) == "(") ? skip_arith(s, i + 3) : walk(s, i + 2, ")")
           else i = (substr(s, i + 2, 1) ~ /[[:space:]|]/) ? walk(s, i + 2, "}") : skip_param(s, i + 2)
           a = i
           continue
@@ -199,41 +203,67 @@ hygiene_scan() {
       lit(a, n)
       return n + 1
     }
-    # Just after the `${` of a parameter expansion: braces nest, quotes and substitutions apply.
-    function skip_param(s, i,    n, c, c2, depth) {
-      n = length(s); depth = 0
+    # Just after the `${` of a parameter expansion: its text is literal (a default such as
+    # `${x:-a | b}` is a word, not a pipeline), a substitution inside it is not. Braces nest.
+    function skip_param(s, i,    n, c, c2, depth, a) {
+      n = length(s); depth = 0; a = i
       while (i <= n) {
         c = substr(s, i, 1)
         if (c == "\\") { i += 2; continue }
-        if (c == "\047") { i = skip_sq(s, i + 1); continue }
-        if (c == "\"") { i = skip_dq(s, i + 1); continue }
-        if (c == "$") {
-          c2 = substr(s, i + 1, 1)
-          if (c2 == "(") { i = walk(s, i + 2, ")"); continue }
-          if (c2 == "{") { i = skip_param(s, i + 2); continue }
+        c2 = (c == "$") ? substr(s, i + 1, 1) : ""
+        if (c == "\047" || c == "\"" || c == "`" || c2 == "(" || c2 == "{") {
+          lit(a, i - 1)
+          if (c == "\047") i = skip_sq(s, i + 1)
+          else if (c == "\"") i = skip_dq(s, i + 1)
+          else if (c == "`") i = walk(s, i + 1, "`")
+          else if (c2 == "(") i = (substr(s, i + 2, 1) == "(") ? skip_arith(s, i + 3) : walk(s, i + 2, ")")
+          else i = (substr(s, i + 2, 1) ~ /[[:space:]|]/) ? walk(s, i + 2, "}") : skip_param(s, i + 2)
+          a = i
+          continue
         }
         if (c == "{") depth++
-        else if (c == "}") { if (depth == 0) return i + 1; depth-- }
+        else if (c == "}") { if (depth == 0) { lit(a, i - 1); return i + 1 } depth-- }
+        i++
+      }
+      lit(a, n)
+      return n + 1
+    }
+    # Just after the `((` of an arithmetic expansion or command: up to its `))`. A `<<` in here
+    # is a shift, never a here-document.
+    function skip_arith(s, i,    n, c, depth) {
+      n = length(s); depth = 2
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "(") depth++
+        else if (c == ")" && --depth == 0) return i + 1
         i++
       }
       return n + 1
     }
-    # The word after a here-document operator, in full: quotes removed, any characters a word may
-    # hold. Queues it and returns the index after it, or 0 when no word follows.
-    function heredoc_word(s, j,    dash, c, k, w, any) {
-      dash = 0
+    # The word after a here-document operator, with shell quote removal applied: single quotes,
+    # double quotes and $-quotes (a backslash escapes inside those two), and a backslash outside
+    # them. Queues it and returns the index after it, or 0 when no word follows.
+    function heredoc_word(s, j,    dash, c, q, w, any, n) {
+      dash = 0; n = length(s)
       if (substr(s, j, 1) == "-") { dash = 1; j++ }
       while (substr(s, j, 1) ~ /[ \t]/) j++
       w = ""; any = 0
-      while (j <= length(s)) {
+      while (j <= n) {
         c = substr(s, j, 1)
-        if (c == "\047") {
-          k = index(substr(s, j + 1), "\047"); if (!k) return 0
-          w = w substr(s, j + 1, k - 1); j += k + 1; any = 1; continue
-        }
-        if (c == "\"") {
-          k = index(substr(s, j + 1), "\""); if (!k) return 0
-          w = w substr(s, j + 1, k - 1); j += k + 1; any = 1; continue
+        if (c == "$" && substr(s, j + 1, 1) ~ /["\047]/) { j++; c = substr(s, j, 1); q = (c == "\047") ? "$" : "\"" }
+        else if (c == "\047" || c == "\"") q = c
+        else q = ""
+        if (q != "") {
+          any = 1
+          for (j++; j <= n; j++) {
+            c = substr(s, j, 1)
+            if (q != "\047" && c == "\\") { j++; w = w substr(s, j, 1); continue }
+            if (c == ((q == "\"") ? "\"" : "\047")) break
+            w = w c
+          }
+          if (j > n) return 0
+          j++
+          continue
         }
         if (c == "\\") { w = w substr(s, j + 1, 1); j += 2; any = 1; continue }
         if (c ~ /[[:space:];&|<>()]/) break
@@ -259,10 +289,11 @@ hygiene_scan() {
         if (c == "$") {
           c2 = substr(s, i + 1, 1); wb = 0
           if (c2 == "\047") { i = skip_ansi(s, i + 2); continue }
-          if (c2 == "(") { i = walk(s, i + 2, ")"); continue }
+          if (c2 == "(") { i = (substr(s, i + 2, 1) == "(") ? skip_arith(s, i + 3) : walk(s, i + 2, ")"); continue }
           if (c2 == "{") { i = (substr(s, i + 2, 1) ~ /[[:space:]|]/) ? walk(s, i + 2, "}") : skip_param(s, i + 2); continue }
           i++; continue
         }
+        if (c == "(" && wb && substr(s, i + 1, 1) == "(") { i = skip_arith(s, i + 2); wb = 0; continue }
         if (c == "#" && wb) { CUT = i; return n + 1 }
         if (c == "<" && substr(s, i, 2) == "<<") {
           wb = 0
@@ -299,6 +330,7 @@ hygiene_scan() {
     # The end of a `$(` or `${ ` capture in masked text: the offset of its closing bracket in s,
     # 0 if it never closes on this line. s begins just after the opening bracket.
     function capture_end(s, open,    close_, depth, i, c) {
+      if (open == "`") return index(s, "`")
       close_ = (open == "(") ? ")" : "}"; depth = 0
       for (i = 1; i <= length(s); i++) {
         c = substr(s, i, 1)
@@ -308,13 +340,27 @@ hygiene_scan() {
       return 0
     }
 
+    # A capture body with its nested substitutions removed: what the capture itself runs.
+    function outer_text(s,    i, n, c, d, o, bq) {
+      n = length(s); d = 0; o = ""; bq = 0
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (c == "`") { bq = !bq; continue }
+        if (bq) continue
+        if (d == 0 && c == "$" && substr(s, i + 1, 1) ~ /[({]/) { d = 1; i++; continue }
+        if (d > 0) { if (c == "(" || c == "{") d++; else if (c == ")" || c == "}") d--; continue }
+        o = o c
+      }
+      return o
+    }
+
     function scan_mktemp(l, at,    s, base, head, open, rest, e, cap, after, decl, checked, q, t, tail, why) {
       s = l; base = 0
-      while (match(s, STMT "=\"?\\$[({]")) {
+      while (match(s, STMT "=\"?(\\$[({]|`)")) {
         head = substr(s, RSTART, RLENGTH); open = substr(head, length(head), 1)
         rest = substr(s, RSTART + RLENGTH)
         base += RSTART + RLENGTH - 1; s = rest          # l, from base + 1 on, is rest
-        if (rest !~ ((open == "(") ? "^[[:space:]]*" PRE "mktemp([[:space:]]|\\))" : "^[[:space:]|]+" PRE "mktemp([[:space:]]|;)")) continue
+        if (rest !~ ((open == "{") ? "^[[:space:]]+" PRE "mktemp([[:space:]]|;)" : "^[[:space:]]*" PRE "mktemp([[:space:]]|\\)|`)")) continue
         e = capture_end(rest, open)
         if (e == 0) { emit("mktemp-unchecked", at, " (the capture does not close on this line)"); return }
         cap = substr(rest, 1, e - 1); after = substr(rest, e + 1)
@@ -323,7 +369,7 @@ hygiene_scan() {
         # The capture must run mktemp and nothing else, or its status is not mktemp status.
         gsub(/[0-9]*[<>]&[0-9-]+/, "", cap)
         if (open == "{") sub(/;[[:space:]]*$/, "", cap)
-        if (cap ~ /[;|&]/) { emit("mktemp-unchecked", at, " (the capture runs more than mktemp, so its status is not mktemp status)"); continue }
+        if (outer_text(cap) ~ /[;|&]/) { emit("mktemp-unchecked", at, " (the capture runs more than mktemp, so its status is not mktemp status)"); continue }
         decl = (head ~ /(local|readonly|export|declare|typeset)[[:space:]]/)
         checked = 0
         if (after ~ /^[[:space:]]*\|\|/) {
@@ -337,7 +383,8 @@ hygiene_scan() {
           # from `; then`: a later `;` or `||` would replace or mask its status.
           t = match(l, /;[[:space:]]*(then|do)([[:space:]]|$)/)
           tail = (t > 0) ? ((base + e + 1 <= t) ? substr(l, base + e + 1, t - (base + e + 1)) : ";") : after
-          if (tail !~ /[;|]/) checked = 1
+          gsub(/[0-9]*[<>]&[0-9-]+/, "", tail)
+          if (tail ~ /^([[:space:]]*&&[^;|&]*)*[[:space:]]*$/) checked = 1
         }
         why = ""
         if (decl) { checked = 0; why = " (declared and assigned at once, so mktemp status is lost)" }
@@ -349,7 +396,7 @@ hygiene_scan() {
       if (l ~ /^set[[:space:]]/ && l ~ /[[:space:]]-[A-Za-z]*o[[:space:]]+pipefail([[:space:];]|$)/) pipefail = 1
       if (l ~ ("(^|[^|])\\|&?[[:space:]]*" PRE "[ef]?grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)([[:space:];)&|]|$)"))
         gq[++ng] = sprintf("%s:%d: grep-q-pipe: %s", file, at, trim(L[at]))
-      if (l ~ (STMT "=[^[:space:];|&]*(\\$\\([[:space:]]*" PRE "pwd([[:space:]]+-[LP])?[[:space:]]*\\)|\\$\\{[[:space:]|]+" PRE "pwd([[:space:]]+-[LP])?[[:space:]]*;[[:space:]]*\\}|`[[:space:]]*" PRE "pwd([[:space:]]+-[LP])?[[:space:]]*`)"))
+      if (l ~ (STMT "=[^[:space:];|&]*(\\$\\([[:space:]]*" PRE "pwd([[:space:]]+-[LP])?[[:space:]]*\\)|\\$\\{[[:space:]]+" PRE "pwd([[:space:]]+-[LP])?[[:space:]]*;[[:space:]]*\\}|`[[:space:]]*" PRE "pwd([[:space:]]+-[LP])?[[:space:]]*`)"))
         emit("pwd-capture", at, "")
       if (l ~ /mktemp/) scan_mktemp(l, at)
     }
@@ -552,7 +599,7 @@ clean "mk comment"       "# was: cd x && work=\"$MK\""
 clean "mk trailing comment" "ok  # was: cd x && work=\"$MK\""
 clean "mk heredoc body"  "cat > f <<'SH'" "work=\"$MK\"" 'SH'
 
-# --- the lexer's edges (each found by review of the first cut) ---
+# --- the lexer's edges ---
 flagged "# inside double quotes"  pwd-capture 2 "printf '%s\\n' \"value # text\"; ROOT=\"$PW\""
 flagged "# inside single quotes"  pwd-capture 2 "printf '%s\\n' 'value # text'; ROOT=\"$PW\""
 flagged "# inside quotes, piped"  grep-q-pipe 3 "$PF" "printf '%s' \"a #b\" $GQ a"
@@ -582,6 +629,20 @@ flagged "mk body masks status"    mktemp-unchecked 2 'd="$(mktem''p -d; true)" |
 flagged "mk body ors status away" mktemp-unchecked 2 'd="$(mktem''p -d || true)" || exit 1'
 clean   "mk body with a redirect" 'd="$(mktem''p -d 2>/dev/null)" || exit 1'
 clean   "mk body with 2>&1"       'd="$(mktem''p -d "$x/a.XXXXXX" 2>&1)" || exit 1'
+flagged "mk if, prefix of a command" mktemp-unchecked 2 "if d=\"$MK\" true; then echo ok; fi"
+flagged "mk if, backgrounded"     mktemp-unchecked 2 "if d=\"$MK\" & wait; then echo ok; fi"
+clean   "mk if, chain with 2>&1"  "if d=\"$MK\" && probe \"\$d\" >/dev/null 2>&1; then ok; fi"
+clean   "mk body, nested operators" 'd="$(mktem''p -d $(true; true))" || exit 1'
+flagged "mk backquoted"           mktemp-unchecked 2 'd=`mktem''p -d`'
+clean   "mk backquoted, checked"  'd=`mktem''p -d` || exit 1'
+clean   "mk REPLY form captures nothing" 'd="${| mktem''p -d; }"'
+clean   "pwd REPLY form captures nothing" 'ROOT="${| pw''d; }"'
+flagged "arithmetic shift, expansion" pwd-capture 3 'n=$((1 << 2))' "ROOT=\"$PW\"" '2'
+flagged "arithmetic shift, command" pwd-capture 3 '(( n = 1 << k ))' "ROOT=\"$PW\"" 'k'
+clean   "parameter default is text" "$PF" "echo \"\${x:-producer $GQ x}\""
+flagged "substitution in a default is code" grep-q-pipe 3 "$PF" "echo \"\${x:-\$(printf y $GQ y)}\""
+clean   "dollar-quoted delimiter"  "cat <<\$'EOF'" "ROOT=\"$PW\"" 'EOF'
+clean   "delimiter with an escaped quote" 'cat <<"E\"OF"' "ROOT=\"$PW\"" 'E"OF'
 # --- what may stand in front of the command name ---
 flagged "gq env assignment"       grep-q-pipe 3 "$PF" "printf x $P LC_ALL=C grep -q x"
 flagged "gq env + assignment"     grep-q-pipe 3 "$PF" "printf x $P env LC_ALL=C grep -q x"
@@ -621,6 +682,20 @@ exit 1
 SH
 chmod +x "$work/gitstub/git"
 ( PATH="$work/gitstub:$PATH"; hygiene_scan "$d" >/dev/null 2>&1 ); eq "$?" 2 "a listing git could not finish is 2, not a scan of the part that arrived"
+# The scan reads bytes: a suite holding one that is not valid UTF-8 is read under a UTF-8 locale.
+hy_utf=""
+for _l in C.UTF-8 en_US.UTF-8 C.utf8 en_US.utf8; do
+  case "$NL$(locale -a 2>/dev/null)$NL" in *"$NL$_l$NL"*) hy_utf="$_l"; break ;; esac
+done
+if [ -n "$hy_utf" ]; then
+  hy_bytes="$(fx bytes "$PF" "printf '\\377' $P wc -c" "ROOT=\"$PW\"")" || bad "could not build the invalid-byte fixture"
+  printf 'x="\377"; printf y %s y\n' "$GQ" >> "$hy_bytes/scripts/check-fx.sh"
+  out="$(LC_ALL="$hy_utf" hygiene_scan "$hy_bytes" dir 2>/dev/null)"; eq "$?" 1 "a suite with an invalid UTF-8 byte is scanned under $hy_utf"
+  has "$out" "scripts/check-fx.sh:4: pwd-capture: " "…its findings before the byte are reported"
+  has "$out" "scripts/check-fx.sh:5: grep-q-pipe: " "…and so is the one on the line that holds it"
+else
+  check_note "SKIP: no UTF-8 locale on this host to scan an invalid byte under"
+fi
 # A git that fails for any reason but "not a repository" is 2: the directory is not read instead.
 cat > "$work/gitstub/git" <<'SH'
 #!/bin/sh

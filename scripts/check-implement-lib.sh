@@ -4160,7 +4160,7 @@ SI_RUN="$(printf '%s' "$SI_OUT" | cut -f1)"
 
 # ================= 55. a failed scratch allocation never reaches the host (#497) =================
 # This suite runs from the checkout, and git leaves the working directory unchanged for `-C ""`. A
-# fixture path that came back empty therefore turned `git -C "$d" branch …` and `git -C "$d" config
+# fixture path that comes back empty therefore turns `git -C "$d" branch …` and `git -C "$d" config
 # user.email …` into writes to the repository under test. Driven on a COPY: a throwaway host
 # repository holding this suite, run with a `mktemp` that fails on request.
 AF_HOST="$work/af-host"; AF_BIN="$work/af-bin"
