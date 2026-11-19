@@ -17,11 +17,6 @@ to the project's own review settings.)
 The only lines with a machine-read grammar are the ones between the markers below; the prose
 around them is yours.
 
-**A hit with no review thread still needs a thread id**, because the id is what makes a re-run a
-no-op. Never invent a GitHub node id. A finding from local self-review round N is
-`self-review-r<N>[-<slug>]`; a defect found and fixed in PR N's branch outside any review round —
-to turn CI green, say — is `self-found-pr<N>-<slug>`.
-
 **Two branches can both append here, and that is handled by ordinary means.** Git may report a
 conflict when two pull requests add hits at the same point — take both sides; the entries are
 independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
@@ -63,7 +58,9 @@ Sweep each of these before opening a pull request.
 
 ## Hits
 
-One line per resolved review thread, newest last.
+One line per finding, newest last. A finding with no review thread is keyed on a synthetic id —
+`self-review-pr<N>-r<R>-<slug>` for local self-review round R of PR N, `self-found-pr<N>-<slug>`
+for a defect fixed in PR N's branch outside any review — never on an invented GitHub node id.
 
 <!-- adb:hits:begin -->
 - `partial-validation` `scripts/lib/docs-lib.sh:192` `a119e75` `PRRT_kwDOTfywrM6b1wrA` PR #429 2026-08-24 — checked that a newline existed, not that the FINAL byte was one; read dropped the last line, awk read it
@@ -815,5 +812,5 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `bin/baseline:962` `a176e2b` `PRRT_kwDOTfywrM62anOl` PR #628 2026-11-12 — A heal that left the command allowlist refused exited 0, and the session-start wrapper reads only the exit code, so the refusal reached nobody
 - `status-swallowed` `scripts/check-step-inputs.sh:577` `07233ec` `PRRT_kwDOTfywrM63QeK7` PR #645 2026-11-14 — si_shipped recorded no failure for a verdict that exited non-zero without output
 - `declared-inputs-incomplete` `scripts/selfcheck.sh` `07233ec` `PRRT_kwDOTfywrM63QeLE` PR #645 2026-11-14 — release-skill omitted the libraries its release driver runs through $LIB
-- `timing-assertion-under-load` `scripts/check-pattern-ledger.sh:990` `3638543` `self-found-pr452-lock-wait` PR #452 2026-09-03 — the 20- and 25-writer lock assertions bounded the wait by elapsed queue time, which load can eat; the bound now counts time without progress and the failure prints every non-zero writer's rc and stderr
+- `timing-assertion-under-load` `scripts/lib/pattern-ledger.sh:708` `3638543` `self-found-pr452-lock-wait` PR #452 2026-09-03 — the ledger lock's wait bound counted elapsed queue time, so the 20- and 25-writer assertions at scripts/check-pattern-ledger.sh:990 flapped under load; the clock now restarts when the holder changes, and those assertions print every failing writer's rc and stderr
 <!-- adb:hits:end -->

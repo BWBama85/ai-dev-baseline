@@ -27,8 +27,8 @@
 #                                # --site defaults to `-`, which is only valid with --result clean
 #   pattern-ledger.sh rule-sweep-report --state <dir> --run <id> --tree <digest>
 #   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
-#    the lock; nothing is reported as recorded that the ledger does not hold. 18 after an insert =
-#    the ledger no longer parses, which is not a lost row)
+#    the lock; nothing is reported as recorded that the ledger does not hold. After the insert,
+#    18 = the ledger no longer parses and 20 = the read-back could not run — neither is a lost row)
 #   pattern-ledger.sh -h | --help
 #
 # Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
@@ -166,6 +166,12 @@
 
 set -uo pipefail
 
+# EVERY awk CALL IN THIS FILE RUNS AS `LC_ALL=C awk`. The writer validates bytes
+# (`adb_ledger_ok_text`), so every reader must too: under a caller's UTF-8 locale awk's
+# `[[:cntrl:]]` also matches U+0085, and a byte that is not valid UTF-8 aborts the BSD awk, so a row
+# the writer accepted refused the whole ledger (D161, #522). Per call, not exported: the shared
+# predicates in common.sh scope their own locale, and must keep doing so for their other callers.
+
 # --- required shared library (fail loud on a broken install, per design-principles §5) -----------
 _adb_pl_libdir="$(dirname "${BASH_SOURCE[0]:-$0}")"
 _adb_pl_common="$_adb_pl_libdir/common.sh"
@@ -264,7 +270,7 @@ _adb_pl_ok_text() { adb_ledger_ok_text "$1" "$_ADB_PL_TEXT_MAX_BYTES"; }
 # when the filter fails: a size it could not measure is never 0.
 _adb_pl_nf_bytes() {
   local kept kb
-  kept="$(printf '%s\n' "$1" | awk 'NF { print }')" || return 1
+  kept="$(printf '%s\n' "$1" | LC_ALL=C awk 'NF { print }')" || return 1
   [ -n "$kept" ] || { printf '0'; return 0; }
   kb="${ adb_byte_len "$kept"; }" || return 1
   printf '%s' "$(( kb + 1 ))"
@@ -356,7 +362,9 @@ Sweep each of these before opening a pull request.
 
 ## Hits
 
-One line per resolved review thread, newest last.
+One line per finding, newest last. A finding with no review thread is keyed on a synthetic id —
+`self-review-pr<N>-r<R>-<slug>` for local self-review round R of PR N, `self-found-pr<N>-<slug>`
+for a defect fixed in PR N's branch outside any review — never on an invented GitHub node id.
 
 <!-- adb:hits:begin -->
 <!-- adb:hits:end -->
@@ -376,11 +384,6 @@ _adb_pl_region() {
   # that class's promotion, a record the writer could never have produced (D124 keeps the
   # history). The same rule as docs-lib's record reader.
   adb_nul_free "$1" || { [ "$?" -eq 1 ] || printf 'pattern-ledger: could not read %s to scan it for NUL bytes\n' "$1" >&2; return 1; }
-  # EVERY awk THAT READS LEDGER TEXT RUNS UNDER `LC_ALL=C` — this one, both raw parsers and the
-  # insert. The writer validates bytes in the C locale (`adb_ledger_ok_text`), so a reader under the
-  # caller's UTF-8 locale disagrees with it: `[[:cntrl:]]` also matches U+0085, and a byte that is
-  # not valid UTF-8 aborts the BSD awk outright. Either way a row the writer accepted refused the
-  # whole ledger (D161, #522).
   LC_ALL=C awk -v b="$2" -v e="$3" '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == b { nb++; inb = 1; next }
@@ -441,8 +444,7 @@ _adb_pl_hits_raw() {
       # A CONTROL CHARACTER IN THE SUMMARY IS REFUSED HERE, in awk, and not left to the shell
       # predicate alone: a TAB would split the field the shell reads, and `read` strips a trailing
       # one before `_adb_pl_ok_text` could see it. The predicate still runs on what arrives; this
-      # is the structural half that makes what arrives the whole summary. The C locale makes this
-      # exactly the set the writer refuses: 0x01-0x1F and 0x7F, never U+0085.
+      # is the structural half that makes what arrives the whole summary.
       if (summ ~ /[[:cntrl:]]/) { bad = 1; exit }
       printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $2, $4, $6, $8, pr, dt, summ
     }
@@ -607,7 +609,7 @@ _adb_pl_threshold() {
       # declaring `threshold` twice was accepted and silently used the earlier value — the same
       # defect already fixed for `[mcp]`, in the sibling this scan is modelled on and which I did
       # not sweep. Reported by the declared reviewer on PR #429.
-      if ! awk '
+      if ! LC_ALL=C awk '
             # THE TABLE HEADER IS COUNTED TOO. A manifest declaring `[patterns]` twice is invalid
             # TOML even when `threshold` appears once — the same case already fixed for `[mcp]`,
             # in the scan this one is modelled on. Reported by the declared reviewer on PR #429.
@@ -967,7 +969,9 @@ cmd_record() {
   # Reported by the declared reviewer on PR #429.
   hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse (the hits region) — refusing to append to a ledger whose existing records cannot be read\n' "$ledger" >&2; exit 18; }
   _adb_pl_promoted "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n' "$ledger" >&2; exit 18; }
-  if printf '%s\n' "$hits" | awk -F'\t' -v t="$OPT_THREAD" '$4 == t { found = 1 } END { exit !found }'; then
+  # `$4 "" == t ""`, a STRING comparison: awk compares two numeric-looking strings as numbers, so a
+  # bare `==` found thread `1` when asked for `01` or `1e0`.
+  if printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' -v t="$OPT_THREAD" '$4 "" == t "" { found = 1 } END { exit !found }'; then
     printf 'pattern-ledger: thread %s is already recorded — nothing appended\n' "$OPT_THREAD" >&2
     exit 10
   fi
@@ -987,7 +991,7 @@ cmd_record() {
     [ "${_sh%%$'\t'*}" = "$OPT_PR" ] || {
       printf 'pattern-ledger: sweep file %s belongs to PR %s, not %s — nothing recorded\n' "$(adb_display_value "$OPT_SWEEP")" "${_sh%%$'\t'*}" "$OPT_PR" >&2; exit 19; }
     local _rows
-    _rows="$(adb_sweep_rows "$OPT_SWEEP" | awk -F'\t' -v c="$OPT_CLASS" '$2 == c { print $4 }')"
+    _rows="$(adb_sweep_rows "$OPT_SWEEP" | LC_ALL=C awk -F'\t' -v c="$OPT_CLASS" '$2 == c { print $4 }')"
     [ -n "$_rows" ] || {
       printf 'pattern-ledger: class %s has no row in the sweep file — sweep it for siblings first; nothing recorded\n' "$OPT_CLASS" >&2; exit 23; }
     if printf '%s\n' "$_rows" | grep -qx found; then
@@ -1009,15 +1013,23 @@ cmd_record() {
   # process that can know is this one, now, while it still holds the lock — so the ledger is read
   # back and this thread must be in it. A miss is 21, with what the directory holds beside the
   # ledger (locks, stale tombstones, temp files) printed so the next occurrence diagnoses itself.
-  # A ledger that no longer PARSES is a different failure from a lost row, and is told as one (18):
-  # reading the parse failure as a miss sent the reader looking for a concurrent writer (#522).
-  local after
-  after="$(_adb_pl_hits "$ledger")" || {
+  # THREE OUTCOMES, told apart (#522): a ledger that no longer parses — either region, as before the
+  # insert — is 18; a lookup that could not run is 20; only a lookup that ran and missed is a lost
+  # row. Reading a parse failure as a miss sent the reader looking for a concurrent writer.
+  local after lrc
+  hits=""
+  after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {
     printf 'pattern-ledger: %s does not parse after the insert of thread %s (lock held, token %s)\n' \
       "$ledger" "$OPT_THREAD" "${_ADB_PL_LOCK_TOKEN:-none}" >&2
     exit 18
   }
-  if ! printf '%s\n' "$after" | awk -F'\t' -v t="$OPT_THREAD" '$4 == t { found = 1 } END { exit !found }'; then
+  printf '%s\n' "$after" | LC_ALL=C awk -F'\t' -v t="$OPT_THREAD" '$4 "" == t "" { found = 1 } END { exit (found ? 0 : 1) }'; lrc=$?
+  if [ "$lrc" -gt 1 ]; then
+    printf 'pattern-ledger: could not search %s for thread %s after its insert (rc %s) — the row may be there\n' \
+      "$ledger" "$OPT_THREAD" "$lrc" >&2
+    exit 20
+  fi
+  if [ "$lrc" -eq 1 ]; then
     printf 'pattern-ledger: the row for thread %s is NOT in %s after its own insert — the ledger was overwritten under this writer (lock held, token %s). Beside it: %s\n' \
       "$OPT_THREAD" "$ledger" "${_ADB_PL_LOCK_TOKEN:-none}" "$(ls -a "$(dirname "$ledger")" 2>/dev/null | tr '\n' ' ')" >&2
     exit 21
@@ -1039,7 +1051,7 @@ cmd_classes() {
   # promotion. `_adb_pl_insert` in this same file already documents this exact trap and uses
   # ENVIRON for it; reintroducing it 200 lines later is what the promoted `partial-validation` rule
   # means by "grep the siblings". Found by dogfooding this ledger on its own pull request.
-  printf '%s\n' "$hits" | ADB_PL_PROM="$promoted" awk -F'\t' -v TAB="$TAB" '
+  printf '%s\n' "$hits" | ADB_PL_PROM="$promoted" LC_ALL=C awk -F'\t' -v TAB="$TAB" '
     BEGIN { n = split(ENVIRON["ADB_PL_PROM"], p, "\n"); for (i = 1; i <= n; i++) if (p[i] != "") isprom[p[i]] = 1 }
     $1 != "" { c[$1]++ }
     END { for (k in c) printf "%d%s%s%s%d\n", c[k], TAB, k, TAB, (k in isprom ? 1 : 0) }
@@ -1114,7 +1126,7 @@ cmd_promote() {
   local promoted count
   _adb_pl_hits "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the hits region)\n' "$ledger" >&2; exit 18; }
   promoted="$(_adb_pl_promoted "$ledger")" || { printf 'pattern-ledger: %s does not parse (the checklist region)\n' "$ledger" >&2; exit 18; }
-  if printf '%s\n' "$promoted" | awk -v c="$OPT_CLASS" '$0 == c { f = 1 } END { exit !f }'; then
+  if printf '%s\n' "$promoted" | LC_ALL=C awk -v c="$OPT_CLASS" '$0 == c { f = 1 } END { exit !f }'; then
     printf 'pattern-ledger: %s already has a checklist rule\n' "$OPT_CLASS" >&2
     exit 13
   fi
@@ -1126,7 +1138,7 @@ cmd_promote() {
   local rows crc
   rows="$(cmd_classes)"; crc=$?
   [ "$crc" -eq 0 ] || exit "$crc"
-  count="$(printf '%s\n' "$rows" | awk -F"$TAB" -v c="$OPT_CLASS" '$2 == c { print $1; exit }')"
+  count="$(printf '%s\n' "$rows" | LC_ALL=C awk -F"$TAB" -v c="$OPT_CLASS" '$2 == c { print $1; exit }')"
   [ -n "$count" ] || count=0
   if [ "$count" -lt "$t" ]; then
     printf 'pattern-ledger: %s has %s hit(s), threshold is %s (from %s) — not promoting\n' \
@@ -1182,7 +1194,7 @@ cmd_checklist() {
   # put there, and refuses loudly (21) rather than emitting a truncated or crowding payload.
   # Reported by the declared reviewer on PR #429.
   local emitted size
-  emitted="$(printf '%s\n' "$region" | awk 'NF { print }')" \
+  emitted="$(printf '%s\n' "$region" | LC_ALL=C awk 'NF { print }')" \
     || { printf 'pattern-ledger: could not filter the checklist region of %s — refusing to emit it\n' "$ledger" >&2; exit 20; }
   size="${ adb_byte_len "$emitted"; }" \
     || { printf 'pattern-ledger: could not measure the checklist of %s — refusing to emit it\n' "$ledger" >&2; exit 20; }
@@ -1236,15 +1248,15 @@ cmd_stats() {
   local promoted_raw
   promoted_raw="$(_adb_pl_promoted "$ledger")" \
     || { printf 'pattern-ledger: %s does not parse\n' "$ledger" >&2; exit 18; }
-  promoted="$(printf '%s\n' "$promoted_raw" | awk 'NF' | wc -l | tr -d ' ')"
+  promoted="$(printf '%s\n' "$promoted_raw" | LC_ALL=C awk 'NF' | wc -l | tr -d ' ')"
   if [ -n "$hits" ]; then
-    total="$(printf '%s\n' "$hits" | awk 'NF' | wc -l | tr -d ' ')"
-    classes="$(printf '%s\n' "$hits" | awk -F'\t' 'NF && $1 != "" { c[$1] } END { print length(c) }')"
-    recurring="$(printf '%s\n' "$hits" | awk -F'\t' -v t="$t" '
+    total="$(printf '%s\n' "$hits" | LC_ALL=C awk 'NF' | wc -l | tr -d ' ')"
+    classes="$(printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' 'NF && $1 != "" { c[$1] } END { print length(c) }')"
+    recurring="$(printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' -v t="$t" '
       NF && $1 != "" { c[$1]++; rows[NR] = $1 }
       END { n = 0; for (i in rows) if (c[rows[i]] >= t) n++; print n }')"
     if [ -n "$OPT_PR" ]; then
-      thispr="$(printf '%s\n' "$hits" | awk -F'\t' -v p="$OPT_PR" '$5 == p { n++ } END { print n + 0 }')"
+      thispr="$(printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' -v p="$OPT_PR" '$5 == p { n++ } END { print n + 0 }')"
       # RECURRING HITS *IN THIS PR*, decided by LIFETIME class counts. The unscoped `recurring`
       # below is a lifetime figure over an append-only file, so it can only ever rise — and it
       # jumps by every prior hit at the moment a class crosses the threshold. It therefore cannot
@@ -1263,10 +1275,10 @@ cmd_stats() {
       # nothing timestamps a promotion — so the workflow captures that from its own `promote`
       # calls rather than this command inventing a number for it.
       # Reported by the declared reviewer on PR #429.
-      prnew="$(printf '%s\n' "$hits" | awk -F'\t' -v p="$OPT_PR" '
+      prnew="$(printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' -v p="$OPT_PR" '
         NF && $1 != "" { if (!($1 in first) || $6 < firstd[$1]) { first[$1] = $5; firstd[$1] = $6 } }
         END { n = 0; for (k in first) if (first[k] == p) n++; print n + 0 }')"
-      prrecur="$(printf '%s\n' "$hits" | awk -F'\t' -v t="$t" -v p="$OPT_PR" '
+      prrecur="$(printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' -v t="$t" -v p="$OPT_PR" '
         NF && $1 != "" { c[$1]++; cls[NR] = $1; prs[NR] = $5 }
         END { n = 0; for (i in cls) if (c[cls[i]] >= t && prs[i] == p) n++; print n + 0 }')"
     fi
@@ -1327,7 +1339,7 @@ cmd_verify() {
   # now higher than the number of findings that actually happened.
   local dupes=""
   if [ -n "$hits" ]; then
-    dupes="$(printf '%s\n' "$hits" | awk -F'\t' 'NF { print $4 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
+    dupes="$(printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' 'NF { print $4 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
     [ -z "$dupes" ] || { printf 'pattern-ledger: duplicate thread id(s): %s\n' "$(printf '%s' "$dupes" | tr '\n' ' ')" >&2; bad=1; }
   fi
   # A DUPLICATED CHECKLIST CLASS, for the same reason and with the same consequence. `promote`
@@ -1338,7 +1350,7 @@ cmd_verify() {
   # Reported by the declared reviewer on PR #429.
   local ckdupes=""
   if [ -n "$promoted" ]; then
-    ckdupes="$(printf '%s\n' "$promoted" | awk -F'\t' 'NF { print $1 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
+    ckdupes="$(printf '%s\n' "$promoted" | LC_ALL=C awk -F'\t' 'NF { print $1 }' | LC_ALL=C sort | LC_ALL=C uniq -d)"
     [ -z "$ckdupes" ] || { printf 'pattern-ledger: duplicate checklist class(es): %s\n' "$(printf '%s' "$ckdupes" | tr '\n' ' ')" >&2; bad=1; }
   fi
   # THE PROMPT BUDGET, so `verify` and `checklist` agree: a region every rule of which is in the
@@ -1551,7 +1563,7 @@ cmd_rule_sweep() {
     # A CONTRADICTION IS REFUSED BEFORE IT IS PUBLISHED. A class this run recorded `clean` cannot also
     # have fired, and the reverse; the reader refuses such a record whole, and this CLI has no
     # correction operation — so publishing it would strand the close-out on an ordinary slip.
-    if printf '%s\n' "$cur" | awk -F'\t' -v c="$OPT_RULE" -v r="$OPT_RESULT" '$1 == c && $3 != r { f = 1 } END { exit !f }'; then
+    if printf '%s\n' "$cur" | LC_ALL=C awk -F'\t' -v c="$OPT_RULE" -v r="$OPT_RESULT" '$1 == c && $3 != r { f = 1 } END { exit !f }'; then
       exec {wfd}>&-; rm -f "$stage"
       printf 'pattern-ledger: rule-sweep: %s is already recorded as %s for this run and tree — a class is either clean or fired, never both. Nothing was written.\n' \
         "$OPT_RULE" "$( [ "$OPT_RESULT" = clean ] && echo fired || echo clean )" >&2
@@ -1630,7 +1642,7 @@ cmd_rule_sweep_report() {
       fi
       promoted="$(_adb_pl_promoted "$ledger")" \
         || { printf 'pattern-ledger: %s does not parse (a checklist rule is not in the grammar)\n' "$ledger" >&2; exit 18; }
-      m="$(printf '%s' "$promoted" | awk 'NF { n++ } END { print n + 0 }')" ;;
+      m="$(printf '%s' "$promoted" | LC_ALL=C awk 'NF { n++ } END { print n + 0 }')" ;;
   esac
 
   # --- N, from the rows ----------------------------------------------------------------------
@@ -1734,7 +1746,7 @@ ROWS
     # set (a typo, a retired rule) are the evidence that explains "nothing credited".
     if [ -n "${off_set//$'\n'/}" ]; then
       printf 'pattern-ledger: recorded for class(es) that are not promoted rules, so not credited: %s\n' \
-        "$(printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | paste -s -d ' ' -)" >&2
+        "$(printf '%s' "$off_set" | LC_ALL=C awk 'NF { print }' | LC_ALL=C sort | paste -s -d ' ' -)" >&2
     fi
     # STALE ROWS ARE NAMED HERE TOO. A tree that changed after the sweep leaves every row stale and
     # n at 0, and exiting before the stale count reported "never swept" for a sweep the tree simply
@@ -1769,7 +1781,7 @@ ROWS
     fi
     # NAMED, NOT COUNTED. "19 of 21" with the two unnamed is the report a reader cannot act on,
     # and the coverage gap is the entire reason this command exists rather than a sentence.
-    unswept="$(printf '%s' "$promoted" | awk 'NF { print }' | while IFS= read -r class; do
+    unswept="$(printf '%s' "$promoted" | LC_ALL=C awk 'NF { print }' | while IFS= read -r class; do
         case "$swept" in *$'\n'"$class"$'\n'*) ;; *) printf '%s\n' "$class" ;; esac
       done | LC_ALL=C sort)"
     if [ -n "$unswept" ]; then
@@ -1791,7 +1803,7 @@ ROWS
   printf -- '- This records rule dispositions and coverage against the live promoted checklist; it does not enumerate the files scanned.\n'
   if [ -n "${off_set//$'\n'/}" ]; then
     printf -- '- recorded but NOT a promoted rule (not counted as coverage):\n'
-    printf '%s' "$off_set" | awk 'NF { print }' | LC_ALL=C sort | while IFS= read -r class; do
+    printf '%s' "$off_set" | LC_ALL=C awk 'NF { print }' | LC_ALL=C sort | while IFS= read -r class; do
       [ -n "$class" ] || continue
       _mc="$(_adb_pl_rs_md "$class")" || exit 20
       printf -- '  - `%s`\n' "$_mc"

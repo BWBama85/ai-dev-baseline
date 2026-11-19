@@ -295,13 +295,15 @@ only by a release it upgrades to. These entries are the notes for both.
   `record` validates a summary in the C locale, but the readers' awk ran in the caller's, where
   `[[:cntrl:]]` also matches U+0085 and a byte that is not valid UTF-8 aborts the BSD awk. One such
   summary made `record` exit 21 blaming a concurrent writer, and every reader, `checklist`
-  included, then refused the whole ledger (18) until it was edited by hand. The region reader, both
-  parsers and the insert now run in the C locale. A ledger that no longer parses after `record`'s
-  own insert is now 18 with its own message, not a lost row. D161.
+  included, then refused the whole ledger (18) until it was edited by hand. Every awk call in
+  `pattern-ledger.sh` now runs in the C locale. `record`'s read-back tells its outcomes apart: 18 when either region
+  no longer parses, 20 when the lookup could not run, 21 only for a row that is missing. Thread
+  ids are compared as strings, so `01` and `1e0` are no longer refused as duplicates of `1`. D161.
 
 - **The pattern ledger promotes `timing-assertion-under-load` (#461, folded into #522).** Its second
-  hit, PR #452's concurrent-writer fix, is recorded, and the ledger header documents how a hit with
-  no review thread is recorded (`self-review-r<N>[-<slug>]`, `self-found-pr<N>-<slug>`).
+  hit, PR #452's lock fix, is recorded. The ledger and the template a new one is written from say
+  how a hit with no review thread is keyed: `self-review-pr<N>-r<R>-<slug>` or
+  `self-found-pr<N>-<slug>`.
 
 - **This repository's check suites no longer fail on a match they found, test a sibling checkout,
   or write to the checkout they run from (#458).** Four defects in `scripts/check-*.sh`, fixed in

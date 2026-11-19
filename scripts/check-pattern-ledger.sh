@@ -140,6 +140,18 @@ eq "$?" 10 "a repeated thread id is a no-op"
 eq "$(bash "$PL" stats --ledger "$L2" | awk -F'\t' '$1=="hits"{print $2}')" 1 \
    "…and it appended nothing — the class did not climb toward a promotion it never earned"
 
+# THE THREAD IS COMPARED AS A STRING (#522 review). awk compares two numeric-looking strings as
+# numbers, so with thread `1` recorded, `01` and `1e0` were refused as already present.
+L2n="$work/l2n.md"
+for _th in 1 01 1e0; do
+  bash "$PL" record --ledger "$L2n" --class num-class --site "n$_th.sh" --fix abc1234 --pr 1 \
+    --thread "$_th" --date 2026-08-24 >/dev/null 2>&1
+  eq "$?" 0 "2n a numeric-looking thread is recorded, not matched against an equal number (thread $_th)"
+done
+bash "$PL" record --ledger "$L2n" --class num-class --site n1.sh --fix abc1234 --pr 1 \
+  --thread 1 --date 2026-08-24 >/dev/null 2>&1
+eq "$?" 10 "2n …and a genuine retry of thread 1 is still the no-op"
+
 # A hand-edited duplicate is a DEFECT, because `record` cannot produce one: two branches merging
 # the same record, or an edit, inflates the count above the number of findings that happened.
 awk '{print} /^- `dupe-class`/ && !d {print; d=1}' "$L2" > "$work/l2-dup.md"
@@ -380,15 +392,47 @@ refused "a DEL byte in a summary is refused"      19 --class guard-class --site 
         --pr 1 --thread T-g14 --summary "$(printf 'a\177b')"
 refused "a 0x01 byte in --site is refused"        19 --class guard-class --site "$(printf 'a\001b')" \
         --fix abc1234 --pr 1 --thread T-g15
-# THE REFUSAL SET IS THE C LOCALE'S, AT THE WRITER AND AT EVERY READER. Under a UTF-8 locale
-# `[[:cntrl:]]` also matches U+0085, and a byte that is not valid UTF-8 aborts the BSD awk; the
-# writer validates in C, so a reader under the caller's locale refused a ledger the writer had just
-# written (#522). Each fixture below writes AND reads under the UTF-8 locale.
+# THE REFUSAL SET IS THE C LOCALE'S, AT THE WRITER AND AT EVERY READER (#522). Under a UTF-8
+# locale awk's `[[:cntrl:]]` also matches U+0085, and the BSD awk aborts on a byte that is not
+# valid UTF-8, so a reader in the caller's locale refused what the writer had just written.
+#
+# FIRST THE MECHANISM, ON EVERY HOST: a stub `awk` that refuses to run outside the C locale, ahead
+# of the real one on PATH, under a caller whose locale is UTF-8. Whether a REAL awk misreads these
+# bytes differs by implementation (mawk keeps 0xFF, the BSD awk aborts), so only this proves the
+# awk calls of pattern-ledger.sh run in C wherever the suite runs.
+_awkreal="$(command -v awk)"
+_awkstub="$work/awkstub"
+mkdir "$_awkstub" || { echo "check-pattern-ledger: could not make the awk stub directory" >&2; exit 1; }
+printf '#!/bin/sh\ncase "${LC_ALL-}" in C) ;; *) printf "stub-awk: LC_ALL=%%s\\n" "${LC_ALL-unset}" >>"%s/log"; exit 97 ;; esac\nexec "%s" "$@"\n' \
+  "$_awkstub" "$_awkreal" > "$_awkstub/awk"
+chmod +x "$_awkstub/awk"
+L5s="$work/l5s.md"
+_s5s() { PATH="$_awkstub:$PATH" LC_ALL="${U8:-C.UTF-8}" bash "$PL" "$@" --ledger "$L5s" 2>/dev/null; }
+_s5rc=""
+for _i in 1 2; do
+  _s5s record --class stub-class --site "s$_i.sh" --fix ddd4444 --pr 1 --thread "T-s$_i" \
+    --summary "n$(printf '\302\205')l" --date 2026-08-24 >/dev/null; _s5rc="${_s5rc}record:$? "
+done
+_s5s due --threshold 2 >/dev/null; _s5rc="${_s5rc}due:$? "
+_s5s promote --class stub-class --rule 'sweep it' --threshold 2 >/dev/null; _s5rc="${_s5rc}promote:$? "
+_s5s classes >/dev/null; _s5rc="${_s5rc}classes:$? "
+# `--threshold` on every reader that takes one: otherwise the threshold is read from agents.toml by
+# common.sh's TOML reader, whose awk is that library's and is not ledger text.
+_s5s stats --threshold 2 >/dev/null; _s5rc="${_s5rc}stats:$? "
+for _sub in checklist verify; do
+  _s5s "$_sub" >/dev/null; _s5rc="${_s5rc}${_sub}:$? "
+done
+eq "$_s5rc" "record:0 record:0 due:0 promote:0 classes:0 stats:0 checklist:0 verify:0 " \
+   "5s every subcommand runs under a stub awk that refuses any locale but C"
+eq "$(cat "$_awkstub/log" 2>/dev/null)" "" "5s every awk the ledger runs sees the C locale"
+
+# THEN THE REAL BYTES, through the host's own awk.
 if [ -z "$U8" ]; then
   bad "5 fixture: no UTF-8 locale on this host — the control-set check asserted NOTHING"
 else
   _nel="n$(printf '\302\205')l"
   _hb="a$(printf '\377')b"
+  _t=$'\t'
   LC_ALL="$U8" bash "$PL" record --ledger "$work/l5nel.md" --class nel-class --site "${_nel}.sh" \
     --fix ddd4444 --pr 1 --thread T-n1 --date 2026-08-24 >/dev/null 2>&1
   eq "$?" 0 "a site carrying U+0085 is accepted under a UTF-8 locale — the control set is C's"
@@ -400,11 +444,10 @@ else
       --pr 1 --thread "T-u$_i" --summary "$_nel" --date 2026-08-24 >/dev/null 2>&1
     eq "$?" 0 "5u a summary carrying U+0085 is recorded under a UTF-8 locale (hit $_i)"
   done
-  _t=$'\t'
-  eq "$(LC_ALL="$U8" bash "$PL" classes --ledger "$L5u" 2>/dev/null)" "2${_t}nel-class${_t}0" \
-     "5u classes reads a U+0085 summary under a UTF-8 locale"
-  eq "$(LC_ALL="$U8" bash "$PL" due --ledger "$L5u" 2>/dev/null)" "nel-class${_t}2" \
-     "5u due reads a U+0085 summary under a UTF-8 locale"
+  _o="$(LC_ALL="$U8" bash "$PL" classes --ledger "$L5u" 2>/dev/null)"; _r=$?
+  eq "$_r:$_o" "0:2${_t}nel-class${_t}0" "5u classes reads a U+0085 summary under a UTF-8 locale"
+  _o="$(LC_ALL="$U8" bash "$PL" due --threshold 2 --ledger "$L5u" 2>/dev/null)"; _r=$?
+  eq "$_r:$_o" "0:nel-class${_t}2" "5u due reads a U+0085 summary under a UTF-8 locale"
   for _sub in stats checklist verify; do
     LC_ALL="$U8" bash "$PL" "$_sub" --ledger "$L5u" >/dev/null 2>&1
     eq "$?" 0 "5u $_sub reads a U+0085 summary under a UTF-8 locale"
@@ -419,12 +462,14 @@ else
   LC_ALL="$U8" bash "$PL" record --ledger "$L5b" --class hb-class --site b2.sh --fix ddd4444 \
     --pr 1 --thread T-b2 --date 2026-08-24 >/dev/null 2>&1
   eq "$?" 0 "5b the insert after a 0xFF summary succeeds under a UTF-8 locale"
+  eq "$(LC_ALL=C grep -c "— ${_hb}\$" "$L5b")" 1 "5b the stored 0xFF summary keeps its bytes after the next insert"
 
   # …in a promoted rule: the checklist parser reads it.
-  LC_ALL="$U8" bash "$PL" promote --ledger "$L5b" --class hb-class --rule "sweep $_hb" >/dev/null 2>&1
+  LC_ALL="$U8" bash "$PL" promote --threshold 2 --ledger "$L5b" --class hb-class --rule "sweep $_hb" >/dev/null 2>&1
   eq "$?" 0 "5b a rule carrying a 0xFF byte is promoted under a UTF-8 locale"
-  has "$(LC_ALL="$U8" bash "$PL" checklist --ledger "$L5b" 2>/dev/null)" "sweep $_hb" \
-      "5b checklist reads a 0xFF rule under a UTF-8 locale"
+  _o="$(LC_ALL="$U8" bash "$PL" checklist --ledger "$L5b" 2>/dev/null)"; _r=$?
+  eq "$_r" 0 "5b checklist exits 0 on a 0xFF rule under a UTF-8 locale"
+  has "$_o" "sweep $_hb" "5b checklist reads a 0xFF rule under a UTF-8 locale"
 
   # …in the hand-written prose outside both regions: only the region reader sees it.
   L5p="$work/l5p.md"
@@ -809,9 +854,12 @@ eq "$?" 18 "promote refuses a damaged hits region instead of returning 'already 
 # (ii) `record` must validate BOTH regions before appending. Validating only the hits half reported
 # a hit written into a file every reader then refuses.
 sed 's/<!-- adb:checklist:begin -->//' "$L7b" > "$work/l7b-badck.md"
+_ck_before="$(cksum < "$work/l7b-badck.md")"
 bash "$PL" record --ledger "$work/l7b-badck.md" --class other --site s.sh --fix abc1234 \
   --pr 1 --thread T-new-one >/dev/null 2>&1
 eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just its hits"
+# BEFORE appending, not after: the read-back would also answer 18, with the row already written.
+eq "$(cksum < "$work/l7b-badck.md")" "$_ck_before" "record leaves a ledger with a damaged CHECKLIST unchanged"
 fi
 
 if check_block s7c; then
@@ -903,6 +951,12 @@ out="$(bash "$_lost/pl2.sh" record --ledger "$L7f" --class lostc --site s.sh --f
 eq "$rc" 21 "a lost row is told: a writer whose row is not in the ledger after its insert exits 21"
 has "$out" "the row for thread LOST1 is NOT in" "…and names the thread it lost"
 hasnt "$out" "recorded lostc" "…and never reports it as recorded"
+# …even when a NUMERICALLY equal thread is present: the read-back compares strings, so thread `1`
+# does not stand in for a lost `01`.
+L7n="$work/l7n.md"
+bash "$PL" record --ledger "$L7n" --class seed-n --site s.sh --fix abc1231 --pr 1 --thread 1 >/dev/null 2>&1
+bash "$_lost/pl2.sh" record --ledger "$L7n" --class lostc --site s.sh --fix abc1232 --pr 1 --thread 01 >/dev/null 2>&1
+eq "$?" 21 "a lost row is told even when a numerically equal thread is present"
 # A LEDGER THAT NO LONGER PARSES AFTER THE INSERT IS 18, NOT A LOST ROW (#522): the copy's insert
 # writes a malformed line where the record belongs.
 sed 's/l == e \&\& !done { print ENVIRON\["ADB_PL_LINE"\]; done = 1 }/l == e \&\& !done { print "- malformed"; done = 1 }/' "$_lost/pl.sh" > "$_lost/pl3.sh"
@@ -911,6 +965,26 @@ out="$(bash "$_lost/pl3.sh" record --ledger "$L7f" --class lostc --site s.sh --f
 eq "$rc" 18 "a ledger that does not parse after the insert exits 18, not the lost-row 21"
 has "$out" "does not parse after the insert of thread BADP1" "…and says the ledger does not parse"
 hasnt "$out" "overwritten" "…and never blames a concurrent writer"
+# …and the same when the insert leaves the hits whole but damages the CHECKLIST: the read-back
+# checks both regions, as the pre-insert read does.
+sed 's/l == e \&\& !done { print ENVIRON/l == "<!-- adb:checklist:end -->" { print "- damaged" } l == e \&\& !done { print ENVIRON/' "$_lost/pl.sh" > "$_lost/pl4.sh"
+if cmp -s "$_lost/pl.sh" "$_lost/pl4.sh"; then bad "fixture: the checklist-damage injection did not apply"; fi
+L7h="$work/l7h.md"
+bash "$PL" record --ledger "$L7h" --class seed-h --site s.sh --fix abc1231 --pr 1 --thread H0 >/dev/null 2>&1
+bash "$PL" verify --ledger "$L7h" >/dev/null 2>&1 || bad "fixture: the checklist-damage ledger does not parse before the insert"
+out="$(bash "$_lost/pl4.sh" record --ledger "$L7h" --class lostc --site s.sh --fix abc1234 --pr 1 --thread BADC1 2>&1)"; rc=$?
+eq "$rc" 18 "a checklist damaged by the insert exits 18, not recorded"
+has "$out" "does not parse after the insert of thread BADC1" "…and says the ledger does not parse"
+hasnt "$out" "recorded lostc" "…and never reports the row as recorded"
+# A READ-BACK LOOKUP THAT COULD NOT RUN IS 20, never a lost row: nothing showed the row absent.
+cp "$_lost/pl.sh" "$_lost/pl5.sh"
+check_mutate_literal "$_lost/pl5.sh" 'END { exit (found ? 0 : 1) }' 'END { exit 2 }' \
+  || bad "fixture: the lookup-error injection did not apply"
+L7g="$work/l7g.md"
+bash "$PL" record --ledger "$L7g" --class seed-g --site s.sh --fix abc1231 --pr 1 --thread G0 >/dev/null 2>&1
+out="$(bash "$_lost/pl5.sh" record --ledger "$L7g" --class lostc --site s.sh --fix abc1235 --pr 1 --thread ERR1 2>&1)"; rc=$?
+eq "$rc" 20 "a read-back lookup that errors exits 20, not the lost-row 21"
+has "$out" "could not search" "…and says the search could not run"
 rm -rf "$_lost"
 
 # THE FIRST LEDGER IS CREATED INSIDE THE LOCK (PR #429). Two processes recording the first hits
@@ -2376,7 +2450,7 @@ if [ "$MODE" = mutation ]; then
       '[ "$n" -lt "$t" ] || continue' \
       'two hits reach the threshold'
   check_row 'dedupe-disabled' 'scripts/lib/pattern-ledger.sh' 's2' \
-      'if printf '"'"'%s\n'"'"' "$hits" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
+      'if printf '"'"'%s\n'"'"' "$hits" | LC_ALL=C awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 "" == t "" { found = 1 } END { exit !found }'"'"'; then' \
       'if false; then' \
       'a repeated thread id is a no-op'
   check_row 'region-proof-disabled' 'scripts/lib/pattern-ledger.sh' 's3' \
@@ -2414,14 +2488,14 @@ if [ "$MODE" = mutation ]; then
   check_row 'record-checks-one-region' 'scripts/lib/pattern-ledger.sh' 's7b' \
       '  _adb_pl_promoted "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n'"'"' "$ledger" >&2; exit 18; }' \
       '  :' \
-      'record refuses a ledger whose CHECKLIST region is damaged, not just its hits'
+      'record leaves a ledger with a damaged CHECKLIST unchanged'
   check_row 'verify-misses-dup-class' 'scripts/lib/pattern-ledger.sh' 's7b' \
-      '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | awk -F'"'"'\t'"'"' '"'"'NF { print $1 }'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
+      '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | LC_ALL=C awk -F'"'"'\t'"'"' '"'"'NF { print $1 }'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
       '    ckdupes=""' \
       'a duplicated checklist class is refused by'
   check_row 'promoted-list-via-v' 'scripts/lib/pattern-ledger.sh' 's7' \
-      'ADB_PL_PROM="$promoted" awk -F'"'"'\t'"'"' -v TAB="$TAB"' \
-      'awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
+      'ADB_PL_PROM="$promoted" LC_ALL=C awk -F'"'"'\t'"'"' -v TAB="$TAB"' \
+      'LC_ALL=C awk -F'"'"'\t'"'"' -v TAB="$TAB" -v ADB_PL_PROM_UNUSED="$promoted" -v prom="$promoted"' \
       '…and marks the SECOND promoted class as promoted — the whole list reached awk'
   check_row 'absent-indistinguishable' 'scripts/lib/pattern-ledger.sh' 's8' \
       '    printf '"'"'ledger\tabsent\n'"'"'' \
@@ -2432,29 +2506,45 @@ if [ "$MODE" = mutation ]; then
       '  :' \
       'promote refuses a damaged hits region instead of returning '"'"'already promoted'"'"''
   check_row 'write-unverified' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      '  if ! printf '"'"'%s\n'"'"' "$after" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
+      '  if [ "$lrc" -eq 1 ]; then' \
       '  if false; then' \
       'a lost row is told'
   check_row 'post-insert-parse-read-as-lost' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      '  after="$(_adb_pl_hits "$ledger")" || {' \
-      '  after="$(_adb_pl_hits "$ledger")" || : || {' \
+      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {' \
+      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || : || {' \
       'a ledger that does not parse after the insert exits 18'
+  check_row 'post-insert-checklist-unread' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {' \
+      'after="$(_adb_pl_hits "$ledger")" || {' \
+      'a checklist damaged by the insert exits 18'
+  check_row 'lookup-error-read-as-lost' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  if [ "$lrc" -gt 1 ]; then' \
+      '  if false; then' \
+      'a read-back lookup that errors exits 20'
+  check_row 'post-insert-thread-numeric' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      ''"'"'$4 "" == t "" { found = 1 } END { exit (found ? 0 : 1) }'"'"'' \
+      ''"'"'$4 == t { found = 1 } END { exit (found ? 0 : 1) }'"'"'' \
+      'a lost row is told even when a numerically equal thread is present'
+  check_row 'dedupe-thread-numeric' 'scripts/lib/pattern-ledger.sh' 's2' \
+      ''"'"'$4 "" == t "" { found = 1 } END { exit !found }'"'"'' \
+      ''"'"'$4 == t { found = 1 } END { exit !found }'"'"'' \
+      '2n a numeric-looking thread is recorded'
   check_row 'region-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
       '  LC_ALL=C awk -v b="$2" -v e="$3" '"'"'' \
       '  awk -v b="$2" -v e="$3" '"'"'' \
-      '5p a 0xFF byte in the prose is read under a UTF-8 locale'
+      '5s every awk the ledger runs sees the C locale'
   check_row 'hits-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
-      'printf '"'"'%s\n'"'"' "$region" | LC_ALL=C awk' \
-      'printf '"'"'%s\n'"'"' "$region" | awk' \
-      '5u classes reads a U+0085 summary under a UTF-8 locale'
+      '"$region" | LC_ALL=C awk -F'"'"'`'"'"' '"'"'' \
+      '"$region" | awk -F'"'"'`'"'"' '"'"'' \
+      '5s every awk the ledger runs sees the C locale'
   check_row 'checklist-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
-      'printf '"'"'%s\n'"'"' "$ckregion" | LC_ALL=C awk' \
-      'printf '"'"'%s\n'"'"' "$ckregion" | awk' \
-      '5b checklist reads a 0xFF rule under a UTF-8 locale'
+      '"$ckregion" | LC_ALL=C awk -F'"'"'`'"'"' '"'"'' \
+      '"$ckregion" | awk -F'"'"'`'"'"' '"'"'' \
+      '5s every awk the ledger runs sees the C locale'
   check_row 'insert-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
       'ADB_PL_LINE="$line" LC_ALL=C awk' \
       'ADB_PL_LINE="$line" awk' \
-      '5b the insert after a 0xFF summary succeeds under a UTF-8 locale'
+      '5s every awk the ledger runs sees the C locale'
   check_row 'record-unlocked' 'scripts/lib/pattern-ledger.sh' 's7c' \
       '  _adb_pl_lock "$ledger" || exit 20   # record-takes-lock' \
       '  :   # record-takes-lock' \
@@ -2605,7 +2695,7 @@ if [ "$MODE" = mutation ]; then
       '  if false; then' \
       '12 nothing recorded while promoted rules exist is 11'
   check_row 'rule-sweep-coverage-from-rows' 'scripts/lib/pattern-ledger.sh' 's12' \
-      '      m="$(printf '"'"'%s'"'"' "$promoted" | awk '"'"'NF { n++ } END { print n + 0 }'"'"')" ;;' \
+      '      m="$(printf '"'"'%s'"'"' "$promoted" | LC_ALL=C awk '"'"'NF { n++ } END { print n + 0 }'"'"')" ;;' \
       '      m="$n" ;;' \
       '12 ...as COVERAGE against the live checklist, not as a clean sweep'
   check_row 'rule-sweep-unswept-unnamed' 'scripts/lib/pattern-ledger.sh' 's12' \
@@ -2705,7 +2795,7 @@ if [ "$MODE" = mutation ]; then
       '    out="$(adb_rule_sweep_check "$f" "$OPT_RUN" "$OPT_TREE")"; rc=$?' \
       '12 the report validates and parses ONE snapshot — a swap mid-read is never parsed'
   check_row 'rule-sweep-writer-contradiction-published' 'scripts/lib/pattern-ledger.sh' 's12' \
-      '    if printf '"'"'%s\n'"'"' "$cur" | awk -F'"'"'\t'"'"' -v c="$OPT_RULE" -v r="$OPT_RESULT" '"'"'$1 == c && $3 != r { f = 1 } END { exit !f }'"'"'; then' \
+      '    if printf '"'"'%s\n'"'"' "$cur" | LC_ALL=C awk -F'"'"'\t'"'"' -v c="$OPT_RULE" -v r="$OPT_RESULT" '"'"'$1 == c && $3 != r { f = 1 } END { exit !f }'"'"'; then' \
       '    if false; then' \
       '12 the writer refuses to record a class as fired after recording it clean'
   check_row 'rule-sweep-writer-damaged-accepted' 'scripts/lib/pattern-ledger.sh' 's12' \
@@ -2765,8 +2855,8 @@ if [ "$MODE" = mutation ]; then
       'printf '"'"'%s'"'"' "$(( kb ))"' \
       '…and verify refuses the same byte'
   check_row 'nf-bytes-filter-failure-is-zero' 'scripts/lib/pattern-ledger.sh' 's5d' \
-      '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')" || return 1' \
-      '  kept="$(printf '"'"'%s\n'"'"' "$1" | awk '"'"'NF { print }'"'"')"' \
+      '  kept="$(printf '"'"'%s\n'"'"' "$1" | LC_ALL=C awk '"'"'NF { print }'"'"')" || return 1' \
+      '  kept="$(printf '"'"'%s\n'"'"' "$1" | LC_ALL=C awk '"'"'NF { print }'"'"')"' \
       'promote refuses (20) when the checklist region cannot be measured'
   check_row 'verify-region-read-swallowed' 'scripts/lib/pattern-ledger.sh' 's5d' \
       '|| { ckregion=""; bad=1; }' \
