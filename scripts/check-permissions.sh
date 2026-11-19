@@ -38,7 +38,7 @@ case "${1:-}" in
   *)          echo "usage: check-permissions.sh [--mutation]" >&2; exit 2 ;;
 esac
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-permissions: mktemp failed" >&2; exit 1; }
 check_exit_guard "check-permissions" "rm -rf \"$work\""
 check_init check-permissions
 

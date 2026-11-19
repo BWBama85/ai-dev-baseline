@@ -80,6 +80,14 @@ If you add a `source`, a `bash "$ROOT/…"` or a fixture read to a suite, declar
 step's `inputs` line in `scripts/selfcheck.sh` — `scripts/check-step-inputs.sh` is red until you
 do, and its header says what it cannot see for you.
 
+**Three shapes a check suite may not carry** (#458, D160). `scripts/check-suite-hygiene.sh` scans
+every `scripts/check-*.sh` and is red on: `producer | grep -q …` in a suite that sets `pipefail`
+(write `grep -q … <<< "$text"`); a `$(pwd)` capture (write `ROOT="$PWD"`); and a `mktemp -d`
+capture with no failure branch (write `work="$(mktemp -d)" || { echo "…" >&2; exit 1; }`). Its
+header lists the spellings it reads. One thing it does not follow: a helper that returns a path it
+allocated. Call such a helper as `d="$(new_repo)" || exit 1`, because a substitution cannot stop
+the suite and `git -C ""` acts on the checkout the suite runs from.
+
 `scripts/selfcheck.sh` runs its steps **concurrently** (#260): a registry dispatched through a
 `wait -n` job pool bounded at `min(cpu, 8)`, with each step's output buffered and emitted whole so
 eight steps at once never interleave. Results therefore arrive in *completion* order, and the final

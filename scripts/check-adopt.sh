@@ -69,7 +69,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 AD="$ROOT/scripts/lib/adopt-lib.sh"
 # Codex's user skill root follows CODEX_HOME; every fixture HOME must decide it, never the caller's.
 unset CODEX_HOME
@@ -2184,7 +2184,8 @@ eq "$(bash "$AD" roles-infer "$SUBSTR" | awk -F"$TAB" '$1=="gap_analysis"{print 
 # A CONTROL BYTE IN THE EVIDENCE PATH is illegal even in a TOML comment, so it is rendered escaped.
 ESCD="$WORK/esc-evidence"; mkdir -p "$ESCD/.claude/skills/x$(printf '\033')y"
 printf 'gap analysis is run by codex exec\n' > "$ESCD/.claude/skills/x$(printf '\033')y/SKILL.md"
-if bash "$AD" roles-infer "$ESCD" | bash "$AD" propose | LC_ALL=C grep -q "$(printf '\033')"; then
+esc_prop="$(bash "$AD" roles-infer "$ESCD" | bash "$AD" propose)"
+if LC_ALL=C grep -q "$(printf '\033')" <<< "$esc_prop"; then
   bad "propose: a control byte in an evidence path is escaped, never written into the TOML"
 else ok; fi
 

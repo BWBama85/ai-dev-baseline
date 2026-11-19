@@ -37,11 +37,11 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq + check_summary + check_git / check_make_repo_pair
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-baseline: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 # Every row above the release-channel section runs on `channel = "main"` — the pre-#534 behaviour,

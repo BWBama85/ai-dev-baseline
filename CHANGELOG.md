@@ -291,6 +291,23 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Fixed
 
+- **This repository's check suites no longer fail on a match they found, test a sibling checkout,
+  or write to the checkout they run from (#458).** Four defects in `scripts/check-*.sh`, fixed in
+  one sweep. (1) Under `pipefail`, `producer | grep -q` is non-zero when grep's early exit kills
+  the producer, so an assertion whose match was present reported a failure and one written
+  `if …; then bad` passed over the text it refuses; the 17 such lines in the four suites that carried
+  one under `pipefail` read a here-string now. (2) `ROOT="$(pwd)"` drops a trailing newline, so in a checkout
+  named `clone<NL>` 29 suites read the sibling `clone`; they capture `$PWD`. (3) A `mktemp -d` that
+  failed left an empty fixture path, and git leaves the directory unchanged for `-C ""`, so
+  `check-implement-lib.sh` created its fixture branches in, and wrote `user.email` into, the real
+  repository; the 43 lines that captured it unchecked now stop the suite or are the condition of an `if`, and the
+  callers of `check-implement-lib.sh`'s `new_repo` and `check-review-loop.sh`'s `fixture` stop when
+  the helper allocates nothing. (4) `check-role-dispatch.sh` read line one of a capped log for the
+  provenance header, which bash's own `child setpgid` diagnostic can precede; it reads the first
+  line that is not that diagnostic. A new static-tier lint, `scripts/check-suite-hygiene.sh`, bans
+  the first three shapes in every suite; its header lists the spellings it reads and the ones it
+  does not, and it does not follow a helper that returns a path it allocated.
+
 - **`/adopt`'s workflow check no longer reads a partial answer as clean (#535).** An unsearchable
   `.agents` folder made `.agents/skills` look absent; a project-added symlink inside a pinned skill
   was not inventoried; the classify step let a skill with no `workflows` record, or a missing or

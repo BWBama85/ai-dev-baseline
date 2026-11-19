@@ -29,8 +29,8 @@
 # joins when it adds about two seconds or less to a turn on a twenty-file branch, measured unloaded;
 # D156 carries the measurements. By that rule: the changed-file shell lint, build-drift,
 # workflow-render, practice-index, fact-drift, and since #630 tmp-paths (over the changed files
-# only), workflow-shell, claims (the committed range only), bash-floor, workflow-map,
-# skill-frontmatter and shmutant-pin. `injection` does NOT run here: it has no changed-file mode and
+# only), workflow-shell, claims (the committed range only), bash-floor, suite-hygiene (its scan
+# alone, #458), workflow-map, skill-frontmatter and shmutant-pin. `injection` does NOT run here: it has no changed-file mode and
 # measured well over the rule whole-tree, so a finding of its kind is still learned from
 # `selfcheck.sh`, where it is in the tier that runs first. Nor does `step-inputs` (#629): in its
 # registry form it measured 4.8s, over the rule (D157). `check-precommit-gate.sh` requires every
@@ -290,6 +290,8 @@ run workflow-shell  bash scripts/check-workflow-shell.sh
 # default branch with no remote.
 run "claims (commits)" bash scripts/check-claims.sh --range "${base_ref}...HEAD"
 run bash-floor      bash scripts/check-bash-floor.sh
+# The scan alone: its proof (fixtures, reverted copies, the clone<NL> probes) is the registry step.
+run suite-hygiene   bash scripts/check-suite-hygiene.sh --scan
 # Three more static lints, each asked of the runner by name so it runs exactly as its registry
 # step does (two of them exist only as functions there). One step per call, so a red one is named
 # by its own line.

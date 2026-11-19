@@ -40,7 +40,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 RL="$ROOT/scripts/lib/roadmap-lib.sh"
 WF="$ROOT/base/workflows/roadmap.md"
 # shellcheck source=/dev/null
@@ -334,7 +334,7 @@ eq "${ targets 42 "${ arr "${ pr 100 "$doc_only_body" "${ arr "${ ref 42; }"; }"
 # body that is truncated or never filtered at all reads as "no keyword here" — the exact fail-open
 # the rc>1 band exists to prevent. Driven with a stub `awk` on PATH, so the failure is REAL rather
 # than asserted: the guard is watched going red on an input that would otherwise return 0.
-sc_stub="$(mktemp -d)"
+sc_stub="$(mktemp -d)" || { echo "check-roadmap: mktemp failed" >&2; exit 1; }
 printf '#!/bin/sh\nexit 7\n' > "$sc_stub/awk"; chmod +x "$sc_stub/awk"
 eq "$(printf '%s' "${ arr "${ pr 100 "${ jb 'Closes #42'; }" '[]'; }"; }" \
        | PATH="$sc_stub:$PATH" bash "$RL" pr-targets-issue 42 "$SLUG" >/dev/null 2>&1; printf '%s' "$?")" 2 \
@@ -2177,8 +2177,7 @@ eq "${ amb "$afx"; }" "${ amb "$afx"; }" "deps-ambiguous is deterministic"
 # TEMP DIR and break the copy — never the tracked file (base/practices/self-review.md: editing a
 # tracked file to test a check that reads tracked files ends in a `git checkout -- <path>` that
 # has cost this project unsaved work).
-crashdir="$(mktemp -d "${TMPDIR:-/tmp}/rl-crash.XXXXXX")"
-if [ -d "$crashdir" ]; then
+if crashdir="$(mktemp -d "${TMPDIR:-/tmp}/rl-crash.XXXXXX")" && [ -d "$crashdir" ]; then
   cp "$ROOT/scripts/lib/common.sh" "$crashdir/common.sh"
   # A syntax error inside the awk program: the scan cannot run, so any answer it gives is a lie.
   #
@@ -2731,8 +2730,7 @@ else bad "the 2-line check must precede the split, or it validates values alread
 # ============================ the output contract (#437) ============================
 # The header's Outputs: each subcommand prints only the value its caller captures. Compared as
 # BYTES — a `$( )` capture would accept a trailing blank line or a missing newline.
-ct="$(mktemp -d)"
-if [ -n "$ct" ] && [ -d "$ct" ]; then
+if ct="$(mktemp -d)" && [ -n "$ct" ] && [ -d "$ct" ]; then
   # same_bytes <file> <printf-format> <label> [args…] — the format IS the expected bytes.
   same_bytes() {
     local f="$1" fmt="$2" l="$3"; shift 3

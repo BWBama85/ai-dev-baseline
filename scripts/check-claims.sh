@@ -123,7 +123,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 check_init "check-claims"
@@ -873,7 +873,7 @@ git diff --name-only "$RANGE" >/dev/null 2>&1 \
 # Nothing walks commits any more, so the distinction has no consumer left; recorded here rather than
 # deleted silently, because a future rule that walks commits has to re-learn it.
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d)" || { echo "check-claims: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$WORK"' EXIT
 _CC_NL=$'\n'
 

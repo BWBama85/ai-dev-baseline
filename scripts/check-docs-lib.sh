@@ -70,7 +70,7 @@ case "${1:-}" in
   *)          echo "usage: check-docs-lib.sh [--mutation]" >&2; exit 2 ;;
 esac
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-docs-lib: mktemp failed" >&2; exit 1; }
 check_exit_guard "check-docs-lib" "rm -rf \"$work\""
 check_init check-docs-lib
 

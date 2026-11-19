@@ -76,12 +76,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 CH="$ROOT/scripts/lib/ci-health.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary + check_exit_guard
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-ci-health: mktemp failed" >&2; exit 1; }
 # FAIL CLOSED unless check_summary actually ran (#213): a suite's exit status is its last command's,
 # and only check_summary consults the failure counter — so a truncating edit would print the FAIL
 # diagnostics and still exit 0, reported as passing by both selfcheck and CI.

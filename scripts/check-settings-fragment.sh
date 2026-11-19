@@ -30,7 +30,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh
 check_blocks_init "$ROOT/scripts/check-settings-fragment.sh"
@@ -40,7 +40,7 @@ MUTATION=0
 
 command -v jq >/dev/null 2>&1 || { echo "check-settings-fragment: jq is required" >&2; exit 1; }
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-settings-fragment: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 PAYLOAD="$ROOT/agents/claude/settings.fragment.json"

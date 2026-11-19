@@ -55,7 +55,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . "$ROOT/scripts/check-lib.sh"   # ok/bad/eq/has/hasnt/yes/no + check_summary + check_exit_guard
 
@@ -943,7 +943,7 @@ gate "$R" steps --json --only gated-mutation
 eq "$OUT" '["gated-mutation"]' "steps --json --only <step>: exactly that one, as a JSON array"
 gate "$R" steps
 has "$OUT" "New_guard-mutation" "steps: a harness name with an underscore and a capital — the registry's grammar — is listed, not dropped"
-printf '%s\n' "$OUT" | grep -qx -- '-mutation' && ok || bad "steps: the bare name '-mutation' the registry allows is listed, not dropped"
+grep -qx -- '-mutation' <<< "$OUT" && ok || bad "steps: the bare name '-mutation' the registry allows is listed, not dropped"
 gate "$R" steps --only no-such-mutation
 eq "$RC_" "2" "steps --only <unknown>: refused (2), so a dispatch typo fails before any job starts"
 has "$OUT" "is not a registered *-mutation step" "…and says why"
@@ -1399,7 +1399,7 @@ wf_step_text() {  # wf_step_text <file> <job-key> <ERE> — the step of that job
   for (( i = 0; i < ${#at[@]}; i++ )); do
     s="${at[i]}"
     if (( i + 1 < ${#at[@]} )); then e=$(( at[i+1] - 1 )); else e="$end"; fi
-    if sed -n "${s},${e}p" "$1" | grep -qE -- "$3"; then sed -n "${s},${e}p" "$1"; return 0; fi
+    if grep -qE -- "$3" <<< "$(sed -n "${s},${e}p" "$1")"; then sed -n "${s},${e}p" "$1"; return 0; fi
   done
   return 1
 }
@@ -1458,18 +1458,18 @@ done <<< "$runs_all"
 # each asked of THAT JOB's block, so a permission or condition elsewhere in the file cannot stand in.
 cl_job="$(wf_job_text "$CI" common-lib)"
 [ -n "$cl_job" ] && ok || bad "could not extract the common-lib job from ci.yml (the scan matched nothing)"
-printf '%s\n' "$cl_job" | grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' && ok \
+grep -qE '^        run: bash scripts/mutation-nightly-status\.sh$' <<< "$cl_job" && ok \
   || bad "the common-lib job no longer runs scripts/mutation-nightly-status.sh — the PR's line about the harnesses is gone"
 # …and the condition and the checkout id belong to THEIR STEPS, not merely to the job: a condition
 # moved onto another step leaves the reporter on the default `success()`, and an id on the wrong step
 # makes the condition read an unknown outcome. Each step is asked of `wf_step_text`.
 rep_step="$(wf_step_text "$CI" common-lib '^[[:space:]]*run: bash scripts/mutation-nightly-status\.sh$')"
-printf '%s\n' "$rep_step" | grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" && ok \
+grep -qF "        if: \${{ !cancelled() && steps.checkout.outcome == 'success' }}" <<< "$rep_step" && ok \
   || bad "the last-nightly step does not run past an earlier red step (!cancelled() and a successful checkout)"
 co_step="$(wf_step_text "$CI" common-lib '^[[:space:]]*uses: actions/checkout@')"
-printf '%s\n' "$co_step" | grep -qE '^        id: checkout$' && ok \
+grep -qE '^        id: checkout$' <<< "$co_step" && ok \
   || bad "the common-lib job's checkout carries no 'id: checkout', so the last-nightly condition reads an unknown step"
-printf '%s\n' "$cl_job" | grep -qE '^      actions: read$' && ok \
+grep -qE '^      actions: read$' <<< "$cl_job" && ok \
   || bad "the common-lib job does not grant 'actions: read', which the last-nightly line needs to list runs"
 # The list it reads is exactly the registry's set — the subcommand is the one home, asserted here.
 eq "$(bash "$ROOT/scripts/mutation-gate.sh" steps --csv | tr ',' '\n' | LC_ALL=C sort | tr '\n' ' ')" \
@@ -1512,7 +1512,7 @@ if [ -f "$NIGHTLY" ]; then
   # failure evidence and name carry it — two shards of one step would otherwise collide on the
   # artifact name (an upload-artifact v4+ error) and be indistinguishable in the run.
   run_step="$(wf_step_text "$NIGHTLY" mutation-nightly '^[[:space:]]*- name: Run the harness unconditionally$')"
-  printf '%s\n' "$run_step" | grep -qE '^          ADB_MUTATION_SHARD: \$\{\{ matrix\.shard \}\}/\$\{\{ matrix\.shards \}\}$' && ok \
+  grep -qE '^          ADB_MUTATION_SHARD: \$\{\{ matrix\.shard \}\}/\$\{\{ matrix\.shards \}\}$' <<< "$run_step" && ok \
     || bad "the harness step does not hand its job's shard to the harness (ADB_MUTATION_SHARD: \${{ matrix.shard }}/\${{ matrix.shards }})"
   grep -qE '^          name: mutation-artifacts-\$\{\{ matrix\.step \}\}-shard-\$\{\{ matrix\.shard \}\}-of-\$\{\{ matrix\.shards \}\}$' "$NIGHTLY" && ok \
     || bad "the failed-pool artifact name does not carry the shard, so two shards of one step collide"
@@ -1564,7 +1564,8 @@ if [ -f "$NIGHTLY" ]; then
   grep -qE '^[[:space:]]*matrix="\$\(bash scripts/mutation-gate\.sh steps --matrix --shards "\$SHARDS"\)" \|\| exit 1$' "$NIGHTLY" && ok \
     || bad "the plan job does not read the full matrix through 'mutation-gate.sh steps --matrix' (with a failure exit)"
   # The input reaches the shell through env, never interpolated into the script body.
-  if grep -nE '^[[:space:]]*(run:|[a-z]).*\$\{\{ *(inputs|github\.event\.inputs)\.step' "$NIGHTLY" | grep -vE '^[0-9]+:[[:space:]]*ONLY:' | grep -q .; then
+  interp="$(grep -nE '^[[:space:]]*(run:|[a-z]).*\$\{\{ *(inputs|github\.event\.inputs)\.step' "$NIGHTLY" | grep -vE '^[0-9]+:[[:space:]]*ONLY:')"
+  if [ -n "$interp" ]; then
     bad "the dispatch input is interpolated outside the plan step's env (script injection)"
   else ok; fi
   # …and so does everything else the plan's script reads: its body carries no expression at all.
@@ -1650,10 +1651,10 @@ if [ -f "$NIGHTLY" ]; then
   # What the script cannot show, because GitHub evaluates it: the history the diff needs, and the
   # base the gate is handed. Each asked of the plan job's own step.
   plan_co="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*uses: actions/checkout@')"
-  printf '%s\n' "$plan_co" | grep -qE '^          fetch-depth: 0( |$)' && ok \
+  grep -qE '^          fetch-depth: 0( |$)' <<< "$plan_co" && ok \
     || bad "the plan job's checkout does not fetch full history (fetch-depth: 0), so a labelled PR has no merge-base and every harness starts"
   plan_step="$(wf_step_text "$NIGHTLY" plan '^[[:space:]]*- name: Read the harness list from the registry$')"
-  printf '%s\n' "$plan_step" | grep -qF "          ADB_MUTATION_BASE: \${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}" && ok \
+  grep -qF "          ADB_MUTATION_BASE: \${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}" <<< "$plan_step" && ok \
     || bad "the plan step does not bind the gate's base to the labelled PR's base branch (ADB_MUTATION_BASE)"
   # THE LABEL TRIGGER (#456): `pull_request` narrowed to `labeled` alone — never
   # `pull_request_target`, never `opened`/`synchronize` — and the plan runs only for `run-mutations`.

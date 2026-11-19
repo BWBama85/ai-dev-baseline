@@ -48,7 +48,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 RL="$ROOT/.claude/skills/release/release-lib.sh"
 SKILL="$ROOT/.claude/skills/release/SKILL.md"
 DRV="$ROOT/.claude/skills/release/release.sh"
@@ -65,7 +65,7 @@ DRV="$ROOT/.claude/skills/release/release.sh"
 # counter — so a truncating edit or a stray early `exit` would print every FAIL: line and still be
 # reported as passing. Installing our own bare `trap … EXIT` for the cleanup would have replaced
 # that guard rather than joined it, which is why the cleanup is passed IN.
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-release-skill: mktemp failed" >&2; exit 1; }
 check_exit_guard "release-skill" "rm -rf \"$work\""
 
 run() { bash "$RL" "$@"; }          # stdout+stderr to caller, status preserved
@@ -489,7 +489,7 @@ esac
 #     previous-version that reads as "first release" — a wrong release, silently.
 #
 # Asserted against COMMENT-STRIPPED source so the file can explain the hazard.
-if sed 's/#.*//' "$DRV" | grep -q 'sort -V'; then
+if grep -q 'sort -V' <<< "$(sed 's/#.*//' "$DRV")"; then
   check_note "release.sh uses GNU-only 'sort -V' in live code — '-V' is not POSIX, and an"
   check_note "unsupported flag inside a command substitution is masked into an empty previous tag"
   check_fail
@@ -703,17 +703,17 @@ rm -f /tmp/adb-empty-msg.$$
 # is weaker than one that runs it; where that is what is available, the test says which kind it is.
 drv="$(cat "$DRV")"
 slug_fn="$(awk '/^slug\(\) \{/,/^\}/' "$DRV")"
-if printf '%s' "$slug_fn" | grep -q 'adb_is_path_safe_repo_slug'; then ok; else
+if grep -q 'adb_is_path_safe_repo_slug' <<< "$slug_fn"; then ok; else
   bad "release.sh slug() must validate through adb_is_path_safe_repo_slug before returning an API-supplied slug (#218)"
 fi
 # It must DELEGATE, never restate the rule: a hand-rolled charset test here would be a second copy
 # of a security predicate, which is the failure #218 exists to end.
-if printf '%s' "$slug_fn" | grep -qE '\[!A-Za-z0-9|\[\^A-Za-z0-9'; then
+if grep -qE '\[!A-Za-z0-9|\[\^A-Za-z0-9' <<< "$slug_fn"; then
   bad "release.sh slug() restates the charset rule instead of calling the shared predicate"
 else ok; fi
 # The diagnostic must be printed with printf, not echo: under `shopt -s xpg_echo`, echo decodes
 # %q's escape back into a real newline and re-forges the line the renderer just escaped.
-if printf '%s' "$slug_fn" | grep -qE '^\s*echo '; then
+if grep -qE '^\s*echo ' <<< "$slug_fn"; then
   bad "release.sh slug() prints its diagnostic with echo — xpg_echo would undo adb_display_value's escaping"
 else ok; fi
 # And EVERY consumer must check it — not just the assignments.

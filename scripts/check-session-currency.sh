@@ -38,13 +38,13 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/has/hasnt + check_summary + check_git / check_make_repo_pair
 
 command -v jq >/dev/null 2>&1 || { echo "check-session-currency: jq required" >&2; exit 1; }
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-session-currency: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 # This suite's fixture fast-forwards `main`, so it runs on `channel = "main"` — the pre-#534

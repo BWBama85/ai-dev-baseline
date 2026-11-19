@@ -41,7 +41,7 @@ cd "$(dirname "$0")/.." || exit 1
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no + check_summary + check_git / check_make_repo_pair
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-common-lib: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 # --- adb_toml_get / adb_toml_unquote ----------------------------------------
@@ -2752,7 +2752,7 @@ eq "${ mdp text 'real <!-- ` --> kept\n'; }" 'real  kept' "OVER: a backtick insi
 adb_md_prose bogus </dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown mode is rejected (2)"
 adb_md_prose text --nope </dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown option is rejected (2)"
 eq "${ printf '' | adb_md_prose text | wc -c | tr -d ' '; }" 0 "empty input is empty output, not an error"
-mdstub="$(mktemp -d)"
+mdstub="$(mktemp -d)" || { echo "check-common-lib: mktemp failed" >&2; exit 1; }
 printf '#!/bin/sh\nprintf "half\\n"\nexit 0\n' > "$mdstub/awk"; chmod +x "$mdstub/awk"
 ( PATH="$mdstub:$PATH"; printf 'x\n' | adb_md_prose text >/dev/null 2>&1 ); eq "$?" 1 \
    "a TRUNCATED run (exit 0, no completion marker) is a FAILURE, not a short clean result"
@@ -2777,7 +2777,7 @@ rm -rf "$mdstub"
 # behaves; a record this reader stops emitting is invisible to a consumer that never wanted it, and
 # that asymmetry is exactly how the two scanners drifted in the first place.
 
-wfd="$(mktemp -d)"
+wfd="$(mktemp -d)" || { echo "check-common-lib: mktemp failed" >&2; exit 1; }
 # wf <name> — records for a fixture, tabs rendered as `|` so a whole record is one eq assertion.
 wf()  { adb_wf_jobs "$wfd/$1" | tr '\t' '|' | tr '\n' ' '; }
 wfon(){ adb_wf_on   "$wfd/$1" | tr '\t' '|' | tr '\n' ' '; }
@@ -2963,7 +2963,7 @@ has "${ wf crlf.yml; }" "RUNSON|1|ubuntu-26.04" "a CRLF workflow yields clean sc
 adb_wf_jobs >/dev/null 2>&1;            eq "$?" 1 "no argument is a failure, not an empty scan"
 adb_wf_jobs /nonexistent >/dev/null 2>&1; eq "$?" 1 "an unreadable file is a failure, not an empty scan"
 _adb_wf_read bogus /dev/null >/dev/null 2>&1; eq "$?" 2 "an unknown mode is rejected (2)"
-wfstub="$(mktemp -d)"
+wfstub="$(mktemp -d)" || { echo "check-common-lib: mktemp failed" >&2; exit 1; }
 printf '#!/bin/sh\nprintf "JOB\\t1\\ta\\n"\nexit 0\n' > "$wfstub/awk"; chmod +x "$wfstub/awk"
 ( PATH="$wfstub:$PATH"; adb_wf_jobs "$wfd/two.yml" >/dev/null 2>&1 ); eq "$?" 1 \
    "a TRUNCATED run (exit 0, plausible records, no completion marker) is a FAILURE"
@@ -3529,7 +3529,7 @@ eq "$(adb_release_label "$lbr")" "v1.0.1+4 ($(git -C "$lbr" rev-parse --short HE
 # Runs against a COPY of the tree, never the live one (`self-review.md`'s negative-testing rule).
 if [ "${1:-}" = "--mutation" ]; then
   mut_pass=0; mut_fail=0
-  mut_root="$(mktemp -d)"
+  mut_root="$(mktemp -d)" || { echo "check-common-lib --mutation: mktemp failed" >&2; exit 1; }
   trap 'rm -rf "$work" "$mut_root"' EXIT
   check_copy_worktree "$PWD" "$mut_root/t" || { echo "check-common-lib --mutation: could not copy the tree" >&2; exit 1; }
   mut_lib="$mut_root/t/scripts/lib/common.sh"

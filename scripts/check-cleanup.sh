@@ -51,7 +51,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 CL="$ROOT/scripts/lib/cleanup-lib.sh"
 WF="$ROOT/base/workflows/cleanup.md"
 # shellcheck source=/dev/null
@@ -3301,7 +3301,7 @@ has "${ mr_line; }" 'artifacts kept for a run in flight' \
 # artifacts as it walks — so an admission landing mid-walk yields "no run" verdicts beside a live
 # run's identities. The workflow re-asks THIS question after every identity is captured, so the
 # answer must be a live read of the directory, fail-closed toward "live".
-RL_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-runlive.XXXXXX")"
+RL_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-runlive.XXXXXX")" || { echo "check-cleanup: mktemp failed" >&2; exit 1; }
 bash "$CL" run-live "$RL_D" >/dev/null 2>&1
 eq "$?" "10" "14 an empty state dir is not a live run (10)"
 : > "$RL_D/gap-analysis.lock"
@@ -3337,7 +3337,7 @@ if grep -q 'liveness re-probe failed' "$ROOT/base/workflows/cleanup.md" \
 # ================= 15. file-size: the sweep's bounded size read (#435) ==========================
 # The report loop reads agent-written error files; a parent-shell `wc -c <` redirect could be
 # blocked forever by a FIFO swapped in after the scan.
-FS_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-fsize.XXXXXX")"
+FS_D="$(mktemp -d "${TMPDIR:-/tmp}/adb-fsize.XXXXXX")" || { echo "check-cleanup: mktemp failed" >&2; exit 1; }
 printf 'hello\n' > "$FS_D/f"
 eq "$(bash "$CL" file-size "$FS_D/f" 2>/dev/null)" "6" "15 a regular file sizes to its bytes"
 bash "$CL" file-size "$FS_D/absent" >/dev/null 2>&1

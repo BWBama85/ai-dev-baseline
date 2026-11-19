@@ -64,7 +64,7 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # The workflows rung walks Codex's user skill root, which follows CODEX_HOME: a fixture HOME decides
 # it, never the caller's.
 unset CODEX_HOME

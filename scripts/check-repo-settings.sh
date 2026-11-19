@@ -49,12 +49,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 RS="$ROOT/scripts/lib/repo-settings.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-repo-settings: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 # rsx <args...> : run the helper with the REAL PATH — for the paths that refuse before any gh

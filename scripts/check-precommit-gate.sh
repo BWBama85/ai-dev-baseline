@@ -35,11 +35,11 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq + check_summary + check_git
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-precommit-gate: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 # A red gate fixture KEEPS its log directory under $TMPDIR (D133); this keeps every one in $work.
 export TMPDIR="$work/tmp"
@@ -689,9 +689,9 @@ export SCSTUB_STATE="$work/scstate"
 # Each is the right instrument for what it measures (the HAND-OFF), and none of them is this
 # repository's gate. So the fast subset D25 actually ships — changed-file shellcheck, build-drift,
 # workflow-render, practice-index, fact-drift, and since #630 tmp-paths over the changed files,
-# workflow-shell, claims, bash-floor, workflow-map, skill-frontmatter and shmutant-pin — had no
-# fixture at all: the gate that runs at the end
-# of EVERY turn in this repo could regress and nothing here would notice.
+# workflow-shell, claims, bash-floor, suite-hygiene, workflow-map, skill-frontmatter and
+# shmutant-pin — had no fixture at all: the gate that runs at the end of EVERY turn in this repo
+# could regress and nothing here would notice.
 #
 # THE REAL SCRIPT, NOT A STUB, AND REAL CHECKS, NOT STUBBED ONES. The fixture is a throwaway COPY
 # of this worktree re-`git init`ed as `main`, so `.claude/scripts/precommit-gate.sh` resolves its
@@ -793,6 +793,7 @@ if fx_setup; then
   has "$POUT" "workflow-shell   PASS"    "project gate: workflow-shell actually RAN and passed"
   has "$POUT" "claims (commits) PASS"    "project gate: claims actually RAN and passed, and its line says what it covered"
   has "$POUT" "bash-floor       PASS"    "project gate: bash-floor actually RAN and passed"
+  has "$POUT" "suite-hygiene    PASS"    "project gate: suite-hygiene actually RAN and passed"
   has "$POUT" "workflow-map     PASS"    "project gate: workflow-map actually RAN and passed"
   has "$POUT" "skill-frontmatter PASS"   "project gate: skill-frontmatter actually RAN and passed"
   has "$POUT" "shmutant-pin     PASS"    "project gate: shmutant-pin actually RAN and passed"

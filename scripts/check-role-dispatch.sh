@@ -36,12 +36,12 @@ command -v adb_require_bash >/dev/null 2>&1 || {
 adb_require_bash "$@"
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ROOT="$(pwd)"
+ROOT="$PWD"
 RD="$ROOT/scripts/lib/role-dispatch.sh"
 # shellcheck source=/dev/null
 . scripts/check-lib.sh   # ok/bad/eq/yes/no/has/hasnt + check_summary
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || { echo "check-role-dispatch: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$work"' EXIT
 
 REPO="$work/repo"; GHOME="$work/home"; BIN="$work/bin"
@@ -811,6 +811,8 @@ cat > "$BIN/codex" <<'EOF'
 last=""
 while [ "$#" -gt 0 ]; do [ "$1" = "--output-last-message" ] && { last="$2"; shift; }; shift; done
 cat >/dev/null
+[ -n "${RD_SETPGID_FIRST:-}" ] && printf '/x/scripts/lib/common.sh: child setpgid (4242 to 4242): Operation not permitted\n'
+[ -n "${RD_NOISE_FIRST:-}" ] && printf 'some-other-line-ahead-of-the-header\n'
 printf 'FIRSTLINE-provenance-header\n'
 printf 'SECONDLINE-model-and-effort\n'
 printf 'NULBEFORE\000NULAFTER\n'            # a NUL mid-stream: BSD awk treated it as end-of-string
@@ -821,10 +823,37 @@ printf 'TAILMARKER-must-not-survive-a-head-cap\n'
 exit 0
 EOF
 chmod +x "$BIN/codex"
-printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=120 bash "$RD" invoke gap_analysis \
+# first_substantive <file> — the first line that is not bash's own job-control diagnostic. The
+# bounded runner launches its child under `set -m`; when bash's `setpgid` on that child loses a
+# race with it, bash says so on this same stderr, AHEAD of the agent's first byte, so the header
+# is then line two. Only a line that is that diagnostic from end to end is skipped —
+# `<script>: child setpgid (<pid> to <pgid>): <errno text>` — and only while it leads the stream.
+first_substantive() { awk '!/^.+: child setpgid \([0-9]+ to [0-9]+\): [^:]+$/{ print; exit }' "$1"; }
+# The cap is 2048 bytes because the diagnostic goes through it too: one such line must not use the
+# whole budget and leave no header to find. The stream is ~116 KiB, so the tail is still dropped.
+printf 'x' | rd_env ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
   >/dev/null 2>"$work/prefix.err"
-has   "$(head -1 "$work/prefix.err")" "FIRSTLINE-provenance-header" "the cap keeps the HEAD of the stream (the provenance header)"
+has   "$(first_substantive "$work/prefix.err")" "FIRSTLINE-provenance-header" "the cap keeps the HEAD of the stream (the provenance header)"
 hasnt "$(cat  "$work/prefix.err")"    "TAILMARKER"                  "...and drops the tail, which is what a head cap means"
+# OBSERVED DISCRIMINATING, on the real dispatch. With the diagnostic injected ahead of the header,
+# line one is not the header and the first substantive line still is. Neither assertion names a
+# line NUMBER for the injected diagnostic: a real one can precede it, which is the condition
+# under test.
+printf 'x' | rd_env RD_SETPGID_FIRST=1 ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/prefix-pgid.err"
+has   "$(awk '/FIRSTLINE-provenance-header/{ exit } { print }' "$work/prefix-pgid.err")" "child setpgid (4242 to 4242)" "the injected setpgid diagnostic is in the capped stream, ahead of the header"
+hasnt "$(head -1 "$work/prefix-pgid.err")" "FIRSTLINE-provenance-header" "...so line one is not the header"
+has   "$(first_substantive "$work/prefix-pgid.err")" "FIRSTLINE-provenance-header" "...and the header is still the first substantive line behind it"
+hasnt "$(tr -d '\000' < "$work/prefix-pgid.err")" "TAILMARKER" "...with the tail still dropped"
+# ...while any OTHER line ahead of the header is not skipped: a displaced header stays a failure.
+printf 'x' | rd_env RD_NOISE_FIRST=1 ADB_DISPATCH_LOG_MAX_BYTES=2048 bash "$RD" invoke gap_analysis \
+  >/dev/null 2>"$work/prefix-noise.err"
+hasnt "$(first_substantive "$work/prefix-noise.err")" "FIRSTLINE-provenance-header" "a line that is not the setpgid diagnostic is not skipped, so it displaces the header"
+# …and neither is a line that merely CONTAINS the diagnostic's text.
+printf '%s\n' 'unrelated output: child setpgid (1 to 1): then more: and more' 'FIRSTLINE-provenance-header' > "$work/prefix-embedded.err"
+hasnt "$(first_substantive "$work/prefix-embedded.err")" "FIRSTLINE-provenance-header" "a line that only contains the diagnostic's text is not skipped"
+printf '%s\n' '/x/common.sh: child setpgid (7 to 7): Operation not permitted' 'FIRSTLINE-provenance-header' > "$work/prefix-exact.err"
+has   "$(first_substantive "$work/prefix-exact.err")" "FIRSTLINE-provenance-header" "…while the diagnostic itself is"
 # A NUL must not silently end the stream. BSD awk treats it as a string terminator, so before
 # `tr -d` this dropped everything after it AND emitted no notice — a truncated log indistinguishable
 # from a complete one, on macOS only. The bytes AROUND the NUL must still come through.
@@ -1022,7 +1051,7 @@ chmod +x "$BIN/codex"
 for _line in 'touch: out.txt: Operation not permitted (os error 1)' \
              'Error: failed to write final message: Operation not permitted (os error 1)'; do
   printf 'x' | rd_env CODEX_LINE="$_line" bash "$RD" invoke gap_analysis >/dev/null 2>"$work/ctool.err"
-  eq "$(head -1 "$work/ctool.err")" "$_line" "fixture: the stub printed its line"
+  eq "$(first_substantive "$work/ctool.err")" "$_line" "fixture: the stub printed its line"
   has "$(grep 'gap_analysis (codex) —' "$work/ctool.err")" "a real agent/CLI error" "not codex's start-up denial: $_line"
 done
 
