@@ -1645,10 +1645,14 @@ eq "$(grep -c 'review-loop summary --pr' "$RW")" 1 "11 …and nowhere else, so n
 hasnt "$(cat "$RW")" "SUMMARY_EMITTED" "11 …with no printed-already flag for a later round to inherit"
 grep -q '"until-clean"' "$ROOT/templates/agents.toml" && ok || bad "11 the template documents until-clean"
 
-# The calling convention `fixture`'s comment states, held: a statement that captures it (or opfix,
-# which wraps it) and drops the check would carry an empty path into `script` and `rl`.
-eq "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\((fixture|opfix)\)"' "$ROOT/scripts/check-review-loop.sh")" \
-   "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\((fixture|opfix)\)" \|\| exit 1' "$ROOT/scripts/check-review-loop.sh")" \
-   "every statement that captures a fixture stops the suite when the helper allocates nothing"
+# The calling convention `fixture`'s comment states, held: a capture of it (or of opfix, which
+# wraps it) that drops the check would carry an empty path into `script` and `rl`. Counted by
+# OCCURRENCE, so a capture later on its line is counted too; the helper names are spelled in two
+# pieces, or these lines would be captures they count.
+rl_calls() { grep -oF -- "$1" "$ROOT/scripts/check-review-loop.sh" | wc -l | tr -d ' '; }
+for _h in 'fix''ture' 'op''fix'; do
+  eq "$(rl_calls "=\"\$($_h)\"")" "$(( $(rl_calls "=\"\$($_h)\" || exit 1") + $(rl_calls "=\"\$($_h)\" || return 1") ))" \
+     "every capture of $_h stops the suite, or its caller, when the helper allocates nothing"
+done
 
 check_summary check-review-loop

@@ -295,8 +295,8 @@ only by a release it upgrades to. These entries are the notes for both.
   or write to the checkout they run from (#458).** Four defects in `scripts/check-*.sh`, fixed in
   one sweep. (1) Under `pipefail`, `producer | grep -q` is non-zero when grep's early exit kills
   the producer, so an assertion whose match was present reported a failure and one written
-  `if …; then bad` passed over the text it refuses; the 16 such lines in the three suites that set
-  `pipefail` read a here-string now. (2) `ROOT="$(pwd)"` drops a trailing newline, so in a checkout
+  `if …; then bad` passed over the text it refuses; the 17 such lines in the four suites that carried
+  one under `pipefail` read a here-string now. (2) `ROOT="$(pwd)"` drops a trailing newline, so in a checkout
   named `clone<NL>` 29 suites read the sibling `clone`; they capture `$PWD`. (3) A `mktemp -d` that
   failed left an empty fixture path, and git leaves the directory unchanged for `-C ""`, so
   `check-implement-lib.sh` created its fixture branches in, and wrote `user.email` into, the real

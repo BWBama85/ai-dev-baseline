@@ -4172,13 +4172,16 @@ cp "$ROOT/scripts/check-implement-lib.sh" "$ROOT/scripts/check-lib.sh" "$AF_HOST
   && check_git "$AF_HOST" commit -qm host >/dev/null 2>&1 \
   || bad "55 fixture: could not build the throwaway host repository"
 cp "$AF_HOST/scripts/check-implement-lib.sh" "$work/af-pristine.sh"
-# AF_FAIL=all fails every allocation; AF_FAIL=nested fails only new_repo's (`…/r.XXXXXX`).
+# AF_FAIL=all fails every allocation; AF_FAIL=nested fails only new_repo's (`…/r.XXXXXX`);
+# AF_FAIL=readonly fails nothing itself: it makes the suite's scratch root unwritable just before
+# new_repo's allocation, so the real mktemp is what fails.
 AF_REAL="$(command -v mktemp)"
 cat > "$AF_BIN/mktemp" <<SH
 #!/bin/sh
 case "\${AF_FAIL:-}" in
   all) echo "mktemp: stubbed failure" >&2; exit 1 ;;
   nested) for a in "\$@"; do case "\$a" in */r.XXXXXX) echo "mktemp: stubbed failure" >&2; exit 1 ;; esac; done ;;
+  readonly) for a in "\$@"; do case "\$a" in */r.XXXXXX) chmod 555 "\${a%/*}" ;; esac; done ;;
 esac
 exec "$AF_REAL" "\$@"
 SH
@@ -4197,9 +4200,12 @@ af_run() {
 }
 # The two calling conventions the helpers' comments state, held: a caller that drops the check, or
 # calls remote_pair inside `$( )`, would carry an empty path on.
-eq "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\(new_repo\)"' "$work/af-pristine.sh")" \
-   "$(grep -cE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*="\$\(new_repo\)" \|\| exit 1' "$work/af-pristine.sh")" \
-   "55 every statement that captures new_repo stops the suite when the helper allocates nothing"
+# Counted by OCCURRENCE, so a capture later on its line (`:; d=…`) is counted too. The needle is
+# spelled in two pieces, or this line would be one of the captures it counts.
+AF_NR='="$(new_''repo)"'
+af_count() { grep -oF -- "$1" "$work/af-pristine.sh" | wc -l | tr -d ' '; }
+eq "$(af_count "$AF_NR")" "$(af_count "$AF_NR || exit 1")" \
+   "55 every capture of new_repo stops the suite when the helper allocates nothing"
 eq "$(grep -cE '\$\(remote_pair\)' "$work/af-pristine.sh")" "0" "55 remote_pair is never called inside a \$( ) substitution, where its exit could not end the suite"
 af_run all
 no "$AF_RC" "55 the suite exits non-zero when its scratch root cannot be created"
@@ -4212,10 +4218,18 @@ has "$AF_OUT" "new_repo: mktemp failed" "55 …naming new_repo"
 eq "$AF_AFTER" "$AF_BEFORE" "55 …and the host repository gains no ref, no config and no file"
 # OBSERVED FAILING: each half of the fix removed in turn, and the host is written. The copy is cut
 # after its first branch-creating caller, since code without the fix runs the rest of the suite
-# against the host too. Not as root, where an empty fixture path is also a write to `/`.
+# against the host too. Not as root, where an empty fixture path is also a write to `/` and a
+# read-only directory stops nothing.
 if [ "$(id -u)" -eq 0 ]; then
-  printf 'SKIP: 55 the unfixed-code controls write to / as root\n'
+  printf 'SKIP: 55 the unwritable-scratch case and the unfixed-code controls cannot run as root\n'
 else
+  # A scratch root that really is unwritable: no stubbed failure, the filesystem refuses. (The
+  # startup case stays stubbed: a template-less `mktemp -d` ignores TMPDIR on macOS.)
+  af_run readonly
+  no "$AF_RC" "55 the suite exits non-zero when its scratch root is unwritable"
+  has "$AF_OUT" "new_repo: mktemp failed" "55 …at new_repo, whose real allocation failed"
+  hasnt "$AF_OUT" "stubbed failure" "55 …with no stubbed failure in the run"
+  eq "$AF_AFTER" "$AF_BEFORE" "55 …and the host repository gains no ref, no config and no file"
   AF_CUT="$(grep -n -m1 -F 'git -C "$d" branch issue-99-live' "$work/af-pristine.sh")"; AF_CUT="${AF_CUT%%:*}"
   case "$AF_CUT" in ''|*[!0-9]*) bad "55 control: the first branch-creating caller was not found in this suite"; AF_CUT=0 ;; esac
   # af_mutant <label> <sed-script> <literal the script must remove> <witness in the host afterwards>
@@ -4234,7 +4248,7 @@ else
     rm -rf "$AF_HOST/.claude"
   }
   if [ "$AF_CUT" -gt 0 ]; then
-    af_mutant "callers that do not check new_repo" 's/="\$(new_repo)" || exit 1/="$(new_repo)"/' \
+    af_mutant "callers that do not check new_repo" "s/=\"\\\$(new_repo)\" || exit 1/=\"\$(new_repo)\"/" \
       '"$(new_repo)" || exit 1' "refs/heads/issue-99-live"
     af_mutant "a new_repo that does not refuse" 's/^  d="\$(mktemp -d "\$work\/r\.XXXXXX")" && \[ -n "\$d" \] && \[ -d "\$d" \] || {$/  d="$(mktemp -d "$work\/r.XXXXXX")"; : || {/' \
       '[ -n "$d" ] && [ -d "$d" ] || {' "user.email=t@example.com"
