@@ -396,18 +396,34 @@ refused "a 0x01 byte in --site is refused"        19 --class guard-class --site 
 # locale awk's `[[:cntrl:]]` also matches U+0085, and the BSD awk aborts on a byte that is not
 # valid UTF-8, so a reader in the caller's locale refused what the writer had just written.
 #
-# FIRST THE MECHANISM, ON EVERY HOST: a stub `awk` that refuses to run outside the C locale, ahead
-# of the real one on PATH, under a caller whose locale is UTF-8. Whether a REAL awk misreads these
-# bytes differs by implementation (mawk keeps 0xFF, the BSD awk aborts), so only this proves the
-# awk calls of pattern-ledger.sh run in C wherever the suite runs.
-_awkreal="$(command -v awk)"
+# FIRST THE MECHANISM, ON EVERY HOST, IN TWO HALVES. Whether a REAL awk misreads these bytes
+# differs by implementation (mawk keeps 0xFF, the BSD awk aborts), so neither half relies on one.
+# (a) THE SOURCE: every awk command in pattern-ledger.sh is spelled `LC_ALL=C awk`. A scan, so it
+#     covers paths no fixture reaches.
+_unpinned="$(LC_ALL=C grep -nE '(^|[^A-Za-z0-9_.=/-])awk([[:space:]]|$)' "$PL" | LC_ALL=C grep -vE '^[0-9]+:[[:space:]]*#' \
+  | LC_ALL=C grep -vF 'LC_ALL=C awk')"
+eq "$_unpinned" "" "5s every awk command in pattern-ledger.sh is spelled LC_ALL=C awk"
+# (b) THE RUN: a stub `awk` ahead of the real one on PATH logs the locale of every call and refuses
+#     any but C, under a caller whose locale is UTF-8. It drives record, due, promote, classes,
+#     stats (with and without --pr), checklist, verify, threshold, reclaim, rule-sweep and
+#     rule-sweep-report. NOT driven: `record --sweep`, and the threshold read from agents.toml,
+#     whose awk is common.sh's TOML reader (manifest text, not ledger text) — so every reader that
+#     takes one is given --threshold.
+_awkreal="$(command -v awk)" || _awkreal=""
+case "$_awkreal" in /*) ;; *) bad "5s fixture: no real awk on PATH to stand behind the stub" ;; esac
 _awkstub="$work/awkstub"
-mkdir "$_awkstub" || { echo "check-pattern-ledger: could not make the awk stub directory" >&2; exit 1; }
-printf '#!/bin/sh\ncase "${LC_ALL-}" in C) ;; *) printf "stub-awk: LC_ALL=%%s\\n" "${LC_ALL-unset}" >>"%s/log"; exit 97 ;; esac\nexec "%s" "$@"\n' \
-  "$_awkstub" "$_awkreal" > "$_awkstub/awk"
-chmod +x "$_awkstub/awk"
+check_write_stub "$_awkstub/awk" <<'STUB' || bad "5s fixture: could not write the awk stub"
+#!/bin/sh
+printf 'LC_ALL=%s\n' "${LC_ALL-unset}" >> "$ADB_TEST_AWK_LOG" || exit 98
+[ "${LC_ALL-}" = C ] || exit 97
+exec "$ADB_TEST_AWK_REAL" "$@"
+STUB
 L5s="$work/l5s.md"
-_s5s() { PATH="$_awkstub:$PATH" LC_ALL="${U8:-C.UTF-8}" bash "$PL" "$@" --ledger "$L5s" 2>/dev/null; }
+ST5s="$work/st5s"
+mkdir "$ST5s" || { echo "check-pattern-ledger: could not make the stub state directory" >&2; exit 1; }
+_s5env() { PATH="$_awkstub:$PATH" LC_ALL="${U8:-C.UTF-8}" ADB_TEST_AWK_LOG="$_awkstub/log" \
+             ADB_TEST_AWK_REAL="$_awkreal" bash "$PL" "$@" 2>/dev/null; }
+_s5s() { _s5env "$@" --ledger "$L5s"; }
 _s5rc=""
 for _i in 1 2; do
   _s5s record --class stub-class --site "s$_i.sh" --fix ddd4444 --pr 1 --thread "T-s$_i" \
@@ -416,15 +432,21 @@ done
 _s5s due --threshold 2 >/dev/null; _s5rc="${_s5rc}due:$? "
 _s5s promote --class stub-class --rule 'sweep it' --threshold 2 >/dev/null; _s5rc="${_s5rc}promote:$? "
 _s5s classes >/dev/null; _s5rc="${_s5rc}classes:$? "
-# `--threshold` on every reader that takes one: otherwise the threshold is read from agents.toml by
-# common.sh's TOML reader, whose awk is that library's and is not ledger text.
 _s5s stats --threshold 2 >/dev/null; _s5rc="${_s5rc}stats:$? "
-for _sub in checklist verify; do
+_s5s stats --threshold 2 --pr 1 >/dev/null; _s5rc="${_s5rc}stats-pr:$? "
+for _sub in checklist verify reclaim; do
   _s5s "$_sub" >/dev/null; _s5rc="${_s5rc}${_sub}:$? "
 done
-eq "$_s5rc" "record:0 record:0 due:0 promote:0 classes:0 stats:0 checklist:0 verify:0 " \
-   "5s every subcommand runs under a stub awk that refuses any locale but C"
-eq "$(cat "$_awkstub/log" 2>/dev/null)" "" "5s every awk the ledger runs sees the C locale"
+_s5s threshold --threshold 2 >/dev/null; _s5rc="${_s5rc}threshold:$? "
+_s5run="2026-09-24T03:34:07Z"; _s5tree="$(printf 'b%.0s' $(seq 1 64))"
+_s5env rule-sweep --state "$ST5s" --run "$_s5run" --tree "$_s5tree" --rule stub-class --result clean >/dev/null
+_s5rc="${_s5rc}rule-sweep:$? "
+_s5s rule-sweep-report --state "$ST5s" --run "$_s5run" --tree "$_s5tree" >/dev/null; _s5rc="${_s5rc}rule-sweep-report:$? "
+eq "$_s5rc" "record:0 record:0 due:0 promote:0 classes:0 stats:0 stats-pr:0 checklist:0 verify:0 reclaim:0 threshold:0 rule-sweep:0 rule-sweep-report:0 " \
+   "5s the driven subcommands run under a stub awk that refuses any locale but C"
+_s5calls="$(LC_ALL=C grep -c '' "$_awkstub/log" 2>/dev/null)" || _s5calls=0
+[ "${_s5calls:-0}" -gt 0 ] && ok || bad "5s fixture: the awk stub never ran — the locale check asserted NOTHING"
+eq "$(LC_ALL=C grep -vc '^LC_ALL=C$' "$_awkstub/log" 2>/dev/null)" 0 "5s every awk the ledger runs sees the C locale"
 
 # THEN THE REAL BYTES, through the host's own awk.
 if [ -z "$U8" ]; then
@@ -858,7 +880,7 @@ _ck_before="$(cksum < "$work/l7b-badck.md")"
 bash "$PL" record --ledger "$work/l7b-badck.md" --class other --site s.sh --fix abc1234 \
   --pr 1 --thread T-new-one >/dev/null 2>&1
 eq "$?" 18 "record refuses a ledger whose CHECKLIST region is damaged, not just its hits"
-# BEFORE appending, not after: the read-back would also answer 18, with the row already written.
+# NOTHING WRITTEN: `_adb_pl_insert` validates the staged result, checklist included, before the rename.
 eq "$(cksum < "$work/l7b-badck.md")" "$_ck_before" "record leaves a ledger with a damaged CHECKLIST unchanged"
 fi
 
@@ -955,36 +977,76 @@ hasnt "$out" "recorded lostc" "…and never reports it as recorded"
 # does not stand in for a lost `01`.
 L7n="$work/l7n.md"
 bash "$PL" record --ledger "$L7n" --class seed-n --site s.sh --fix abc1231 --pr 1 --thread 1 >/dev/null 2>&1
+eq "$?" 0 "fixture: thread 1 is recorded before the numeric lost-row check"
+eq "$(LC_ALL=C grep -c '^- `seed-n` `s.sh` `abc1231` `1` ' "$L7n")" 1 "fixture: thread 1 is in the ledger"
 bash "$_lost/pl2.sh" record --ledger "$L7n" --class lostc --site s.sh --fix abc1232 --pr 1 --thread 01 >/dev/null 2>&1
 eq "$?" 21 "a lost row is told even when a numerically equal thread is present"
-# A LEDGER THAT NO LONGER PARSES AFTER THE INSERT IS 18, NOT A LOST ROW (#522): the copy's insert
-# writes a malformed line where the record belongs.
-sed 's/l == e \&\& !done { print ENVIRON\["ADB_PL_LINE"\]; done = 1 }/l == e \&\& !done { print "- malformed"; done = 1 }/' "$_lost/pl.sh" > "$_lost/pl3.sh"
-if cmp -s "$_lost/pl.sh" "$_lost/pl3.sh"; then bad "fixture: the malformed-insert injection did not apply"; fi
+# …and when a row with this thread lands with ANOTHER class: the read-back checks the whole record.
+cp "$_lost/pl.sh" "$_lost/pl6.sh"
+check_mutate_literal "$_lost/pl6.sh" 'print ENVIRON["ADB_PL_LINE"]; done = 1' \
+  'r = ENVIRON["ADB_PL_LINE"]; sub(/^- `[^`]*`/, "- `other-class`", r); print r; done = 1' \
+  || bad "fixture: the wrong-class injection did not apply"
+L7r="$work/l7r.md"
+bash "$PL" record --ledger "$L7r" --class seed-r --site s.sh --fix abc1231 --pr 1 --thread R0 >/dev/null 2>&1
+bash "$_lost/pl6.sh" record --ledger "$L7r" --class lostc --site s.sh --fix abc1232 --pr 1 --thread R1 >/dev/null 2>&1
+eq "$?" 21 "a row that lands with another class is a lost row, not the one recorded"
+
+# A STAGE THAT WOULD NOT PARSE IS NEVER PUBLISHED (#522): the copy's insert writes a malformed line
+# where the record belongs. The answer is 18 and the ledger is byte-for-byte what it was.
+cp "$_lost/pl.sh" "$_lost/pl3.sh"
+check_mutate_literal "$_lost/pl3.sh" 'print ENVIRON["ADB_PL_LINE"]; done = 1' 'print "- malformed"; done = 1' \
+  || bad "fixture: the malformed-insert injection did not apply"
+_before="$(cksum < "$L7f")"
 out="$(bash "$_lost/pl3.sh" record --ledger "$L7f" --class lostc --site s.sh --fix abc1233 --pr 1 --thread BADP1 2>&1)"; rc=$?
-eq "$rc" 18 "a ledger that does not parse after the insert exits 18, not the lost-row 21"
-has "$out" "does not parse after the insert of thread BADP1" "…and says the ledger does not parse"
+eq "$rc" 18 "an insert whose result would not parse exits 18, not the lost-row 21"
+eq "$(cksum < "$L7f")" "$_before" "a stage that would not parse is discarded: the ledger is unchanged"
+has "$out" "would leave $L7f unparseable" "…and says so"
 hasnt "$out" "overwritten" "…and never blames a concurrent writer"
-# …and the same when the insert leaves the hits whole but damages the CHECKLIST: the read-back
-# checks both regions, as the pre-insert read does.
-sed 's/l == e \&\& !done { print ENVIRON/l == "<!-- adb:checklist:end -->" { print "- damaged" } l == e \&\& !done { print ENVIRON/' "$_lost/pl.sh" > "$_lost/pl4.sh"
-if cmp -s "$_lost/pl.sh" "$_lost/pl4.sh"; then bad "fixture: the checklist-damage injection did not apply"; fi
+# …and the same for a stage that keeps the hits whole and damages the CHECKLIST.
+cp "$_lost/pl.sh" "$_lost/pl4.sh"
+check_mutate_literal "$_lost/pl4.sh" 'l == e && !done { print ENVIRON' \
+  'l == "<!-- adb:checklist:end -->" { print "- damaged" } l == e && !done { print ENVIRON' \
+  || bad "fixture: the checklist-damage injection did not apply"
 L7h="$work/l7h.md"
 bash "$PL" record --ledger "$L7h" --class seed-h --site s.sh --fix abc1231 --pr 1 --thread H0 >/dev/null 2>&1
 bash "$PL" verify --ledger "$L7h" >/dev/null 2>&1 || bad "fixture: the checklist-damage ledger does not parse before the insert"
-out="$(bash "$_lost/pl4.sh" record --ledger "$L7h" --class lostc --site s.sh --fix abc1234 --pr 1 --thread BADC1 2>&1)"; rc=$?
-eq "$rc" 18 "a checklist damaged by the insert exits 18, not recorded"
-has "$out" "does not parse after the insert of thread BADC1" "…and says the ledger does not parse"
+_before="$(cksum < "$L7h")"
+bash "$_lost/pl4.sh" record --ledger "$L7h" --class lostc --site s.sh --fix abc1234 --pr 1 --thread BADC1 >/dev/null 2>&1
+eq "$?" 18 "an insert that would damage the checklist exits 18"
+eq "$(cksum < "$L7h")" "$_before" "a stage that would damage the checklist is discarded: the ledger is unchanged"
+
+# A PUBLISHED LEDGER THAT NO LONGER PARSES IS 18 TOO, never a lost row: the copy damages the
+# checklist region right after its rename, while the lock is still held.
+cp "$_lost/pl.sh" "$_lost/pl7.sh"
+check_mutate_literal "$_lost/pl7.sh" '  mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }' \
+  '  mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }; echo "<!-- adb:checklist:end -->" >> "$file"' \
+  || bad "fixture: the post-publish damage injection did not apply"
+L7p="$work/l7p.md"
+bash "$PL" record --ledger "$L7p" --class seed-p --site s.sh --fix abc1231 --pr 1 --thread P0 >/dev/null 2>&1
+out="$(bash "$_lost/pl7.sh" record --ledger "$L7p" --class lostc --site s.sh --fix abc1233 --pr 1 --thread BADQ1 2>&1)"; rc=$?
+eq "$rc" 18 "a ledger damaged after its insert is published exits 18, not the lost-row 21"
+has "$out" "does not parse after the insert of thread BADQ1" "…and says the ledger does not parse"
 hasnt "$out" "recorded lostc" "…and never reports the row as recorded"
-# A READ-BACK LOOKUP THAT COULD NOT RUN IS 20, never a lost row: nothing showed the row absent.
+
+# A SEARCH THAT COULD NOT RUN IS 20, never an answer. After the insert the row may be there; before
+# it, nothing may be appended — read as "not recorded yet", a failed search appended a duplicate.
 cp "$_lost/pl.sh" "$_lost/pl5.sh"
-check_mutate_literal "$_lost/pl5.sh" 'END { exit (found ? 0 : 1) }' 'END { exit 2 }' \
-  || bad "fixture: the lookup-error injection did not apply"
+check_mutate_literal "$_lost/pl5.sh" 'state="$(_adb_pl_thread_state "$after"' 'state="$(false "$after"' \
+  || bad "fixture: the post-insert search-error injection did not apply"
 L7g="$work/l7g.md"
 bash "$PL" record --ledger "$L7g" --class seed-g --site s.sh --fix abc1231 --pr 1 --thread G0 >/dev/null 2>&1
 out="$(bash "$_lost/pl5.sh" record --ledger "$L7g" --class lostc --site s.sh --fix abc1235 --pr 1 --thread ERR1 2>&1)"; rc=$?
-eq "$rc" 20 "a read-back lookup that errors exits 20, not the lost-row 21"
+eq "$rc" 20 "a read-back search that could not run exits 20, not the lost-row 21"
 has "$out" "could not search" "…and says the search could not run"
+cp "$_lost/pl.sh" "$_lost/pl8.sh"
+check_mutate_literal "$_lost/pl8.sh" 'seen="$(_adb_pl_thread_state "$hits"' 'seen="$(false "$hits"' \
+  || bad "fixture: the pre-insert search-error injection did not apply"
+L7k="$work/l7k.md"
+bash "$PL" record --ledger "$L7k" --class seed-k --site s.sh --fix abc1231 --pr 1 --thread K1 >/dev/null 2>&1
+_before="$(cksum < "$L7k")"
+bash "$_lost/pl8.sh" record --ledger "$L7k" --class seed-k --site s.sh --fix abc1231 --pr 1 --thread K1 >/dev/null 2>&1
+eq "$?" 20 "a duplicate search that could not run exits 20 before anything is written"
+eq "$(cksum < "$L7k")" "$_before" "a failed duplicate search appends nothing"
 rm -rf "$_lost"
 
 # THE FIRST LEDGER IS CREATED INSIDE THE LOCK (PR #429). Two processes recording the first hits
@@ -2449,10 +2511,6 @@ if [ "$MODE" = mutation ]; then
       '[ "$n" -ge "$t" ] || continue' \
       '[ "$n" -lt "$t" ] || continue' \
       'two hits reach the threshold'
-  check_row 'dedupe-disabled' 'scripts/lib/pattern-ledger.sh' 's2' \
-      'if printf '"'"'%s\n'"'"' "$hits" | LC_ALL=C awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 "" == t "" { found = 1 } END { exit !found }'"'"'; then' \
-      'if false; then' \
-      'a repeated thread id is a no-op'
   check_row 'region-proof-disabled' 'scripts/lib/pattern-ledger.sh' 's3' \
       'END { if (nb != 1 || ne != 1 || crossed || inb) exit 1 }' \
       'END { if (0) exit 1 }' \
@@ -2485,10 +2543,6 @@ if [ "$MODE" = mutation ]; then
       '    _adb_pl_ok_pr "$pr" || return 1' \
       '    :' \
       'a hand-edited PR number outside the domain is refused by the readers'
-  check_row 'record-checks-one-region' 'scripts/lib/pattern-ledger.sh' 's7b' \
-      '  _adb_pl_promoted "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n'"'"' "$ledger" >&2; exit 18; }' \
-      '  :' \
-      'record leaves a ledger with a damaged CHECKLIST unchanged'
   check_row 'verify-misses-dup-class' 'scripts/lib/pattern-ledger.sh' 's7b' \
       '    ckdupes="$(printf '"'"'%s\n'"'"' "$promoted" | LC_ALL=C awk -F'"'"'\t'"'"' '"'"'NF { print $1 }'"'"' | LC_ALL=C sort | LC_ALL=C uniq -d)"' \
       '    ckdupes=""' \
@@ -2505,30 +2559,6 @@ if [ "$MODE" = mutation ]; then
       '  _adb_pl_hits "$ledger" >/dev/null || { printf '"'"'pattern-ledger: %s does not parse (the hits region)\n'"'"' "$ledger" >&2; exit 18; }' \
       '  :' \
       'promote refuses a damaged hits region instead of returning '"'"'already promoted'"'"''
-  check_row 'write-unverified' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      '  if [ "$lrc" -eq 1 ]; then' \
-      '  if false; then' \
-      'a lost row is told'
-  check_row 'post-insert-parse-read-as-lost' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {' \
-      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || : || {' \
-      'a ledger that does not parse after the insert exits 18'
-  check_row 'post-insert-checklist-unread' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {' \
-      'after="$(_adb_pl_hits "$ledger")" || {' \
-      'a checklist damaged by the insert exits 18'
-  check_row 'lookup-error-read-as-lost' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      '  if [ "$lrc" -gt 1 ]; then' \
-      '  if false; then' \
-      'a read-back lookup that errors exits 20'
-  check_row 'post-insert-thread-numeric' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      ''"'"'$4 "" == t "" { found = 1 } END { exit (found ? 0 : 1) }'"'"'' \
-      ''"'"'$4 == t { found = 1 } END { exit (found ? 0 : 1) }'"'"'' \
-      'a lost row is told even when a numerically equal thread is present'
-  check_row 'dedupe-thread-numeric' 'scripts/lib/pattern-ledger.sh' 's2' \
-      ''"'"'$4 "" == t "" { found = 1 } END { exit !found }'"'"'' \
-      ''"'"'$4 == t { found = 1 } END { exit !found }'"'"'' \
-      '2n a numeric-looking thread is recorded'
   check_row 'region-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
       '  LC_ALL=C awk -v b="$2" -v e="$3" '"'"'' \
       '  awk -v b="$2" -v e="$3" '"'"'' \
@@ -2545,6 +2575,46 @@ if [ "$MODE" = mutation ]; then
       'ADB_PL_LINE="$line" LC_ALL=C awk' \
       'ADB_PL_LINE="$line" awk' \
       '5s every awk the ledger runs sees the C locale'
+  check_row 'dedupe-disabled' 'scripts/lib/pattern-ledger.sh' 's2' \
+      '    found)   printf' \
+      '    nofound)   printf' \
+      'a repeated thread id is a no-op'
+  check_row 'thread-compared-as-number' 'scripts/lib/pattern-ledger.sh' 's2' \
+      '$4 "" == t "" &&' \
+      '$4 == t &&' \
+      '2n a numeric-looking thread is recorded'
+  check_row 'write-unverified' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  if [ "$state" = missing ]; then' \
+      '  if false; then' \
+      'a lost row is told'
+  check_row 'readback-thread-only' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '(!full || (' \
+      '(1 || (' \
+      'a row that lands with another class is a lost row'
+  check_row 'stage-unvalidated' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  if ! _adb_pl_hits "$tmp" >/dev/null || ! _adb_pl_promoted "$tmp" >/dev/null; then' \
+      '  if false; then' \
+      'a stage that would not parse is discarded: the ledger is unchanged'
+  check_row 'stage-checklist-unvalidated' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      ' || ! _adb_pl_promoted "$tmp" >/dev/null; then' \
+      '; then' \
+      'a stage that would damage the checklist is discarded: the ledger is unchanged'
+  check_row 'post-insert-parse-read-as-lost' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {' \
+      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || : || {' \
+      'a ledger damaged after its insert is published exits 18'
+  check_row 'post-insert-checklist-unread' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      'after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {' \
+      'after="$(_adb_pl_hits "$ledger")" || {' \
+      'a ledger damaged after its insert is published exits 18'
+  check_row 'post-search-error-read-as-answer' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '    found|missing) : ;;' \
+      '    *) : ;;' \
+      'a read-back search that could not run exits 20'
+  check_row 'pre-search-error-appends' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '    missing) : ;;' \
+      '    missing|"") : ;;' \
+      'a duplicate search that could not run exits 20 before anything is written'
   check_row 'record-unlocked' 'scripts/lib/pattern-ledger.sh' 's7c' \
       '  _adb_pl_lock "$ledger" || exit 20   # record-takes-lock' \
       '  :   # record-takes-lock' \

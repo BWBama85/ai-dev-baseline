@@ -1,7 +1,7 @@
 # Pattern ledger
 
-**What this project has already learned from its own review threads.** Every entry below was a
-review finding somebody fixed: the class of defect, where it was found, and the commit that closed
+**What this project has already learned from its own review threads.** Every entry below is a
+finding somebody fixed, nearly always raised in a review thread: the class of defect, where it was found, and the commit that closed
 it. It is written automatically by `/resolve-pr-threads` as each thread is resolved, and read
 automatically by `/implement-issue` — the gap-analysis dispatch and the pre-PR self-review sweep
 both receive the promoted checklist.
@@ -812,5 +812,5 @@ for a defect fixed in PR N's branch outside any review — never on an invented 
 - `status-swallowed` `bin/baseline:962` `a176e2b` `PRRT_kwDOTfywrM62anOl` PR #628 2026-11-12 — A heal that left the command allowlist refused exited 0, and the session-start wrapper reads only the exit code, so the refusal reached nobody
 - `status-swallowed` `scripts/check-step-inputs.sh:577` `07233ec` `PRRT_kwDOTfywrM63QeK7` PR #645 2026-11-14 — si_shipped recorded no failure for a verdict that exited non-zero without output
 - `declared-inputs-incomplete` `scripts/selfcheck.sh` `07233ec` `PRRT_kwDOTfywrM63QeLE` PR #645 2026-11-14 — release-skill omitted the libraries its release driver runs through $LIB
-- `timing-assertion-under-load` `scripts/lib/pattern-ledger.sh:708` `3638543` `self-found-pr452-lock-wait` PR #452 2026-09-03 — the ledger lock's wait bound counted elapsed queue time, so the 20- and 25-writer assertions at scripts/check-pattern-ledger.sh:990 flapped under load; the clock now restarts when the holder changes, and those assertions print every failing writer's rc and stderr
+- `timing-assertion-under-load` `scripts/lib/pattern-ledger.sh:712` `3638543` `self-found-pr452-lock-wait` PR #452 2026-09-03 — the ledger lock's wait bound counted elapsed queue time, so the 20- and 25-writer assertions (scripts/check-pattern-ledger.sh:990 and :1066) flapped under load; the clock now restarts when the holder changes, and both assertions print every failing writer's rc and stderr
 <!-- adb:hits:end -->

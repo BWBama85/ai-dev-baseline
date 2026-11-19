@@ -27,8 +27,9 @@
 #                                # --site defaults to `-`, which is only valid with --result clean
 #   pattern-ledger.sh rule-sweep-report --state <dir> --run <id> --tree <digest>
 #   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
-#    the lock; nothing is reported as recorded that the ledger does not hold. After the insert,
-#    18 = the ledger no longer parses and 20 = the read-back could not run — neither is a lost row)
+#    the lock; nothing is reported as recorded that the ledger does not hold. 18 = the insert
+#    would leave, or left, a ledger that does not parse; 20 = a search for the thread could not run,
+#    before the insert (nothing written) or after it — neither is a lost row)
 #   pattern-ledger.sh -h | --help
 #
 # Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
@@ -97,7 +98,8 @@
 #   class    [a-z][a-z0-9-]{0,47}      the finding class; the unit recurrence is counted in
 #   site     no backtick, tab, newline the file (optionally :line) the finding was found at
 #   fix      [0-9a-f]{7,40}            the commit that fixed it
-#   thread   [A-Za-z0-9_=-]{1,256}     the review thread's node id — the IDEMPOTENCY KEY
+#   thread   [A-Za-z0-9_=-]{1,256}     the review thread's node id, or for a finding with no thread a
+#                                      synthetic id (the ledger template names the forms) — the IDEMPOTENCY KEY
 #
 # One field is DISPLAY: `summary`, one line of the resolving agent's own words. It is stored so a
 # human reading the ledger can see what the class means in practice, and it is the one field this
@@ -168,8 +170,8 @@ set -uo pipefail
 
 # EVERY awk CALL IN THIS FILE RUNS AS `LC_ALL=C awk`. The writer validates bytes
 # (`adb_ledger_ok_text`), so every reader must too: under a caller's UTF-8 locale awk's
-# `[[:cntrl:]]` also matches U+0085, and a byte that is not valid UTF-8 aborts the BSD awk, so a row
-# the writer accepted refused the whole ledger (D161, #522). Per call, not exported: the shared
+# `[[:cntrl:]]` can also match U+0085 (the BSD awk does), and a byte that is not valid UTF-8 aborts
+# the BSD awk, so a row the writer accepted could refuse the whole ledger (D161, #522). Per call, not exported: the shared
 # predicates in common.sh scope their own locale, and must keep doing so for their other callers.
 
 # --- required shared library (fail loud on a broken install, per design-principles §5) -----------
@@ -315,8 +317,8 @@ _adb_pl_template() {
   cat <<'TPL'
 # Pattern ledger
 
-**What this project has already learned from its own review threads.** Every entry below was a
-review finding somebody fixed: the class of defect, where it was found, and the commit that closed
+**What this project has already learned from its own review threads.** Every entry below is a
+finding somebody fixed, nearly always raised in a review thread: the class of defect, where it was found, and the commit that closed
 it. It is written automatically by `/resolve-pr-threads` as each thread is resolved, and read
 automatically by `/implement-issue` — the gap-analysis dispatch and the pre-PR self-review sweep
 both receive the promoted checklist.
@@ -499,6 +501,19 @@ RAW
   printf '%s\n' "$raw"
 }
 
+# _adb_pl_thread_state <hits-tsv> <thread> [<class> <site> <fix>] — print `found` when a record
+# carries <thread> (and, given them, exactly that class, site and fix), else `missing`. Non-zero
+# only when the search could not run, so no exit status of awk's is ever read as an answer.
+# STRINGS, not numbers: awk compares two numeric-looking values as numbers, so a bare `==` found
+# thread `1` when asked for `01` or `1e0`. Through ENVIRON, because `-v` rewrites backslashes.
+_adb_pl_thread_state() {
+  printf '%s\n' "$1" | ADB_PL_T="$2" ADB_PL_C="${3-}" ADB_PL_S="${4-}" ADB_PL_F="${5-}" ADB_PL_FULL="$#" \
+    LC_ALL=C awk -F'\t' '
+      BEGIN { t = ENVIRON["ADB_PL_T"]; full = (ENVIRON["ADB_PL_FULL"] >= 5) }
+      $4 "" == t "" && (!full || ($1 "" == ENVIRON["ADB_PL_C"] "" && $2 "" == ENVIRON["ADB_PL_S"] "" && $3 "" == ENVIRON["ADB_PL_F"] "")) { found = 1 }
+      END { print (found ? "found" : "missing") }'
+}
+
 # _adb_pl_promoted <file> — the promoted class slugs, one per line.
 _adb_pl_promoted_raw() {
   local ckregion
@@ -655,6 +670,7 @@ _adb_pl_threshold() {
 }
 
 # _adb_pl_insert <file> <end-marker> <line> — put <line> immediately before <end-marker>, atomically.
+# Returns 0 published · 2 the result would not parse, nothing published · 1 any other failure.
 #
 # THE LINE TRAVELS THROUGH THE ENVIRONMENT, not through `awk -v`. `-v` processes backslash escapes
 # in its value, so a site or summary containing `\n` or `\\` would arrive at awk already rewritten —
@@ -861,6 +877,11 @@ _adb_pl_insert() {
       ' "$file" > "$tmp"; then
     rm -f "$tmp"; [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"; return 1
   fi
+  # THE STAGE IS VALIDATED BEFORE IT IS PUBLISHED (#522): a replacement either region would refuse
+  # is discarded here, so no reader ever inherits it. 2, which the callers report as 18.
+  if ! _adb_pl_hits "$tmp" >/dev/null || ! _adb_pl_promoted "$tmp" >/dev/null; then
+    rm -f "$tmp"; [ "$held_here" -eq 1 ] && _adb_pl_unlock "$file"; return 2
+  fi
   # THE LEASE IS RE-VERIFIED IMMEDIATELY BEFORE THE RENAME. Everything above — reading the file,
   # running awk, writing the replacement — takes time, and a writer suspended across it may have had
   # its lock reclaimed and a successor may have updated the ledger meanwhile. Renaming a replacement
@@ -897,7 +918,7 @@ cmd_record() {
   _adb_pl_ok_pr "$OPT_PR" || {
     printf 'pattern-ledger: refusing pr %s — a positive whole number.\n' "$(adb_display_value "$OPT_PR")" >&2; exit 19; }
   _adb_pl_ok_thread "$OPT_THREAD" || {
-    printf 'pattern-ledger: refusing thread %s — [A-Za-z0-9_=-] up to 256 chars (a review thread node id).\n' "$(adb_display_value "$OPT_THREAD")" >&2; exit 19; }
+    printf 'pattern-ledger: refusing thread %s — [A-Za-z0-9_=-] up to 256 chars (a review thread node id, or a synthetic id for a finding with no thread).\n' "$(adb_display_value "$OPT_THREAD")" >&2; exit 19; }
 
   local date="${OPT_DATE:-$(date -u +%Y-%m-%d)}"
   _adb_pl_ok_date "$date" || {
@@ -962,19 +983,20 @@ cmd_record() {
   [ -r "$ledger" ] && [ -w "$ledger" ] || { printf 'pattern-ledger: %s is not readable and writable\n' "$ledger" >&2; exit 20; }
 
   local hits _tpl
-  # BOTH REGIONS, before appending anything. Validating only the hits half let `record` report a
-  # hit written successfully into a file from which no reader can then read a count or a checklist
-  # — the refuse-whole contract holding for reads and not for writes. Same partial-validation shape
-  # as the PR field and the empty array element: the check covered less than the consumers do.
-  # Reported by the declared reviewer on PR #429.
+  # BOTH REGIONS are validated before anything is published: the hits here, because the duplicate
+  # search reads them, and the whole result — the checklist included — by `_adb_pl_insert`'s stage
+  # check. Validating only the hits half once let `record` report a hit written into a file no
+  # reader could then read. Reported by the declared reviewer on PR #429.
   hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse (the hits region) — refusing to append to a ledger whose existing records cannot be read\n' "$ledger" >&2; exit 18; }
-  _adb_pl_promoted "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n' "$ledger" >&2; exit 18; }
-  # `$4 "" == t ""`, a STRING comparison: awk compares two numeric-looking strings as numbers, so a
-  # bare `==` found thread `1` when asked for `01` or `1e0`.
-  if printf '%s\n' "$hits" | LC_ALL=C awk -F'\t' -v t="$OPT_THREAD" '$4 "" == t "" { found = 1 } END { exit !found }'; then
-    printf 'pattern-ledger: thread %s is already recorded — nothing appended\n' "$OPT_THREAD" >&2
-    exit 10
-  fi
+  # A SEARCH THAT COULD NOT RUN IS 20 BEFORE ANYTHING IS WRITTEN, never "not recorded yet": read as
+  # a miss, a failed lookup appended a second row for a thread already present (#522 review).
+  local seen
+  seen="$(_adb_pl_thread_state "$hits" "$OPT_THREAD")" || seen=""
+  case "$seen" in
+    found)   printf 'pattern-ledger: thread %s is already recorded — nothing appended\n' "$OPT_THREAD" >&2; exit 10 ;;
+    missing) : ;;
+    *)       printf 'pattern-ledger: could not search %s for thread %s — nothing appended\n' "$ledger" "$OPT_THREAD" >&2; exit 20 ;;
+  esac
 
   # AFTER the duplicate test, so a re-run over an already-recorded thread stays the no-op 10.
   # The sweep file is replaced only by rename and a mark only moves a row out of `found`, so the one
@@ -1005,31 +1027,38 @@ cmd_record() {
   else
     rec="$(printf -- '- `%s` `%s` `%s` `%s` PR #%s %s' "$OPT_CLASS" "$OPT_SITE" "$OPT_FIX" "$OPT_THREAD" "$OPT_PR" "$date")"
   fi
-  _adb_pl_insert "$ledger" "$_ADB_PL_HIT_END" "$rec" \
-    || { printf 'pattern-ledger: could not append to %s\n' "$ledger" >&2; exit 20; }
+  local irc=0
+  _adb_pl_insert "$ledger" "$_ADB_PL_HIT_END" "$rec" || irc=$?
+  case "$irc" in
+    0) : ;;
+    2) printf 'pattern-ledger: appending thread %s would leave %s unparseable — nothing written\n' "$OPT_THREAD" "$ledger" >&2; exit 18 ;;
+    *) printf 'pattern-ledger: could not append to %s\n' "$ledger" >&2; exit 20 ;;
+  esac
   # THE WRITE IS VERIFIED BEFORE IT IS REPORTED. A CI run landed 23 of 25 concurrent first-time
   # writers with every writer exiting 0: two rows were overwritten by a read-modify-write that had
   # read a copy without them, and nothing said so. A lost row is a lost finding, and the only
   # process that can know is this one, now, while it still holds the lock — so the ledger is read
   # back and this thread must be in it. A miss is 21, with what the directory holds beside the
   # ledger (locks, stale tombstones, temp files) printed so the next occurrence diagnoses itself.
-  # THREE OUTCOMES, told apart (#522): a ledger that no longer parses — either region, as before the
-  # insert — is 18; a lookup that could not run is 20; only a lookup that ran and missed is a lost
-  # row. Reading a parse failure as a miss sent the reader looking for a concurrent writer.
-  local after lrc
+  # THREE OUTCOMES, told apart (#522): a published ledger that no longer parses — either region, as
+  # before the insert — is 18; a search that could not run is 20; only a search that ran and did not
+  # find THIS record (class, site, fix and thread) is a lost row. Reading a parse failure as a miss
+  # sent the reader looking for a concurrent writer.
+  local after state
   hits=""
   after="$(_adb_pl_hits "$ledger")" && _adb_pl_promoted "$ledger" >/dev/null || {
     printf 'pattern-ledger: %s does not parse after the insert of thread %s (lock held, token %s)\n' \
       "$ledger" "$OPT_THREAD" "${_ADB_PL_LOCK_TOKEN:-none}" >&2
     exit 18
   }
-  printf '%s\n' "$after" | LC_ALL=C awk -F'\t' -v t="$OPT_THREAD" '$4 "" == t "" { found = 1 } END { exit (found ? 0 : 1) }'; lrc=$?
-  if [ "$lrc" -gt 1 ]; then
-    printf 'pattern-ledger: could not search %s for thread %s after its insert (rc %s) — the row may be there\n' \
-      "$ledger" "$OPT_THREAD" "$lrc" >&2
-    exit 20
-  fi
-  if [ "$lrc" -eq 1 ]; then
+  state="$(_adb_pl_thread_state "$after" "$OPT_THREAD" "$OPT_CLASS" "$OPT_SITE" "$OPT_FIX")" || state=""
+  case "$state" in
+    found|missing) : ;;
+    *) printf 'pattern-ledger: could not search %s for thread %s after its insert — the row may be there\n' \
+         "$ledger" "$OPT_THREAD" >&2
+       exit 20 ;;
+  esac
+  if [ "$state" = missing ]; then
     printf 'pattern-ledger: the row for thread %s is NOT in %s after its own insert — the ledger was overwritten under this writer (lock held, token %s). Beside it: %s\n' \
       "$OPT_THREAD" "$ledger" "${_ADB_PL_LOCK_TOKEN:-none}" "$(ls -a "$(dirname "$ledger")" 2>/dev/null | tr '\n' ' ')" >&2
     exit 21
@@ -1163,8 +1192,13 @@ cmd_promote() {
       "$OPT_CLASS" "$newsize" "$_ADB_PL_CHECKLIST_MAX_BYTES" >&2
     exit 19
   fi
-  _adb_pl_insert "$ledger" "$_ADB_PL_CK_END" "$newrule" \
-    || { printf 'pattern-ledger: could not write %s\n' "$ledger" >&2; exit 20; }
+  local irc=0
+  _adb_pl_insert "$ledger" "$_ADB_PL_CK_END" "$newrule" || irc=$?
+  case "$irc" in
+    0) : ;;
+    2) printf 'pattern-ledger: promoting %s would leave %s unparseable — nothing written\n' "$OPT_CLASS" "$ledger" >&2; exit 18 ;;
+    *) printf 'pattern-ledger: could not write %s\n' "$ledger" >&2; exit 20 ;;
+  esac
   printf 'promoted %s (%s hits, threshold %s from %s)\n' "$OPT_CLASS" "$count" "$t" "$tsrc"
 }
 
