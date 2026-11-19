@@ -19,7 +19,7 @@ around them is yours.
 
 **Two branches can both append here, and that is handled by ordinary means.** Git may report a
 conflict when two pull requests add hits at the same point — take both sides; the entries are
-independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
+independent and are keyed on their thread ids, so nothing is lost by keeping them. Promotion
 is decided by *reading this file*, never by a counter carried in a branch: two branches that each
 recorded a class's first hit merge into a file holding two, and the next run promotes it. The
 mechanism converges rather than missing the class permanently.
@@ -58,9 +58,10 @@ Sweep each of these before opening a pull request.
 
 ## Hits
 
-One line per finding, newest last. A finding with no review thread is keyed on a synthetic id —
-`self-review-pr<N>-r<R>-<slug>` for local self-review round R of PR N, `self-found-pr<N>-<slug>`
-for a defect fixed in PR N's branch outside any review — never on an invented GitHub node id.
+One line per finding, newest last. `/resolve-pr-threads` records review threads only. A finding
+with no review thread — a local review's, or a defect fixed in a branch to turn CI green — enters
+only when someone records it by hand, keyed on a synthetic id: `self-review-pr<N>-r<R>-<slug>` for
+local review round R of PR N, `self-found-pr<N>-<slug>` otherwise. Never an invented node id.
 
 <!-- adb:hits:begin -->
 - `partial-validation` `scripts/lib/docs-lib.sh:192` `a119e75` `PRRT_kwDOTfywrM6b1wrA` PR #429 2026-08-24 — checked that a newline existed, not that the FINAL byte was one; read dropped the last line, awk read it

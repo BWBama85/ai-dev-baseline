@@ -29,7 +29,7 @@
 #   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
 #    the lock; nothing is reported as recorded that the ledger does not hold. 18 = the insert
 #    would leave, or left, a ledger that does not parse; 20 = a search for the thread could not run,
-#    before the insert (nothing written) or after it — neither is a lost row)
+#    before the insert (no hit appended) or after it — neither is a lost row)
 #   pattern-ledger.sh -h | --help
 #
 # Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
@@ -345,7 +345,7 @@ git fetch origin "refs/pull/<pr>/head" && git show <fix>
 
 **Two branches can both append here, and that is handled by ordinary means.** Git may report a
 conflict when two pull requests add hits at the same point — take both sides; the entries are
-independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
+independent and are keyed on their thread ids, so nothing is lost by keeping them. Promotion
 is decided by *reading this file*, never by a counter carried in a branch: two branches that each
 recorded a class's first hit merge into a file holding two, and the class is then due.
 
@@ -364,9 +364,10 @@ Sweep each of these before opening a pull request.
 
 ## Hits
 
-One line per finding, newest last. A finding with no review thread is keyed on a synthetic id —
-`self-review-pr<N>-r<R>-<slug>` for local self-review round R of PR N, `self-found-pr<N>-<slug>`
-for a defect fixed in PR N's branch outside any review — never on an invented GitHub node id.
+One line per finding, newest last. `/resolve-pr-threads` records review threads only. A finding
+with no review thread — a local review's, or a defect fixed in a branch to turn CI green — enters
+only when someone records it by hand, keyed on a synthetic id: `self-review-pr<N>-r<R>-<slug>` for
+local review round R of PR N, `self-found-pr<N>-<slug>` otherwise. Never an invented node id.
 
 <!-- adb:hits:begin -->
 <!-- adb:hits:end -->
@@ -501,16 +502,15 @@ RAW
   printf '%s\n' "$raw"
 }
 
-# _adb_pl_thread_state <hits-tsv> <thread> [<class> <site> <fix>] — print `found` when a record
-# carries <thread> (and, given them, exactly that class, site and fix), else `missing`. Non-zero
+# _adb_pl_thread_state <hits-tsv> <thread> [<row>] — print `found` when a record carries <thread>
+# (given <row>, a record that is exactly that whole `_adb_pl_hits` row), else `missing`. Non-zero
 # only when the search could not run, so no exit status of awk's is ever read as an answer.
 # STRINGS, not numbers: awk compares two numeric-looking values as numbers, so a bare `==` found
 # thread `1` when asked for `01` or `1e0`. Through ENVIRON, because `-v` rewrites backslashes.
 _adb_pl_thread_state() {
-  printf '%s\n' "$1" | ADB_PL_T="$2" ADB_PL_C="${3-}" ADB_PL_S="${4-}" ADB_PL_F="${5-}" ADB_PL_FULL="$#" \
-    LC_ALL=C awk -F'\t' '
-      BEGIN { t = ENVIRON["ADB_PL_T"]; full = (ENVIRON["ADB_PL_FULL"] >= 5) }
-      $4 "" == t "" && (!full || ($1 "" == ENVIRON["ADB_PL_C"] "" && $2 "" == ENVIRON["ADB_PL_S"] "" && $3 "" == ENVIRON["ADB_PL_F"] "")) { found = 1 }
+  printf '%s\n' "$1" | ADB_PL_T="$2" ADB_PL_ROW="${3-}" ADB_PL_FULL="$#" LC_ALL=C awk -F'\t' '
+      BEGIN { t = ENVIRON["ADB_PL_T"]; row = ENVIRON["ADB_PL_ROW"]; full = (ENVIRON["ADB_PL_FULL"] >= 3) }
+      (full ? ($0 "" == row "") : ($4 "" == t "")) { found = 1 }
       END { print (found ? "found" : "missing") }'
 }
 
@@ -983,11 +983,12 @@ cmd_record() {
   [ -r "$ledger" ] && [ -w "$ledger" ] || { printf 'pattern-ledger: %s is not readable and writable\n' "$ledger" >&2; exit 20; }
 
   local hits _tpl
-  # BOTH REGIONS are validated before anything is published: the hits here, because the duplicate
-  # search reads them, and the whole result — the checklist included — by `_adb_pl_insert`'s stage
-  # check. Validating only the hits half once let `record` report a hit written into a file no
-  # reader could then read. Reported by the declared reviewer on PR #429.
+  # BOTH REGIONS, before any answer — the duplicate no-op 10 included, which must not vouch for a
+  # ledger every reader refuses. Validating only the hits half let `record` report a hit written
+  # successfully into a file from which no reader can then read a count or a checklist.
+  # Reported by the declared reviewer on PR #429.
   hits="$(_adb_pl_hits "$ledger")" || { printf 'pattern-ledger: %s does not parse (the hits region) — refusing to append to a ledger whose existing records cannot be read\n' "$ledger" >&2; exit 18; }
+  _adb_pl_promoted "$ledger" >/dev/null || { printf 'pattern-ledger: %s does not parse (the checklist region) — refusing to append to a ledger every reader would then refuse\n' "$ledger" >&2; exit 18; }
   # A SEARCH THAT COULD NOT RUN IS 20 BEFORE ANYTHING IS WRITTEN, never "not recorded yet": read as
   # a miss, a failed lookup appended a second row for a thread already present (#522 review).
   local seen
@@ -1042,7 +1043,7 @@ cmd_record() {
   # ledger (locks, stale tombstones, temp files) printed so the next occurrence diagnoses itself.
   # THREE OUTCOMES, told apart (#522): a published ledger that no longer parses — either region, as
   # before the insert — is 18; a search that could not run is 20; only a search that ran and did not
-  # find THIS record (class, site, fix and thread) is a lost row. Reading a parse failure as a miss
+  # find THIS record, every field as written, is a lost row. Reading a parse failure as a miss
   # sent the reader looking for a concurrent writer.
   local after state
   hits=""
@@ -1051,7 +1052,9 @@ cmd_record() {
       "$ledger" "$OPT_THREAD" "${_ADB_PL_LOCK_TOKEN:-none}" >&2
     exit 18
   }
-  state="$(_adb_pl_thread_state "$after" "$OPT_THREAD" "$OPT_CLASS" "$OPT_SITE" "$OPT_FIX")" || state=""
+  state="$(_adb_pl_thread_state "$after" "$OPT_THREAD" \
+    "$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "$OPT_CLASS" "$OPT_SITE" "$OPT_FIX" "$OPT_THREAD" "$OPT_PR" "$date" "$summary")")" \
+    || state=""
   case "$state" in
     found|missing) : ;;
     *) printf 'pattern-ledger: could not search %s for thread %s after its insert — the row may be there\n' \
@@ -1059,7 +1062,7 @@ cmd_record() {
        exit 20 ;;
   esac
   if [ "$state" = missing ]; then
-    printf 'pattern-ledger: the row for thread %s is NOT in %s after its own insert — the ledger was overwritten under this writer (lock held, token %s). Beside it: %s\n' \
+    printf 'pattern-ledger: the row for thread %s is NOT in %s as written, after its own insert — what holds the thread, if anything, is not what this writer wrote (lock held, token %s). Beside it: %s\n' \
       "$OPT_THREAD" "$ledger" "${_ADB_PL_LOCK_TOKEN:-none}" "$(ls -a "$(dirname "$ledger")" 2>/dev/null | tr '\n' ' ')" >&2
     exit 21
   fi
