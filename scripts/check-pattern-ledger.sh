@@ -380,16 +380,58 @@ refused "a DEL byte in a summary is refused"      19 --class guard-class --site 
         --pr 1 --thread T-g14 --summary "$(printf 'a\177b')"
 refused "a 0x01 byte in --site is refused"        19 --class guard-class --site "$(printf 'a\001b')" \
         --fix abc1234 --pr 1 --thread T-g15
-# THE REFUSAL SET IS THE C LOCALE'S. Under a UTF-8 locale `[[:cntrl:]]` also matches U+0085, which
-# the writer's `LC_ALL=C tr -d '[:cntrl:]'` always kept as two printable bytes; a caller's locale
-# must not tighten it. A site only: the raw reader's awk matches a summary's control characters
-# under the CALLER's locale, so there a U+0085 summary is written and then refused on re-read (#522).
+# THE REFUSAL SET IS THE C LOCALE'S, AT THE WRITER AND AT EVERY READER. Under a UTF-8 locale
+# `[[:cntrl:]]` also matches U+0085, and a byte that is not valid UTF-8 aborts the BSD awk; the
+# writer validates in C, so a reader under the caller's locale refused a ledger the writer had just
+# written (#522). Each fixture below writes AND reads under the UTF-8 locale.
 if [ -z "$U8" ]; then
   bad "5 fixture: no UTF-8 locale on this host — the control-set check asserted NOTHING"
 else
-  LC_ALL="$U8" bash "$PL" record --ledger "$work/l5nel.md" --class nel-class --site "n$(printf '\302\205')l.sh" \
+  _nel="n$(printf '\302\205')l"
+  _hb="a$(printf '\377')b"
+  LC_ALL="$U8" bash "$PL" record --ledger "$work/l5nel.md" --class nel-class --site "${_nel}.sh" \
     --fix ddd4444 --pr 1 --thread T-n1 --date 2026-08-24 >/dev/null 2>&1
   eq "$?" 0 "a site carrying U+0085 is accepted under a UTF-8 locale — the control set is C's"
+
+  # A U+0085 SUMMARY: written, then read whole by every reader, its bytes intact.
+  L5u="$work/l5u.md"
+  for _i in 1 2; do
+    LC_ALL="$U8" bash "$PL" record --ledger "$L5u" --class nel-class --site "u$_i.sh" --fix ddd4444 \
+      --pr 1 --thread "T-u$_i" --summary "$_nel" --date 2026-08-24 >/dev/null 2>&1
+    eq "$?" 0 "5u a summary carrying U+0085 is recorded under a UTF-8 locale (hit $_i)"
+  done
+  _t=$'\t'
+  eq "$(LC_ALL="$U8" bash "$PL" classes --ledger "$L5u" 2>/dev/null)" "2${_t}nel-class${_t}0" \
+     "5u classes reads a U+0085 summary under a UTF-8 locale"
+  eq "$(LC_ALL="$U8" bash "$PL" due --ledger "$L5u" 2>/dev/null)" "nel-class${_t}2" \
+     "5u due reads a U+0085 summary under a UTF-8 locale"
+  for _sub in stats checklist verify; do
+    LC_ALL="$U8" bash "$PL" "$_sub" --ledger "$L5u" >/dev/null 2>&1
+    eq "$?" 0 "5u $_sub reads a U+0085 summary under a UTF-8 locale"
+  done
+  eq "$(LC_ALL=C grep -c "— ${_nel}\$" "$L5u")" 2 "5u the stored U+0085 summaries keep their bytes"
+
+  # A BYTE THAT IS NOT VALID UTF-8, in a summary: the next record's insert reads that row too.
+  L5b="$work/l5b.md"
+  LC_ALL="$U8" bash "$PL" record --ledger "$L5b" --class hb-class --site b1.sh --fix ddd4444 \
+    --pr 1 --thread T-b1 --summary "$_hb" --date 2026-08-24 >/dev/null 2>&1
+  eq "$?" 0 "5b a summary carrying a 0xFF byte is recorded under a UTF-8 locale"
+  LC_ALL="$U8" bash "$PL" record --ledger "$L5b" --class hb-class --site b2.sh --fix ddd4444 \
+    --pr 1 --thread T-b2 --date 2026-08-24 >/dev/null 2>&1
+  eq "$?" 0 "5b the insert after a 0xFF summary succeeds under a UTF-8 locale"
+
+  # …in a promoted rule: the checklist parser reads it.
+  LC_ALL="$U8" bash "$PL" promote --ledger "$L5b" --class hb-class --rule "sweep $_hb" >/dev/null 2>&1
+  eq "$?" 0 "5b a rule carrying a 0xFF byte is promoted under a UTF-8 locale"
+  has "$(LC_ALL="$U8" bash "$PL" checklist --ledger "$L5b" 2>/dev/null)" "sweep $_hb" \
+      "5b checklist reads a 0xFF rule under a UTF-8 locale"
+
+  # …in the hand-written prose outside both regions: only the region reader sees it.
+  L5p="$work/l5p.md"
+  cp "$L5u" "$L5p"
+  printf '\nprose %s\n' "$_hb" >> "$L5p"
+  LC_ALL="$U8" bash "$PL" verify --ledger "$L5p" >/dev/null 2>&1
+  eq "$?" 0 "5p a 0xFF byte in the prose is read under a UTF-8 locale"
 fi
 
 # A backtick IS legal in a summary, and that is not an oversight: it sits after every parsed field,
@@ -861,6 +903,14 @@ out="$(bash "$_lost/pl2.sh" record --ledger "$L7f" --class lostc --site s.sh --f
 eq "$rc" 21 "a lost row is told: a writer whose row is not in the ledger after its insert exits 21"
 has "$out" "the row for thread LOST1 is NOT in" "…and names the thread it lost"
 hasnt "$out" "recorded lostc" "…and never reports it as recorded"
+# A LEDGER THAT NO LONGER PARSES AFTER THE INSERT IS 18, NOT A LOST ROW (#522): the copy's insert
+# writes a malformed line where the record belongs.
+sed 's/l == e \&\& !done { print ENVIRON\["ADB_PL_LINE"\]; done = 1 }/l == e \&\& !done { print "- malformed"; done = 1 }/' "$_lost/pl.sh" > "$_lost/pl3.sh"
+if cmp -s "$_lost/pl.sh" "$_lost/pl3.sh"; then bad "fixture: the malformed-insert injection did not apply"; fi
+out="$(bash "$_lost/pl3.sh" record --ledger "$L7f" --class lostc --site s.sh --fix abc1233 --pr 1 --thread BADP1 2>&1)"; rc=$?
+eq "$rc" 18 "a ledger that does not parse after the insert exits 18, not the lost-row 21"
+has "$out" "does not parse after the insert of thread BADP1" "…and says the ledger does not parse"
+hasnt "$out" "overwritten" "…and never blames a concurrent writer"
 rm -rf "$_lost"
 
 # THE FIRST LEDGER IS CREATED INSIDE THE LOCK (PR #429). Two processes recording the first hits
@@ -2382,9 +2432,29 @@ if [ "$MODE" = mutation ]; then
       '  :' \
       'promote refuses a damaged hits region instead of returning '"'"'already promoted'"'"''
   check_row 'write-unverified' 'scripts/lib/pattern-ledger.sh' 's7c' \
-      '  if ! _adb_pl_hits "$ledger" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
+      '  if ! printf '"'"'%s\n'"'"' "$after" | awk -F'"'"'\t'"'"' -v t="$OPT_THREAD" '"'"'$4 == t { found = 1 } END { exit !found }'"'"'; then' \
       '  if false; then' \
       'a lost row is told'
+  check_row 'post-insert-parse-read-as-lost' 'scripts/lib/pattern-ledger.sh' 's7c' \
+      '  after="$(_adb_pl_hits "$ledger")" || {' \
+      '  after="$(_adb_pl_hits "$ledger")" || : || {' \
+      'a ledger that does not parse after the insert exits 18'
+  check_row 'region-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
+      '  LC_ALL=C awk -v b="$2" -v e="$3" '"'"'' \
+      '  awk -v b="$2" -v e="$3" '"'"'' \
+      '5p a 0xFF byte in the prose is read under a UTF-8 locale'
+  check_row 'hits-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
+      'printf '"'"'%s\n'"'"' "$region" | LC_ALL=C awk' \
+      'printf '"'"'%s\n'"'"' "$region" | awk' \
+      '5u classes reads a U+0085 summary under a UTF-8 locale'
+  check_row 'checklist-reader-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
+      'printf '"'"'%s\n'"'"' "$ckregion" | LC_ALL=C awk' \
+      'printf '"'"'%s\n'"'"' "$ckregion" | awk' \
+      '5b checklist reads a 0xFF rule under a UTF-8 locale'
+  check_row 'insert-caller-locale' 'scripts/lib/pattern-ledger.sh' 's5' \
+      'ADB_PL_LINE="$line" LC_ALL=C awk' \
+      'ADB_PL_LINE="$line" awk' \
+      '5b the insert after a 0xFF summary succeeds under a UTF-8 locale'
   check_row 'record-unlocked' 'scripts/lib/pattern-ledger.sh' 's7c' \
       '  _adb_pl_lock "$ledger" || exit 20   # record-takes-lock' \
       '  :   # record-takes-lock' \

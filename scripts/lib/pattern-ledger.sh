@@ -27,7 +27,8 @@
 #                                # --site defaults to `-`, which is only valid with --result clean
 #   pattern-ledger.sh rule-sweep-report --state <dir> --run <id> --tree <digest>
 #   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
-#    the lock; nothing is reported as recorded that the ledger does not hold)
+#    the lock; nothing is reported as recorded that the ledger does not hold. 18 after an insert =
+#    the ledger no longer parses, which is not a lost row)
 #   pattern-ledger.sh -h | --help
 #
 # Outputs: stdout is the answer and nothing else; diagnostics go to stderr. Each default is already
@@ -375,7 +376,12 @@ _adb_pl_region() {
   # that class's promotion, a record the writer could never have produced (D124 keeps the
   # history). The same rule as docs-lib's record reader.
   adb_nul_free "$1" || { [ "$?" -eq 1 ] || printf 'pattern-ledger: could not read %s to scan it for NUL bytes\n' "$1" >&2; return 1; }
-  awk -v b="$2" -v e="$3" '
+  # EVERY awk THAT READS LEDGER TEXT RUNS UNDER `LC_ALL=C` — this one, both raw parsers and the
+  # insert. The writer validates bytes in the C locale (`adb_ledger_ok_text`), so a reader under the
+  # caller's UTF-8 locale disagrees with it: `[[:cntrl:]]` also matches U+0085, and a byte that is
+  # not valid UTF-8 aborts the BSD awk outright. Either way a row the writer accepted refused the
+  # whole ledger (D161, #522).
+  LC_ALL=C awk -v b="$2" -v e="$3" '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == b { nb++; inb = 1; next }
     line == e { ne++; if (!inb) crossed = 1; inb = 0; next }
@@ -402,7 +408,7 @@ _adb_pl_region() {
 _adb_pl_hits_raw() {
   local region
   region="$(_adb_pl_region "$1" "$_ADB_PL_HIT_BEGIN" "$_ADB_PL_HIT_END")" || return 1
-  printf '%s\n' "$region" | awk -F'`' '
+  printf '%s\n' "$region" | LC_ALL=C awk -F'`' '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == "" { next }
     {
@@ -435,7 +441,8 @@ _adb_pl_hits_raw() {
       # A CONTROL CHARACTER IN THE SUMMARY IS REFUSED HERE, in awk, and not left to the shell
       # predicate alone: a TAB would split the field the shell reads, and `read` strips a trailing
       # one before `_adb_pl_ok_text` could see it. The predicate still runs on what arrives; this
-      # is the structural half that makes what arrives the whole summary.
+      # is the structural half that makes what arrives the whole summary. The C locale makes this
+      # exactly the set the writer refuses: 0x01-0x1F and 0x7F, never U+0085.
       if (summ ~ /[[:cntrl:]]/) { bad = 1; exit }
       printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $2, $4, $6, $8, pr, dt, summ
     }
@@ -492,9 +499,9 @@ RAW
 
 # _adb_pl_promoted <file> — the promoted class slugs, one per line.
 _adb_pl_promoted_raw() {
-  local region
-  region="$(_adb_pl_region "$1" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || return 1
-  printf '%s\n' "$region" | awk -F'`' '
+  local ckregion
+  ckregion="$(_adb_pl_region "$1" "$_ADB_PL_CK_BEGIN" "$_ADB_PL_CK_END")" || return 1
+  printf '%s\n' "$ckregion" | LC_ALL=C awk -F'`' '
     { line = $0; sub(/^[ \t]+/, "", line); sub(/[ \t]+$/, "", line) }
     line == "" { next }
     # NF >= 3 AND A NON-EMPTY RULE BODY. A damaged line like ``- `collection-identity` `` splits
@@ -844,7 +851,7 @@ _adb_pl_insert() {
   # which avoids `stat`'s incompatible flags between macOS and GNU.
   # Reported by the declared reviewer on PR #429.
   cp -p "$file" "$tmp" 2>/dev/null || true
-  if ! ADB_PL_LINE="$line" awk -v e="$end" '
+  if ! ADB_PL_LINE="$line" LC_ALL=C awk -v e="$end" '
         { l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l) }
         l == e && !done { print ENVIRON["ADB_PL_LINE"]; done = 1 }
         { print }
@@ -1002,7 +1009,15 @@ cmd_record() {
   # process that can know is this one, now, while it still holds the lock — so the ledger is read
   # back and this thread must be in it. A miss is 21, with what the directory holds beside the
   # ledger (locks, stale tombstones, temp files) printed so the next occurrence diagnoses itself.
-  if ! _adb_pl_hits "$ledger" | awk -F'\t' -v t="$OPT_THREAD" '$4 == t { found = 1 } END { exit !found }'; then
+  # A ledger that no longer PARSES is a different failure from a lost row, and is told as one (18):
+  # reading the parse failure as a miss sent the reader looking for a concurrent writer (#522).
+  local after
+  after="$(_adb_pl_hits "$ledger")" || {
+    printf 'pattern-ledger: %s does not parse after the insert of thread %s (lock held, token %s)\n' \
+      "$ledger" "$OPT_THREAD" "${_ADB_PL_LOCK_TOKEN:-none}" >&2
+    exit 18
+  }
+  if ! printf '%s\n' "$after" | awk -F'\t' -v t="$OPT_THREAD" '$4 == t { found = 1 } END { exit !found }'; then
     printf 'pattern-ledger: the row for thread %s is NOT in %s after its own insert — the ledger was overwritten under this writer (lock held, token %s). Beside it: %s\n' \
       "$OPT_THREAD" "$ledger" "${_ADB_PL_LOCK_TOKEN:-none}" "$(ls -a "$(dirname "$ledger")" 2>/dev/null | tr '\n' ' ')" >&2
     exit 21

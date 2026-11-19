@@ -291,6 +291,18 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Fixed
 
+- **A pattern-ledger row the writer accepts is now read back under a UTF-8 locale (#522).**
+  `record` validates a summary in the C locale, but the readers' awk ran in the caller's, where
+  `[[:cntrl:]]` also matches U+0085 and a byte that is not valid UTF-8 aborts the BSD awk. One such
+  summary made `record` exit 21 blaming a concurrent writer, and every reader, `checklist`
+  included, then refused the whole ledger (18) until it was edited by hand. The region reader, both
+  parsers and the insert now run in the C locale. A ledger that no longer parses after `record`'s
+  own insert is now 18 with its own message, not a lost row. D161.
+
+- **The pattern ledger promotes `timing-assertion-under-load` (#461, folded into #522).** Its second
+  hit, PR #452's concurrent-writer fix, is recorded, and the ledger header documents how a hit with
+  no review thread is recorded (`self-review-r<N>[-<slug>]`, `self-found-pr<N>-<slug>`).
+
 - **This repository's check suites no longer fail on a match they found, test a sibling checkout,
   or write to the checkout they run from (#458).** Four defects in `scripts/check-*.sh`, fixed in
   one sweep. (1) Under `pipefail`, `producer | grep -q` is non-zero when grep's early exit kills

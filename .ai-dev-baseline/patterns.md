@@ -17,6 +17,11 @@ to the project's own review settings.)
 The only lines with a machine-read grammar are the ones between the markers below; the prose
 around them is yours.
 
+**A hit with no review thread still needs a thread id**, because the id is what makes a re-run a
+no-op. Never invent a GitHub node id. A finding from local self-review round N is
+`self-review-r<N>[-<slug>]`; a defect found and fixed in PR N's branch outside any review round —
+to turn CI green, say — is `self-found-pr<N>-<slug>`.
+
 **Two branches can both append here, and that is handled by ordinary means.** Git may report a
 conflict when two pull requests add hits at the same point — take both sides; the entries are
 independent and are keyed on their review-thread ids, so nothing is lost by keeping them. Promotion
@@ -53,6 +58,7 @@ Sweep each of these before opening a pull request.
 - `silent-permission-change` — When a write publishes a staged file by rename, or copies content into a new file, name the mode the result will carry and check it against the original: carry an existing file's mode onto the stage and refuse the write if it cannot be read or applied; create a copy outside the checkout (TMPDIR) owner-only. A stage or copy made under the umask silently widens what the operator restricted.
 - `unbounded-resource` — For every resource the diff makes a process consume — disk staged in TMPDIR, the wall clock a CI job or dispatch spends, a pool of workers — name the bound that governs it and check the bound still covers the WHOLE workload with every gate forced on: stream instead of staging an unbounded input, and when a job gains a step, re-measure and resize its timeout-minutes in the same change with the figure in its comment. A bound sized for yesterday cancels today silently.
 - `path-divergence` — When a fix or a rule applies on one path of a decision, find every sibling path that decides the same thing — the success and the failure path, the reported and the skipped item, each consumer of a shared filter — and apply it there too, or route them all through one helper. Grep the diff for the predicate the fix added and ask of each place the same question is answered whether it asks it.
+- `timing-assertion-under-load` — a timing or concurrency assertion bounds time WITHOUT PROGRESS, never elapsed wall or queue time that load on a shared runner can eat; its failure message carries the exit code and stderr of every failing worker, so one flap is diagnosable from its own log
 <!-- adb:checklist:end -->
 
 ## Hits
@@ -809,4 +815,5 @@ One line per resolved review thread, newest last.
 - `status-swallowed` `bin/baseline:962` `a176e2b` `PRRT_kwDOTfywrM62anOl` PR #628 2026-11-12 — A heal that left the command allowlist refused exited 0, and the session-start wrapper reads only the exit code, so the refusal reached nobody
 - `status-swallowed` `scripts/check-step-inputs.sh:577` `07233ec` `PRRT_kwDOTfywrM63QeK7` PR #645 2026-11-14 — si_shipped recorded no failure for a verdict that exited non-zero without output
 - `declared-inputs-incomplete` `scripts/selfcheck.sh` `07233ec` `PRRT_kwDOTfywrM63QeLE` PR #645 2026-11-14 — release-skill omitted the libraries its release driver runs through $LIB
+- `timing-assertion-under-load` `scripts/check-pattern-ledger.sh:990` `3638543` `self-found-pr452-lock-wait` PR #452 2026-09-03 — the 20- and 25-writer lock assertions bounded the wait by elapsed queue time, which load can eat; the bound now counts time without progress and the failure prints every non-zero writer's rc and stderr
 <!-- adb:hits:end -->
