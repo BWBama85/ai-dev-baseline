@@ -137,6 +137,16 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Changed
 
+- **The vendored shmutant moves to v0.5.1.** `scripts/shmutant.sh` is the
+  [shmutant](https://github.com/BWBama85/shmutant) v0.5.1 release, copied byte for byte, and
+  `scripts/shmutant.sh.sha256` records its new digest. It hardens how a mutant's run is ended: a
+  hang-up inside a run stays in that run's process group, a watchdog stops once its runner is gone,
+  a process-table read that stalls is abandoned rather than holding the kill, and a kill is
+  confirmed on the recorded process instead of after a fixed wait (BWBama85/shmutant#75, #81, #86,
+  #72, #89). It also adds a filter that runs named rows alone (`--row`, `SHMUTANT_ONLY`, #85),
+  which nothing here uses yet. Nothing this repo calls changed, so `check_shmutant_pool` and the
+  ported rows take no edit.
+
 - **`skill-compose` is retired (#540).** `baseline skill-compose compose`, `check` and
   `list-anchors` now exit `3`, name the retirement and write nothing. Composing needed the global
   base skill, and on any machine with that installed Claude runs the personal base skill over the

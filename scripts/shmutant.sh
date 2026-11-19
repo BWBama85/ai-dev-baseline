@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # shmutant — mutation testing for bash and POSIX shell.
+# SPDX-License-Identifier: MIT
 #
 # Inject one literal defect per row into a throwaway copy of a tree, run only the tests that
 # claim to cover it, and require that test to go RED on its own witness. Vendorable as this one
@@ -13,8 +14,11 @@
 #   shmutant_refuse <reason>                             refuse a declaration the plan checked
 #                                                        itself; the pool then exits 2
 #   shmutant_reset                                       empty the table
-#   shmutant_pool <label> <workdir> <prepare> <run> [cap] run every row; 0 = every row killed,
-#                                                        1 = a row was not, 2 = harness error
+#   shmutant_pool <label> <workdir> <prepare> <run> [cap] run every row (or the rows
+#                                                        SHMUTANT_ONLY names); 0 = every row
+#                                                        killed, 1 = a row was not, 2 = harness
+#                                                        error, 3 = every named row killed (a
+#                                                        filtered pass, never the whole table)
 #   shmutant_mutate <file> <old> <new>                   0 applied, 1 rewrite failed, 2 no match
 #   shmutant_selected <unit>                             true when <unit> is selected (or nothing is)
 #   shmutant_copy_tree <src> <dst>                       copy a tree, excluding .git
@@ -41,6 +45,11 @@
 #                        to report, per unit, the assertion count the unselected run reported
 #                        (default 0; needs SHMUTANT_BASELINE=1)
 #   SHMUTANT_KEEP        1 keeps every clone after its run (default: clones are removed)
+#   SHMUTANT_ONLY        row names, one per line: only those rows are cloned and run, and only
+#                        their selectors get a baseline. Each must name exactly one row of the
+#                        table as it stands before prepare and again after it; set and empty,
+#                        an empty name or a name given twice is refused. Every whole-table check
+#                        still covers every row (default: unset, every row runs)
 #   SHMUTANT_STREAM      file the verdict stream is appended to (default: stdout)
 #   SHMUTANT_DIAG_DIR    absolute path of an existing directory outside the workdir: a run whose
 #                        process group could not be verified as its own leaves a process-table
@@ -53,6 +62,9 @@
 #   shmutant  1  baseline  <select>  <verdict>  <seconds>  <detail>
 #   shmutant  1  row       <verdict> <name>  <target>  <select>  <seconds>  <detail>
 #   shmutant  1  summary   <label>   <rows>  <killed>  <jobs>  <seconds>
+#   shmutant  1  filter    <label>   <selected>  <declared>
+# A filter record is written only by a pass SHMUTANT_ONLY filtered, before any baseline or row
+# record; <rows> in its summary counts the selected rows.
 # Row verdicts: killed (the only pass), survived, accidental, aborted, unapplied, unprepared,
 # baseline, timeout, unsettled, lost. Baseline verdicts: green (the only pass), red, aborted,
 # timeout, unprepared, unsettled, lost, and incomplete (SHMUTANT_COUNTS=1: green, but its counts
@@ -63,6 +75,31 @@
 # on INT/TERM, the trees of running workers. Every external command is run through
 # `command -p`: a function a plan defines under a utility's name, a function exported by the
 # invoking environment, or a PATH prepare set to the tree's own bin never stands in for one.
+#
+# License: the notice below is the whole of the repository's LICENSE file, carried here so that a
+# copy of this one file needs nothing beside it. Keep it in every copy.
+#
+# MIT License
+#
+# Copyright (c) 2026 Brent Wilson
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 # A function named builtin — one the CLI inherited as an exported function, or a caller's —
 # would stand in for every qualified call below; it goes first. Tests below are the [[ keyword,
@@ -88,8 +125,10 @@ fi
 
 # Aliases expand while a file is PARSED: a sourcing shell whose dotfiles alias `cp` or `mkdir`
 # would otherwise bake those flags into every function below. Off for the rest of this file,
-# and the caller's setting put back at its end.
-_shmutant_alias_state="$(\builtin shopt -p expand_aliases; :)"; \builtin shopt -u expand_aliases
+# and the caller's setting put back at its end. The setting is read in a list, where neither the
+# errexit nor an ERR trap of the sourcing shell acts, and what is kept is this file's own text:
+# the output of a substitution would take in whatever such a trap prints, to be evaluated below.
+_shmutant_alias_state='shopt -u expand_aliases'; \builtin shopt -q expand_aliases && _shmutant_alias_state='shopt -s expand_aliases'; \builtin shopt -u expand_aliases
 
 # _shmutant_bash_ok <major> <minor> — is that interpreter version at or above the floor?
 # Defined in bash-3.2 syntax: it runs before the rest of this file is parsed.
@@ -143,11 +182,12 @@ for _shmutant_v in SHMUTANT_VERSION SHMUTANT_PROC SHMUTANT_SELECTED_N SHMUTANT_D
 done
 \builtin unset -v _shmutant_v
 
-SHMUTANT_VERSION=0.4.0
+SHMUTANT_VERSION=0.5.1
 # Process identity comes from the kernel's start time in /proc where there is one (Linux):
 # tick resolution, so a reused pid cannot pass for the process it replaced. Elsewhere it is the
 # start time ps recorded (`lstart`, fixed at the fork, which a clock step does not move), and
-# only where ps has no lstart the wall clock less `ps -o etime`, at second resolution.
+# only where ps has no lstart the wall clock less `ps -o etime`: at second resolution, and less
+# exact by as long as that ps took to read (_shmutant_etime_gap).
 SHMUTANT_PROC=0; [[ -r /proc/self/stat ]] && SHMUTANT_PROC=1
 SHMUTANT_ROWS_NAME=(); SHMUTANT_ROWS_FILE=(); SHMUTANT_ROWS_OLD=(); SHMUTANT_ROWS_NEW=()
 SHMUTANT_ROWS_WIT=(); SHMUTANT_ROWS_SEL=()
@@ -309,32 +349,51 @@ shmutant_selected() {
 # shmutant_copy_tree <src> <dst> — copy <src> to <dst> (created), skipping a top-level .git
 # and keeping symlinks as symlinks, modes, ownership and timestamps. Returns 1 when anything
 # fails to copy, or when <dst> lies inside <src>.
-# _shmutant_aliases_off <site> — expand_aliases off for the rest of a public entry point, the
-# caller's setting saved in SHMUTANT_ALIASES for _shmutant_aliases_back. Bash parses a command
-# substitution when it RUNS it, so with the option on in the caller's shell every `$(printf …)`
-# in this file would expand the caller's alias at run time; the prologue covers only parse time.
-# The first word is quoted, so this switch itself is beyond alias expansion. <site> only labels
-# the call.
-# _shmutant_aliases_off <variable> — save the caller's expand_aliases setting into <variable>
-# (the entry point's own local, so a helper called from inside a pool's callback does not
-# overwrite the pool's) and turn the option off; _shmutant_aliases_back <saved> puts it back.
+# _shmutant_aliases_off <variable> — save the caller's expand_aliases and localvar_inherit
+# settings into <variable> (the entry point's own local, so a helper called from inside a pool's
+# callback does not overwrite the pool's) and turn both options off; _shmutant_aliases_back
+# <saved> puts them back. <saved> is two letters, `s` (on) or `u` (off): expand_aliases, then
+# localvar_inherit; empty puts nothing back.
+# expand_aliases: bash parses a command substitution when it RUNS it, so with the option on in
+# the caller's shell every `$(printf …)` in this file would expand the caller's alias at run
+# time; the prologue covers only parse time. The first word of each switch is quoted, so the
+# switch itself is beyond alias expansion.
+# localvar_inherit: with it on, every `local` in this file would take the value and the
+# attributes (all but nameref) of a caller's variable of the same name: a path declared under an
+# integer attribute is an arithmetic error, and a name declared to be empty is not.
 _shmutant_aliases_off() {
-  # `; :` — shopt -p exits 1 for an option that is off, which a caller's errexit would act on.
-  local st; st="$(\builtin shopt -p expand_aliases; :)"
-  # The builtin and the keyword: this runs before (and after) the shadow check, and a caller's
-  # printf or [ function would otherwise leave the setting unsaved or unrestored.
-  \builtin printf -v "$1" '%s' "$st"
-  \builtin shopt -u expand_aliases
+  # Straight into <variable>, one of four answers, with no name of this function's own (one
+  # declared here, while localvar_inherit is still on, would take a caller's attribute with it)
+  # and nothing kept in between: `set` would hold it, but this runs before the shadow check, and
+  # the calling shell can have disabled that builtin.
+  # Each setting is read in a condition, where neither the errexit nor an ERR trap of the calling
+  # shell acts; no substitution, whose output would take in whatever such a trap prints.
+  # The builtin and the keyword: a caller's printf or [ function would otherwise leave the
+  # settings unsaved or unrestored.
+  if \builtin shopt -q expand_aliases; then
+    if \builtin shopt -q localvar_inherit; then \builtin printf -v "$1" ss; else \builtin printf -v "$1" su; fi
+  elif \builtin shopt -q localvar_inherit; then \builtin printf -v "$1" us
+  else \builtin printf -v "$1" uu
+  fi
+  \builtin shopt -u expand_aliases localvar_inherit
 }
 _shmutant_aliases_back() {
-  [[ -z "$1" ]] || \builtin eval "$1"
+  # By the letter, with nothing evaluated: a line read once expand_aliases is back on would be
+  # read with the caller's aliases, one named shopt among them.
+  case "$1" in ?s) \builtin shopt -s localvar_inherit ;; ?u) \builtin shopt -u localvar_inherit ;; esac
+  case "$1" in s?) \builtin shopt -s expand_aliases ;; u?) \builtin shopt -u expand_aliases ;; esac
 }
 
 shmutant_copy_tree() {
+  # First of all: while the calling shell has a function named builtin, every `\builtin` below
+  # is that function, and the options would be neither saved nor turned off.
+  _shmutant_drop_builtin_fn copy_tree || \builtin :
   # Before any local: bash refuses a local over a readonly global, and the assignment that
   # follows would end a non-interactive caller's shell. The names are this helper's locals.
   _shmutant_locals_writable copy_tree "the calling shell made" adst asrc comp copy_tree_aliases d dst entry frc kinds linked m made n name norm out probe probe2 rc rest rootls src st t who || \builtin return 1
-  local rc copy_tree_aliases; _shmutant_aliases_off copy_tree_aliases
+  # Declared, unset, and only then assigned: under a caller's localvar_inherit, still on here,
+  # the declaration takes the caller's attribute with it.
+  local rc copy_tree_aliases; \builtin unset -v rc copy_tree_aliases; _shmutant_aliases_off copy_tree_aliases
   # The same shadow check as the pool's: a caller's function named printf, cd or [ would
   # otherwise decide what this helper does, with no pool around to refuse it.
   _shmutant_no_shadows copy_tree || { _shmutant_aliases_back "$copy_tree_aliases"; builtin return 1; }
@@ -484,10 +543,13 @@ _shmutant_mutate_restore() {
 # `sed -i` (BSD and GNU differ), so a failed rewrite cannot half-write. A target whose last line
 # has no newline keeps that shape: the only change is the literal.
 shmutant_mutate() {
+  # First of all, as in shmutant_copy_tree.
+  _shmutant_drop_builtin_fn mutate || \builtin :
   # Before any local: bash refuses a local over a readonly global, and the assignment that
   # follows would end a non-interactive caller's shell. The names are this helper's locals.
   _shmutant_locals_writable mutate "the calling shell made" dir dirmode f kinds m mode mutate_aliases n nl out rc st t tmp who || \builtin return 1
-  local rc mutate_aliases; _shmutant_aliases_off mutate_aliases
+  # Declared, unset, and only then assigned, as in shmutant_copy_tree.
+  local rc mutate_aliases; \builtin unset -v rc mutate_aliases; _shmutant_aliases_off mutate_aliases
   _shmutant_no_shadows mutate || { _shmutant_aliases_back "$mutate_aliases"; builtin return 1; }
   # A plain call, not a condition: a callback's own errexit is honoured inside, as documented.
   _shmutant_mutate_body "$@"; rc=$?
@@ -642,11 +704,12 @@ _shmutant_scan_output() {
 }
 
 # _shmutant_descendants <pid> — print every descendant pid of <pid>, via POSIX `ps -A -o pid= -o ppid=`.
-# Prints nothing when ps is unavailable; the process-group kill still applies then. Fails when the
-# table could not be filtered whole.
+# Prints nothing when ps is unavailable, or does not answer within a bound its caller set
+# (_shmutant_ps); the process-group kill still applies then. Fails when the table could not be
+# filtered whole.
 _shmutant_descendants() {
   local table
-  table="$(command -p ps -A -o pid= -o ppid= 2>/dev/null)" || return 0
+  table="$(_shmutant_ps -A -o pid= -o ppid= 2>/dev/null)" || return 0
   (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" '
     { child[NR] = $1; parent[NR] = $2 }
     END {
@@ -710,9 +773,10 @@ _shmutant_diag_dir_check() {
 _shmutant_diag_snapshot() {
   local d="${SHMUTANT_DIAG_DIR:-}" k="$1" n="$2" tbl tmp; shift 2
   [ -n "$d" ] || return 0
-  # The table first: a capture that cannot read one writes nothing.
-  tbl="$(SHMUTANT_PS_BOUND=10 _shmutant_ps -A -o pid,ppid,pgid,sess,stat,lstart,command 2>/dev/null)" \
-    || tbl="$(SHMUTANT_PS_BOUND=10 _shmutant_ps -A -o pid,ppid,pgid,stat,command 2>/dev/null)" || return 0
+  # The table first: a capture that cannot read one writes nothing. No freeze's read, whatever the
+  # caller left in SHMUTANT_PS_UNSETTLES: one given up on is reported nowhere.
+  tbl="$(SHMUTANT_PS_BOUND=10 SHMUTANT_PS_UNSETTLES="" _shmutant_ps -A -o pid,ppid,pgid,sess,stat,lstart,command 2>/dev/null)" \
+    || tbl="$(SHMUTANT_PS_BOUND=10 SHMUTANT_PS_UNSETTLES="" _shmutant_ps -A -o pid,ppid,pgid,stat,command 2>/dev/null)" || return 0
   [ -n "$tbl" ] || return 0
   # A directory replaced since it was checked (by a link into the workdir, say) gets nothing.
   _shmutant_is_id "$d" "${SHMUTANT_DIAG_ID:-}" || return 0
@@ -730,9 +794,10 @@ _shmutant_diag_snapshot() {
 }
 
 # _shmutant_ps <argument>… — `command -p ps <argument>…`, its output and its status. With
-# SHMUTANT_PS_BOUND set to a whole number of seconds from 1 to 999 (a freeze's guard sets it; any other
-# value is no bound), a ps that has not ended within that bound is given up on: status 124, nothing
-# printed, so a process table that stalls reads as one that could not be read. The bound is kept by a
+# SHMUTANT_PS_BOUND set to a whole number of seconds from 1 to 999 (a freeze sets it, and its guard,
+# and a watchdog for each read it makes; any other value is no bound), a ps that has not ended within that bound is given up on: status 124, nothing
+# printed, so a process table that stalls reads as one that could not be read (and, read by a shell
+# doing a freeze, leaves that freeze unsettled: _shmutant_ps_gave_up). The bound is kept by a
 # process substitution of its own, which ends whichever of the ps and its timer is left (only while
 # bash has not reaped it: _shmutant_ps_end). One that does not answer within five
 # seconds more is given up on as well, signalled by nobody. A failed write of the output is a failed
@@ -746,6 +811,10 @@ _shmutant_ps() {
     # No handler of the caller's runs in here: a DEBUG trap its functrace hands down, or a CHLD trap,
     # run between a job's listing and its signal could reap the job and start another under its number.
     builtin trap - CHLD DEBUG RETURN ERR
+    # This substitution's own names, whatever attribute a caller gave them: the timer's path under
+    # an integer one is an arithmetic error, and the read would keep no bound. Unset as well: under
+    # a caller's localvar_inherit a declaration alone takes the caller's attribute with it.
+    builtin local c t w s; builtin unset -v c t w s
     # Job control on and off again before any job: bash then reads this shell's own process group,
     # which a substitution otherwise inherits stale, and starts each job in it, the one form of job
     # its `kill %<job>` signals only while it has not reaped it (_shmutant_ps_end).
@@ -762,13 +831,36 @@ _shmutant_ps() {
     _shmutant_ps_end "$c"; wait "$c"; builtin exit 124
   ) || { return 1; }
   p=$!
-  IFS= read -r -d '' -t "$(( b + 5 ))" -u "$fd" out || st=$?
+  # Read whole, in blocks (-N): to a delimiter, bash reads a pipe one byte a call, and a freeze reads
+  # a whole process table at every pass.
+  IFS= read -r -N 2147483647 -t "$(( b + 5 ))" -u "$fd" out || st=$?
   exec {fd}<&-
-  [ "$st" -le 128 ] || return 124
-  st=0; wait "$p" || st=$?
-  [ "$st" != 124 ] || return 124
+  # A helper that did not answer either is not waited for: the read is given up on as one it ended is.
+  if [ "$st" -gt 128 ]; then st=124; else st=0; wait "$p" || st=$?; fi
+  [ "$st" != 124 ] || { _shmutant_ps_gave_up "$b"; return 124; }
   printf '%s' "$out" || return 1
   return "$st"
+}
+
+# _shmutant_ps_gave_up <seconds> — a read that _shmutant_ps gave up on after <seconds> was one of a
+# shell doing a freeze: that freeze is unsettled, since what the read would have shown was never
+# frozen or never checked. SHMUTANT_PS_UNSETTLES is a descriptor number in such a shell and empty in
+# every other (_shmutant_kill_tree_guarded; 0 is read as empty, which is what the empty value becomes
+# under an integer attribute a caller's localvar_inherit hands down): a copy of where the freeze reports, made before any
+# reader put a redirection of its own on the read, so the give-up is said there whoever read. The
+# runner is told on the descriptor it named, at once and from here: the read may be in a
+# substitution of the freezing shell, which can set nothing in it. A record that cannot be written
+# there is said too, and told to the pool on the worker's own channel (`unrecorded`), where it makes
+# the pass a harness error and the row unsettled: the run must not be scored without it. A ps that itself ends with status
+# 124 is read as one given up on, as it always was. Returns 0 always.
+_shmutant_ps_gave_up() {
+  case "${SHMUTANT_PS_UNSETTLES:-}" in ''|0|*[!0-9]*) return 0 ;; esac
+  _shmutant_err "a read of the process table did not answer within $1 seconds and was given up on, so the process tree being ended is not known to have been frozen whole" 2>&"$SHMUTANT_PS_UNSETTLES"
+  [ -n "${SHMUTANT_UNSETTLED_FD:-}" ] || return 0
+  { printf 'unsettled\n' >&"$SHMUTANT_UNSETTLED_FD"; } 2>/dev/null && return 0
+  _shmutant_err "the run could not be told that its freeze is unsettled, so its verdict is not accepted" 2>&"$SHMUTANT_PS_UNSETTLES"
+  [ -z "${SHMUTANT_VERDICT_FD:-}" ] || { printf 'unrecorded\n' >&"$SHMUTANT_VERDICT_FD"; } 2>/dev/null || _shmutant_err "nor could its pool be told" 2>&"$SHMUTANT_PS_UNSETTLES"
+  return 0
 }
 
 # _shmutant_ps_end <pid> — KILL <pid> while it is a job of this shell's that bash has not reaped:
@@ -794,10 +886,12 @@ _shmutant_ps_end() {
 
 # _shmutant_descendants_started <pid> — print `pid start` for every descendant of <pid>, from one
 # `ps -A -o pid= -o ppid= -o etime=` pass, so each is carried with the identity it had when found.
-# Returns 1 when that process table cannot be read: it always lists the caller, so an empty read is
+# Returns 1 when that process table cannot be read, or does not answer within a bound its caller set
+# (_shmutant_ps): it always lists the caller, so an empty read is
 # a failed one, which a caller can then tell from a pid with no descendants (0, nothing printed).
+# One read across a clock that bounds no elapsed-time start (_shmutant_etime_gap) is a failed one too.
 _shmutant_descendants_started() {
-  local table now
+  local table now before gap
   if [ "${SHMUTANT_PROC:-}" = 1 ]; then
     table="$(_shmutant_proc_table)"; [ -n "$table" ] || return 1
     (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" '
@@ -813,7 +907,7 @@ _shmutant_descendants_started() {
     return 0
   fi
   if [ "${SHMUTANT_PS_LSTART:-}" != 0 ] && _shmutant_identity "$BASHPID" > /dev/null && [ "${SHMUTANT_PS_LSTART:-}" = 1 ]; then
-    table="$(command -p ps -A -o pid= -o ppid= -o lstart= 2>/dev/null)" && [ -n "$table" ] || return 1
+    table="$(_shmutant_ps -A -o pid= -o ppid= -o lstart= 2>/dev/null)" && [ -n "$table" ] || return 1
     (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" '
       NF > 2 && $1 ~ /^[0-9]+$/ { i++; child[i] = $1; parent[i] = $2; $1 = ""; $2 = ""; sub(/^ +/, ""); start[i] = $0 }
       END {
@@ -826,9 +920,10 @@ _shmutant_descendants_started() {
       }' ) || return 1
     return 0
   fi
-  table="$(command -p ps -A -o pid= -o ppid= -o etime= 2>/dev/null)" && [ -n "$table" ] || return 1
-  now="$(_shmutant_now)"; now=$(( now / 1000000 ))
-  (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" -v now="$now" '
+  before="$(_shmutant_now)"
+  table="$(_shmutant_ps -A -o pid= -o ppid= -o etime= 2>/dev/null)" && [ -n "$table" ] || return 1
+  now="$(_shmutant_now)"; gap="$(_shmutant_etime_gap "$before" "$now")" || return 1
+  (set -o pipefail; printf '%s\n' "$table" | command -p awk -v root="$1" -v now="$(( now / 1000000 ))" -v gap="$gap" '
     NF == 3 && $1 ~ /^[0-9]+$/ {
       child[NR] = $1; parent[NR] = $2
       e = $3; d = 0
@@ -837,7 +932,7 @@ _shmutant_descendants_started() {
       if (n == 3) s = t[1] * 3600 + t[2] * 60 + t[3]
       else if (n == 2) s = t[1] * 60 + t[2]
       else s = t[1]
-      start[NR] = "e" (now - (d * 86400 + s))
+      start[NR] = "e" (now - (d * 86400 + s)) gap
     }
     END {
       want[root] = 1
@@ -863,12 +958,30 @@ _shmutant_etime_secs() {
   printf '%s' "$(( 10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$sec ))"
 }
 
-# _shmutant_identity <pid> — the process start time in epoch seconds (now minus POSIX
-# `ps -o etime`), or nothing for a dead pid. It is the one identity that survives what a
-# daemonising descendant does to itself (setsid changes its group, exec its command line) and
-# still tells a reused pid apart: the newer process started later.
+# _shmutant_etime_gap <before> <after> — for a `ps -o etime` read between two readings of
+# _shmutant_now, print what the start derived from it carries after its seconds: nothing when both
+# readings fall in one second, else `+<g>`, the whole seconds between them. The elapsed time ps
+# printed held at some instant between the readings, so the start is <after> less it, or up to <g>
+# seconds earlier, whichever end of its run the ps took it at and however long it ran. Fails for a
+# read the clock moved back across, by however little, or more than ten seconds forward (a ps that
+# stalled, a clock that stepped, a host that slept), each counted in the microseconds read and not
+# in whole seconds: such a read bounds no start, and its caller takes it as a failed one.
+_shmutant_etime_gap() {
+  local g v d
+  for v in "$1" "$2"; do case "$v" in ''|*[!0-9]*) return 1 ;; esac; done
+  d=$(( 10#$2 - 10#$1 ))
+  [ "$d" -ge 0 ] && [ "$d" -le 10000000 ] || return 1
+  g=$(( 10#$2 / 1000000 - 10#$1 / 1000000 ))
+  [ "$g" = 0 ] || printf '+%s' "$g"
+}
+
+# _shmutant_identity <pid> — the process start time, or nothing for a dead pid: a /proc tick, an
+# lstart, or `e<seconds>[+<gap>]`, epoch seconds from the clock less POSIX `ps -o etime`
+# (_shmutant_etime_gap). It is the one identity that survives what a daemonising descendant does
+# to itself (setsid changes its group, exec its command line) and still tells a reused pid apart:
+# the newer process started later.
 _shmutant_identity() {
-  local etime now lstart
+  local etime lstart before after gap
   if [ "${SHMUTANT_PROC:-}" = 1 ]; then
     # The kernel's own start time in clock ticks (field 22 of /proc/<pid>/stat, after the LAST
     # `)` of the parenthesised name, which may hold a newline or a `)` of its own; the file is
@@ -889,17 +1002,19 @@ _shmutant_identity() {
     if [ -n "$(_shmutant_ps -o lstart= -p "$BASHPID" 2>/dev/null)" ]; then SHMUTANT_PS_LSTART=1; return 1; fi
     SHMUTANT_PS_LSTART=0
   fi
+  before="$(_shmutant_now)"
   etime="$(set -o pipefail; _shmutant_ps -o etime= -p "$1" 2>/dev/null | command -p tr -d ' ')" || return 1
   [ -n "$etime" ] || return 1
-  now="$(_shmutant_now)"
-  printf 'e%s' "$(( now / 1000000 - $(_shmutant_etime_secs "$etime") ))"
+  after="$(_shmutant_now)"; gap="$(_shmutant_etime_gap "$before" "$after")" || return 1
+  printf 'e%s%s' "$(( after / 1000000 - $(_shmutant_etime_secs "$etime") ))" "$gap"
 }
 
 # _shmutant_identity_table — fill SHMUTANT_START[pid] with the start time of every live process
 # from ONE `ps -A`. A kill that asked per pid spent longer identifying a tree than the tree's
-# earliest members needed to finish.
+# earliest members needed to finish. A read that failed fills nothing, and so does one across a
+# clock that bounds no elapsed-time start (_shmutant_etime_gap).
 _shmutant_identity_table() {
-  local line now
+  local line now before gap
   SHMUTANT_START=()
   if [ "${SHMUTANT_PROC:-}" = 1 ]; then
     while IFS= read -r line; do
@@ -919,10 +1034,12 @@ _shmutant_identity_table() {
     done <<< "$tbl"
     return 0
   fi
-  now="$(_shmutant_now)"; now=$(( now / 1000000 ))
-  # awk does the etime arithmetic for every row at once; a bash loop over the whole process
-  # table took longer than the tree being frozen had left to live.
-  tbl="$(set -o pipefail; _shmutant_ps -A -o pid= -o etime= 2>/dev/null | command -p awk -v now="$now" '
+  before="$(_shmutant_now)"
+  # awk reads the elapsed seconds of every row at once; a bash loop over the whole process table
+  # took longer than the tree being frozen had left to live. What is left for the loop below is one
+  # subtraction a row, from the clock read once the table is in: of whole numbers only (%d), since
+  # bash abandons the whole command, callers and all, that it computes anything else in.
+  tbl="$(set -o pipefail; _shmutant_ps -A -o pid= -o etime= 2>/dev/null | command -p awk '
     NF == 2 && $1 ~ /^[0-9]+$/ {
       e = $2; d = 0
       if (e ~ /-/) { split(e, a, "-"); d = a[1]; e = a[2] }
@@ -930,16 +1047,18 @@ _shmutant_identity_table() {
       if (n == 3) s = t[1] * 3600 + t[2] * 60 + t[3]
       else if (n == 2) s = t[1] * 60 + t[2]
       else s = t[1]
-      print $1, "e" (now - (d * 86400 + s))
+      printf "%s %d\n", $1, d * 86400 + s
     }')" || return 0
+  now="$(_shmutant_now)"; gap="$(_shmutant_etime_gap "$before" "$now")" || return 0
+  now=$(( now / 1000000 ))
   while IFS= read -r line; do
     # shellcheck disable=SC2034
-    [ -z "$line" ] || SHMUTANT_START["${line%% *}"]="${line#* }"
+    [ -z "$line" ] || SHMUTANT_START["${line%% *}"]="e$(( now - ${line#* } ))$gap"
   done <<< "$tbl"
 }
 
 # _shmutant_alive_since <pid> <start-seen> — true when <pid> still started when <start-seen>
-# says, within the one-second resolution of etime. A reused pid started later.
+# says (_shmutant_same_start). A reused pid started later.
 _shmutant_alive_since() {
   local now
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
@@ -950,15 +1069,21 @@ _shmutant_alive_since() {
 
 # _shmutant_same_start <a> <b> — the two identities name the same start. A recorded start (a
 # /proc tick, an lstart) matches exactly: a pid reused in the next tick is another process.
-# Only the elapsed-time form, marked with a leading e, carries the one-second resolution of
-# etime, and it matches only its own form.
+# Only the elapsed-time form, marked with a leading e, names a range and matches only its own form:
+# `e<s>+<g>` is a start in the seconds <s>-<g> to <s> (_shmutant_etime_gap; `e<s>` is that second
+# alone), and two match when their ranges come within the one second etime resolves. So a process
+# is read with one start by the walk, the identity and the table, however long each ps took within
+# the ten seconds a read may take, and a pid reused more than a second outside both ranges is not.
 _shmutant_same_start() {
-  local d
+  local d a b ga=0 gb=0 v
   [ -n "$1" ] && [ -n "$2" ] || return 1
   case "$1" in
     e*) case "$2" in e*) ;; *) return 1 ;; esac
-        case "${1#e}${2#e}" in ''|*[!0-9]*) return 1 ;; esac
-        d=$(( ${1#e} - ${2#e} )); [ "$d" -ge -1 ] && [ "$d" -le 1 ] ;;
+        a="${1#e}"; b="${2#e}"
+        case "$a" in *+*) ga="${a#*+}"; a="${a%%+*}" ;; esac
+        case "$b" in *+*) gb="${b#*+}"; b="${b%%+*}" ;; esac
+        for v in "$a" "$b" "$ga" "$gb"; do case "$v" in ''|*[!0-9]*) return 1 ;; esac; done
+        d=$(( 10#$a - 10#$b )); [ "$d" -ge $(( -1 - 10#$gb )) ] && [ "$d" -le $(( 1 + 10#$ga )) ] ;;
     *)  [ "$1" = "$2" ] ;;
   esac
 }
@@ -1052,7 +1177,10 @@ _shmutant_frozen_only() {
 # earliest children finish before their turn. A stopped pid cannot exit, so it cannot be reused
 # either, and frozen pids need no identity. There is no TERM and no grace: continuing a frozen
 # tree to let it handle TERM also lets a handler that ignores it run on, and after a deadline
-# nothing may run at all. <pids…> are identity-checked victims recorded earlier (the watchdog's,
+# nothing is given time to handle anything. Part of the tree can still run for an instant: a
+# stopped process group whose last parent outside it is killed first is orphaned, and the kernel
+# sends it SIGHUP and SIGCONT before its own KILL in the same kill lands. <pids…> are
+# identity-checked victims recorded earlier (the watchdog's,
 # the wrapper's), frozen and searched from as well: one that still lived could otherwise fork a
 # child out of reach.
 # The freeze is guarded. A shell killed between its first stop and its KILL (a supervisor's TERM,
@@ -1074,7 +1202,17 @@ _shmutant_kill_tree_twice() {
 # _shmutant_kill_tree_guarded [-g <pgid>] <pid> <pids…> — the work of _shmutant_kill_tree_twice, in
 # its subshell.
 _shmutant_kill_tree_guarded() {
-  local held=""
+  # Every process-table read of this freeze, its own and those of each step it calls, gives up after
+  # ten seconds (_shmutant_ps) and is then one that could not be read: a ps that does not answer
+  # holds the freeze for that long a read, never for good. A read given up on leaves the freeze
+  # unsettled (_shmutant_ps_gave_up; the owner's call, D17), and is said on a copy, made here, of the
+  # descriptor the freeze reports on, or of this shell's stderr where it has none.
+  local held="" SHMUTANT_PS_BOUND=10 SHMUTANT_PS_UNSETTLES=""
+  # A write to a guard that has gone, or of a give-up's words to a reader that has gone, fails here:
+  # it does not end this shell partway through a freeze, nor a read of it before its give-up is
+  # recorded. So before the first read.
+  trap '' PIPE
+  exec {SHMUTANT_PS_UNSETTLES}>&"${err_fd:-2}" || SHMUTANT_PS_UNSETTLES=2
   if [ "${1:-}" = -g ]; then held="$2"; shift 2; fi
   local spec="$1" pid rootid p d rid guard_w="" guard_r="" guard_lost=0 guard_pid="" guard_id=""
   # The guard's way to tell this shell is gone while a helper of it still holds the records open:
@@ -1088,8 +1226,6 @@ _shmutant_kill_tree_guarded() {
   local SHMUTANT_KILL_GROUP="" SHMUTANT_FREEZE_UNSETTLED=0 group_untold=""
   shift
   pid="${spec%%:*}"
-  # A write to a guard that has gone fails here; it does not end this shell partway through a freeze.
-  trap '' PIPE
   # The guard first: its start can take a minute on a loaded host, so whatever is checked to decide
   # what may be stopped and killed is checked after it, just before it is acted on. A root or a
   # holder found alive before that may have ended and given its number away by then.
@@ -1235,6 +1371,14 @@ _shmutant_kill_tree_guarded() {
   return 0
 }
 
+# _shmutant_group_table — print `pid pgid` for every process, from one ps. Fails when that table
+# cannot be read, or does not answer within a bound its caller set (_shmutant_ps): it always lists
+# the caller, so an empty read is a failed one.
+_shmutant_group_table() {
+  local table
+  table="$(_shmutant_ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] && printf '%s\n' "$table"
+}
+
 # _shmutant_guard_members <pgid> — tell the guard of each member of the stopped group <pgid>, with
 # the start it carries, and take each as frozen (it is stopped, so its number is its own) and as a
 # root of the walk, whose descendants may sit in other groups, once _shmutant_frozen_only shows it
@@ -1250,7 +1394,7 @@ _shmutant_guard_members() {
   local table out p first
   local -a members=() recs=()
   local -A SHMUTANT_START=()
-  table="$(command -p ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] || return 1
+  table="$(_shmutant_group_table)" || return 1
   out="$(set -o pipefail; printf '%s\n' "$table" | command -p awk -v g="$1" '$2 == g { print $1 }')" || return 1
   if [ -z "$out" ]; then _shmutant_guard_tell m; return; fi
   mapfile -t members <<< "$out"
@@ -1258,7 +1402,7 @@ _shmutant_guard_members() {
   # The group read again after the starts: a member still in it is the process both reads saw, since
   # no member forks into a group whose members are all stopped. One gone from it between the reads
   # (killed, its number perhaps someone else's by the start read) is not told.
-  table="$(command -p ps -A -o pid= -o pgid= 2>/dev/null)" && [ -n "$table" ] || return 1
+  table="$(_shmutant_group_table)" || return 1
   out="$(set -o pipefail; printf '%s\n' "$table" | command -p awk -v g="$1" '$2 == g { print " " $1 " " }' | command -p tr -d '\n')" || return 1
   # Nor is the group told whole while the second read holds a member the first did not: a process of
   # the run's session can join it between them, and that one is never told.
@@ -1468,8 +1612,10 @@ _shmutant_guard() {
   local -A SHMUTANT_START=() killing=()
   # Every process-table read it makes gives up after ten seconds (_shmutant_ps), and reads as one that
   # could not be read: once its freezing shell is gone nothing else is left to bound a ps that stalls,
-  # and a read that never returns would keep it from sending anything at all.
+  # and a read that never returns would keep it from sending anything at all. Such a read is its own,
+  # not its freezing shell's, and says nothing of that freeze (_shmutant_ps_gave_up).
   local SHMUTANT_PS_BOUND=10
+  local SHMUTANT_PS_UNSETTLES=""
   # Its own process: the caller's errexit would end it at the first refused signal or failed write.
   set +e
   printf 'ready %s\n' "$BASHPID"
@@ -1772,16 +1918,36 @@ _shmutant_table_state() {
   return 0
 }
 
-# _shmutant_snapshot <pid> — print `pid:identity` for every live descendant of <pid> now.
+# _shmutant_snapshot <pid> — print `pid:identity` for every live descendant of <pid> now. Returns
+# 1 when a line could not be written, whichever line it was, and 0 otherwise.
+# localvar_inherit is off while it reads, for a run or a plan that turned it on: the declarations
+# of every read would otherwise take what the calling shell's variables of their names hold, and
+# the record of what the run left would be lost to the first that did not fit. It is back on as
+# the snapshot returns: the shell of a plan whose `exec` did not replace it goes on.
 _shmutant_snapshot() {
+  if builtin shopt -q localvar_inherit; then
+    builtin shopt -u localvar_inherit
+    # In a condition: under errexit a snapshot that failed would otherwise end this shell with
+    # the option still off, and an EXIT handler would run under a setting it was not written for.
+    if _shmutant_snapshot_now "$1"; then builtin set -- 0; else builtin set -- "$?"; fi
+    builtin shopt -s localvar_inherit; builtin return "$1"
+  else _shmutant_snapshot_now "$1"
+  fi
+}
+# _shmutant_snapshot_now <pid> — the snapshot itself. A write that failed is kept in the second
+# positional parameter, so a line skipped after it does not end the loop with 0, and so the
+# status is the same where errexit is on as where it is not.
+_shmutant_snapshot_now() {
   local p
   local -A SHMUTANT_START=()
+  builtin set -- "$1" 0
   _shmutant_identity_table
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -n "${SHMUTANT_START[$p]:-}" ] || continue
-    printf '%s:%s\n' "$p" "${SHMUTANT_START[$p]}"
+    printf '%s:%s\n' "$p" "${SHMUTANT_START[$p]}" || builtin set -- "$1" 1
   done < <(_shmutant_descendants "$1")
+  builtin return "$2"
 }
 
 # _shmutant_run_bounded <dir> <run> <root> <select> — run the adapter with stdout+stderr in
@@ -1794,6 +1960,11 @@ _shmutant_run_bounded() {
   local dir="$1" run="$2" root="$3" sel="$4" wit="${5:-}" timeout mark fifo fd left seen outf line
   local left_w left_r seen_w seen_r fired out_w out_r out_r2 hold hold_r hp go holder holderid err_fd l kept
   local counts counts_w counts_r counts_r2
+  # What the runner, the wrapper and the watchdog below assign: they are subshells of this function,
+  # and a name declared here is not assigned under an attribute a caller gave it (an integer one
+  # turns a start such as `Thu Nov 12 ...` into an arithmetic error). The declaration takes
+  # nothing of the caller's with it: localvar_inherit is off from the pool's entry.
+  local budget d dog dog_self done_first elapsed last leftovers orphaned p pid rc rootid rrc runner runner_gap runnerid s seen_ck tampered tnow victims
   timeout="$(_shmutant_pos_int "${SHMUTANT_TIMEOUT:-300}")" || timeout=0
   SHMUTANT_RUN_FIRED=0; SHMUTANT_RUN_RED=0; SHMUTANT_RUN_WITNESSED=0; SHMUTANT_RUN_UNSETTLED=0; SHMUTANT_RUN_PUBLISHED=1
   SHMUTANT_RUN_COUNTS=""; SHMUTANT_RUN_COUNTS_BAD=""
@@ -1840,7 +2011,9 @@ _shmutant_run_bounded() {
     return 0
   fi
   # An unsettled freeze, from this shell or the watchdog, is reported on the sightings channel.
-  local SHMUTANT_UNSETTLED_FD="$seen_w"
+  # (No read of the runner, the wrapper or the watchdog is one of a freeze: a value of the caller's
+  # in that name must not make one of them unsettle the run.)
+  local SHMUTANT_UNSETTLED_FD="$seen_w" SHMUTANT_PS_UNSETTLES=""
   (
     set -m
     # The snapshot is an EXIT trap of the wrapper, so it runs however the callback ends: a
@@ -1859,13 +2032,26 @@ _shmutant_run_bounded() {
     # would otherwise leave it blocked for good. It ends once nothing of the run holds a writer.
     # A bare `exit` keeps the status it would have had: the snapshot runs first and must not
     # replace it.
-    ( _shmutant_wrap_left="$left_w"
+    # Job control on and off again, first: bash records the jobs of a command or process
+    # substitution under the process group it last read for the shell, reads it only when job
+    # control is turned on, and sends that group SIGHUP when a substitution holding a job is hung
+    # up in a shell with an EXIT trap. This shell was moved into its own group after the runner
+    # read the pool's. Read here, a hang-up taken by a substitution of the callback stays in the
+    # run's group; unread, it reaches the pool's.
+    # The record's descriptor under a name of the wrapper's own, declared: a nameref of the
+    # calling shell's on that name would have the snapshot written wherever the callback last
+    # pointed its referent. The EXIT trap and the exit function carry the number itself: an
+    # arithmetic error in the callback drops the rest of this subshell's commands and this
+    # function's names with them, and the trap (or the exit function, called from an EXIT trap
+    # of the callback's own) then runs where the declared name is out of scope.
+    ( builtin set -o monitor; builtin set +o monitor
+      builtin local _shmutant_wrap_left="$left_w"
       ( ( read -r _ <&"$hold_r" ) < /dev/null > /dev/null 2>&1 {hold}>&- & printf '%s\n' "$!" >&"$hp" )
       # No plan code until the runner has published this run's group and holder for the abort
       # path: an interrupt before that would find a run it could not name.
       read -t 30 -r _ <&"$go" || builtin exit 127
-      trap '_shmutant_snapshot "$BASHPID" >&"$_shmutant_wrap_left"' EXIT
-      exit() { local s=$?; _shmutant_snapshot "$BASHPID" >&"$_shmutant_wrap_left"; if [ "$#" -eq 0 ]; then builtin exit "$s"; else builtin exit "$@"; fi; }
+      trap '_shmutant_snapshot "$BASHPID" >&'"$_shmutant_wrap_left" EXIT
+      builtin eval 'exit() { local s=$?; _shmutant_snapshot "$BASHPID" >&'"$_shmutant_wrap_left"'; if [ "$#" -eq 0 ]; then builtin exit "$s"; else builtin exit "$@"; fi; }'
       # The counter describes this run: what the sourcing shell counted before the pool is not
       # this callback's, and a suite that refuses to pass on zero must be able to see zero.
       # The count descriptor is this run's own, by number; with the counts off there is none, so
@@ -1883,21 +2069,42 @@ _shmutant_run_bounded() {
     # The root's identity while it is certainly alive: the post-run kill must not stop or signal
     # a reaped root by number.
     rootid="$(_shmutant_identity "$pid")" || rootid=""
+    # This shell's own pid and start, for the watchdog to look for it by (_shmutant_runner_there).
+    # A read given up on as that look's are: a start that could not be read is one the watchdog
+    # does without.
+    runner="$BASHPID"
+    runnerid="$(SHMUTANT_PS_BOUND=1 _shmutant_identity "$runner")" || runnerid=""
     [ -z "${SHMUTANT_VERDICT_FD:-}" ] || { printf 'group %s %s %s\n' "$pid" "$holder" "$holderid" >&"$SHMUTANT_VERDICT_FD"; } 2>/dev/null
-    printf 'go\n' >&"$go"
     dog=""
     # With or without a deadline: the descendants a run leaves behind are otherwise seen only
     # at its return, and one that reparented out of the group by then is out of reach.
+    # Started before the callback is let go: a runner killed at any moment after that leaves a
+    # watchdog to end the run, and one killed before it leaves a callback that never ran.
     {
       (
+        # Job control on and off again, first, as the wrapper does: this shell was moved into a
+        # group of its own after the runner read the pool's, and a substitution of it that is hung
+        # up while it holds a job sends SIGHUP to the group bash has recorded. A freeze of the
+        # worker's tree stops this group and KILLs the runner, and the kernel then hangs the group
+        # up. Read here, that hang-up stays in this group; unread, it reaches the pool's.
+        builtin set -o monitor && builtin set +o monitor
         # Descendants are snapshotted every half second while the run is alive, so one that
         # detaches from the leader before the deadline (a new session, a reparented child) is
         # still named at the kill. A double fork whose intermediate lives less than a poll is
         # not reachable this way; that needs a containment mechanism this file does not use.
         # Cancelled (the run returned): what was seen is left for the runner, which still has
         # to clean up whatever the callback left behind.
-        trap 'kill "$s" 2>/dev/null; for p in "${!seen[@]}"; do printf "%s:%s\n" "$p" "${seen[$p]}"; done >&"$seen_w"; exit 0' TERM
+        # What the handler names is this shell's own before the handler can run: a watchdog
+        # cancelled ahead of its first poll must not signal, or report as seen, what a caller's
+        # variables of these names happened to hold. `s` is declared with this function's names,
+        # empty until the first sleep; `seen` is made here.
         declare -A seen=(); tampered=0
+        trap 'kill "$s" 2>/dev/null; for p in "${!seen[@]}"; do printf "%s:%s\n" "$p" "${seen[$p]}"; done >&"$seen_w"; exit 0' TERM
+        # The runner is looked for on every pass as well (_shmutant_runner_there). An elapsed-time
+        # start is told from a clock step by how much older the runner is than this shell, read here
+        # of the two in one ps, which is given up on like every read of that look.
+        orphaned=0; dog_self="$BASHPID"; runner_gap=""
+        case "$runnerid" in e*) runner_gap="$(SHMUTANT_PS_BOUND=1 _shmutant_elapsed_gap "$runner" "$dog_self")" || runner_gap="" ;; esac
         # The deadline is elapsed time as this loop sees it, one poll at a time, each poll's
         # share clamped to [its own sleep, 5 s]: a clock set back cannot extend the run (a poll
         # counts at least the half second it slept) and one set forward cannot cut it by more
@@ -1920,7 +2127,12 @@ _shmutant_run_bounded() {
             [ -n "$p" ] || continue
             [ -n "${seen[${p%%:*}]:-}" ] && continue
             seen["${p%%:*}"]="${p#*:}"
-          done < <(_shmutant_snapshot "$pid")
+          done < <(SHMUTANT_PS_BOUND=5 _shmutant_snapshot "$pid")
+          # (Each read of that snapshot is given up on after five seconds, and the pass then sees
+          # nothing new: a ps that stalls must not keep this loop from its runner or its deadline.)
+          # A runner killed from outside cancels nothing and releases no holder: the run is ended
+          # here, as at a deadline, with what this pass has just seen of it.
+          _shmutant_runner_there || { orphaned=1; break; }
           # The target too, on every pass: a rewrite put back before the run returns would pass
           # the check made afterwards; one that lasts a poll or more is seen here. A sample that
           # could not be read is no match, whatever it printed before the stage that failed.
@@ -1932,12 +2144,17 @@ _shmutant_run_bounded() {
         # Committed: a TERM from the runner (which may have seen the run return in the same
         # instant) must not stop the freeze halfway and leave stopped processes behind.
         trap '' TERM
-        printf 'fired\n' >&"$fired"
-        # What was still there at the deadline, for the record: a run that hangs is diagnosed
-        # from this list, not from an output that stopped.
-        { printf 'shmutant: %s: still running at the deadline (pid ppid stat args):\n' "$dir"
-          command -p ps -o pid= -o ppid= -o stat= -o args= -p "$(IFS=,; printf '%s' "$pid,${!seen[*]}")" 2>/dev/null | command -p head -n 30 | command -p cut -c1-200
-        } 1>&"$err_fd" 2>/dev/null
+        # No deadline was reached when the runner has gone, and nobody is left to read a verdict:
+        # neither is reported.
+        if [ "$orphaned" = 0 ]; then
+          printf 'fired\n' >&"$fired"
+          # What was still there at the deadline, for the record: a run that hangs is diagnosed
+          # from this list, not from an output that stopped. A list that does not answer within ten
+          # seconds is left out (_shmutant_ps): it must not keep the freeze below from its run.
+          { printf 'shmutant: %s: still running at the deadline (pid ppid stat args):\n' "$dir"
+            SHMUTANT_PS_BOUND=10 _shmutant_ps -o pid= -o ppid= -o stat= -o args= -p "$(IFS=,; printf '%s' "$pid,${!seen[*]}")" 2>/dev/null | command -p head -n 30 | command -p cut -c1-200
+          } 1>&"$err_fd" 2>/dev/null
+        fi
         # An array of pid:identity pairs, never an unquoted expansion.
         victims=()
         for p in "${!seen[@]}"; do victims+=("$p:${seen[$p]}"); done
@@ -1945,6 +2162,7 @@ _shmutant_run_bounded() {
       ) < /dev/null > /dev/null 2>&1 &
       dog=$!
     }
+    printf 'go\n' >&"$go"
     if [ -n "$dog" ]; then
       # Whichever ends first. A watchdog that ends before the leader has fired and failed to
       # finish (or died): the leader may be frozen, and waiting on it would never return, so
@@ -2140,9 +2358,32 @@ _shmutant_holder_state() {
 _shmutant_held_group() {
   SHMUTANT_HELD=()
   [ -n "${holder:-}" ] || return 0
-  # A holder that cannot be checked (2) is taken as it was, as it would be with no ps at all.
-  _shmutant_holder_state "$holder" "${holderid:-}" || [ "$?" = 2 ] || return 0
+  # A holder that cannot be checked (2) is taken as it was, as it would be with no ps at all. So is
+  # one whose read does not answer within ten seconds (_shmutant_ps): the look comes before the
+  # freeze, and is none of its reads whatever the caller left in SHMUTANT_PS_UNSETTLES.
+  SHMUTANT_PS_BOUND=10 SHMUTANT_PS_UNSETTLES="" _shmutant_holder_state "$holder" "${holderid:-}" || [ "$?" = 2 ] || return 0
   SHMUTANT_HELD=(-g "$1")
+}
+
+# _shmutant_runner_there — 0 while a run's runner is still the process that started this watchdog,
+# 1 once it is not, read as a freeze's guard reads its freezing shell
+# (_shmutant_guard_freezer_there): not there once its number is free, a zombie's, or carries
+# another start; there with no start captured or none that can be read now, and with an
+# elapsed-time start that has moved only as far as the watchdog's own (a clock step).
+# Each read of the process table it makes is given up on after a second (six, should the read's own
+# helper not answer: _shmutant_ps) and is then one that could not be made: a ps that stalls holds a
+# poll for seconds, never the watchdog for good.
+# The runner is older than the watchdog it started, so a gap that says younger, by more than the
+# second etime resolves, was read of another process at the runner's number: not there.
+# Globals: runner, runnerid (set by _shmutant_run_bounded's runner); dog_self, runner_gap (by its
+# watchdog).
+_shmutant_runner_there() {
+  # Declared, then assigned: a start assigned under an integer attribute of a caller's is an
+  # arithmetic error, which would read as a runner that has gone.
+  local guard_of guard_of_id guard_self guard_gap_ref SHMUTANT_PS_BOUND
+  guard_of="${runner:-}"; guard_of_id="${runnerid:-}"; guard_self="${dog_self:-}"; guard_gap_ref="${runner_gap:-}"; SHMUTANT_PS_BOUND=1
+  [ -z "$guard_gap_ref" ] || [ "$guard_gap_ref" -ge -1 ] || return 1
+  _shmutant_guard_freezer_there || return 1
 }
 
 # _shmutant_worker_finish <dir> <verdict> <microseconds> <status> — drop the clone unless
@@ -2231,6 +2472,10 @@ _shmutant_worker() {
     # its path), then to the target's directory relative to that, re-checked to be inside this
     # clone physically, naming the target by its base name alone: nothing named by path after
     # the identity check can be redirected by a sibling.
+    # The two names the rewrite assigns are this function's own: undeclared, they would be
+    # assigned under whatever attribute the calling shell gave a variable of that name (a path
+    # under an integer one is an arithmetic error, and the row would read as unprepared).
+    local wroot base
     ( builtin cd -P -- "$dir" 2>/dev/null || exit 4
       _shmutant_is_id . "${SHMUTANT_DIR_IDS[$kind-$i]:-}" || exit 4
       wroot="$(builtin pwd -P)"
@@ -2341,9 +2586,10 @@ _shmutant_link_count() {
 
 # _shmutant_collect <dir> <key> <wait-status> — read a reaped worker's channel into
 # SHMUTANT_RES_*[key] (and SHMUTANT_V_*): the last `verdict <v> <us> <status>` line, or `lost`
-# when there is none, the line is damaged, or the worker did not exit 0. Closes the channel.
+# when there is none, the line is damaged, or the worker did not exit 0; `unsettled` in the place of
+# any other when the worker sent `unrecorded` (_shmutant_ps_gave_up). Closes the channel.
 _shmutant_collect() {
-  local dir="$1" key="$2" wstatus="$3" line fd unpublished=0 setup_failed=0 swapped=0 clone_id="" counts="" counts_bad="" counts_end="" counts_got=0
+  local dir="$1" key="$2" wstatus="$3" line fd unpublished=0 setup_failed=0 swapped=0 unrecorded=0 clone_id="" counts="" counts_bad="" counts_end="" counts_got=0
   SHMUTANT_V_VERDICT=lost; SHMUTANT_V_US=0; SHMUTANT_V_STATUS=""
   fd="${SHMUTANT_VERDICT_R[$key]:-}"
   if [ -n "$fd" ]; then
@@ -2358,6 +2604,7 @@ _shmutant_collect() {
         unpublished) unpublished=1 ;;
         setup-failed) setup_failed=1 ;;
         swapped)     swapped=1 ;;
+        unrecorded)  unrecorded=1 ;;
         "count "*)   counts+="${line#count }"$'\n'; counts_got=$((counts_got + 1)) ;;
         "counts-bad "*) counts_bad="${line#counts-bad }" ;;
         "counts-end "*) counts_end="${line#counts-end }" ;;
@@ -2383,6 +2630,9 @@ _shmutant_collect() {
     fi
   fi
   [ -n "$SHMUTANT_V_VERDICT" ] || SHMUTANT_V_VERDICT=lost
+  # A give-up the runner could not be told of makes the row what that record would have: unsettled,
+  # whatever verdict the worker then sent. A lost one stays lost.
+  [ "$unrecorded" != 1 ] || [ "$SHMUTANT_V_VERDICT" = lost ] || SHMUTANT_V_VERDICT=unsettled
   _shmutant_pos_int "$SHMUTANT_V_US" > /dev/null || SHMUTANT_V_US=0
   SHMUTANT_RES_VERDICT["$key"]="$SHMUTANT_V_VERDICT"; SHMUTANT_RES_US["$key"]="$SHMUTANT_V_US"; SHMUTANT_RES_STATUS["$key"]="$SHMUTANT_V_STATUS"
   # A baseline's counts are whole only up to its end marker: a worker whose writes failed partway
@@ -2395,6 +2645,9 @@ _shmutant_collect() {
   SHMUTANT_RES_COUNTS["$key"]="${counts%$'\n'}"; SHMUTANT_RES_COUNTS_BAD["$key"]="$counts_bad"
   if [ "$setup_failed" = 1 ]; then
     _shmutant_err "$dir: the run could not be set up (a channel could not be made or opened) — the row was never run"; SHMUTANT_CLEANUP_FAILED=1
+  fi
+  if [ "$unrecorded" = 1 ]; then
+    _shmutant_err "$dir: a freeze gave up on a read of the process table and could not record that it is unsettled — the run's verdict is not accepted"; SHMUTANT_CLEANUP_FAILED=1
   fi
   if [ "$unpublished" = 1 ]; then
     _shmutant_err "$dir/output could not be published — the documented artifact of this run is missing"; SHMUTANT_CLEANUP_FAILED=1
@@ -2478,7 +2731,7 @@ _shmutant_detail() {
     baseline)   printf 'the tests selected by [%s] did not come back green BEFORE any defect was injected — a red result here would prove nothing (see the baseline record)' "$4" ;;
     timeout)    printf 'did not finish within %ss — a defect that hangs the suite is endured, not detected' "${SHMUTANT_TIMEOUT:-300}" ;;
     lost)       printf 'produced NO verdict — its worker died without reporting' ;;
-    unsettled)  printf 'its process tree never settled — something kept forking out of reach while it was being ended, or it could not be frozen first, so what it did cannot be trusted' ;;
+    unsettled)  printf 'its process tree never settled — something kept forking out of reach while it was being ended, it could not be frozen first, or the process table did not answer while it was, so what it did cannot be trusted' ;;
     *)          printf 'unknown verdict [%s]' "$1" ;;
   esac
 }
@@ -2523,7 +2776,8 @@ _shmutant_fresh_dir() {
 }
 
 # _shmutant_run_jobs <kind> <count> <workdir> <run> <suffix> <jobs> — run <count> workers of
-# <kind> through a bounded pool; a mut index whose SHMUTANT_SKIP entry is 1 is not started.
+# <kind> through a bounded pool; a mut index whose SHMUTANT_SKIP entry is not 0 is not started
+# (1: its selector's baseline was not green; 2: SHMUTANT_ONLY did not name it).
 # Reaps by pid, so a caller's own background jobs are never consumed by the pool.
 # _shmutant_abort_workers <signal> — on INT or TERM while workers run: kill every active
 # worker's process tree, put the caller's own traps back, and deliver the signal again so the
@@ -2574,11 +2828,19 @@ _shmutant_release_traps() {
 # _shmutant_traps_last — the RETURN trap of shmutant_pool: the caller's RETURN and DEBUG traps
 # go back here, when the pool's status is already settled and no harness command follows —
 # whatever a handler does now cannot change what the pool returned. DEBUG last of all.
-_shmutant_traps_last() {
-  local ret="${SHMUTANT_TRAP_RETURN_PENDING:-}" dbg="${SHMUTANT_TRAP_DEBUG_PENDING:-}"
+# The two declarations go on as arguments, not in names of this function's: it runs after the
+# caller's localvar_inherit is back, where a declared name takes a caller's attribute (an empty
+# declaration under an integer one is `0`, which would be evaluated as a command). Arguments, and
+# not `set`: a pool refused because prepare disabled that builtin still hands the traps back.
+_shmutant_traps_last() { _shmutant_traps_last_put "${SHMUTANT_TRAP_RETURN_PENDING:-}" "${SHMUTANT_TRAP_DEBUG_PENDING:-}"; }
+# _shmutant_traps_last_put <RETURN declaration> <DEBUG declaration> — each put back, or the trap
+# cleared when its declaration is empty.
+_shmutant_traps_last_put() {
   builtin unset SHMUTANT_TRAP_RETURN_PENDING SHMUTANT_TRAP_DEBUG_PENDING SHMUTANT_TRAPS_PENDING
-  if [[ -n "$ret" ]]; then builtin eval "$ret"; else builtin trap - RETURN; fi
-  if [[ -n "$dbg" ]]; then builtin eval "$dbg"; else builtin trap - DEBUG; fi
+  # Each declaration behind a quoted `builtin`: the caller's expand_aliases is back by now, and
+  # an evaluated line that began with the word `trap` would be read with an alias of that name.
+  if [[ -n "$1" ]]; then builtin eval "\\builtin $1"; else builtin trap - RETURN; fi
+  if [[ -n "$2" ]]; then builtin eval "\\builtin $2"; else builtin trap - DEBUG; fi
 }
 
 # _shmutant_saved_trap <signal> — the caller's current trap declaration for <signal> as
@@ -2709,6 +2971,7 @@ _shmutant_validate_settings() {
   # (or end the run's shell) under a callback that reads the variable rather than its argument.
   if _shmutant_readonly SHMUTANT_SELECT; then _shmutant_err "$label: SHMUTANT_SELECT is readonly — the pool sets it for every run; leave it writable"; return 2; fi
   case "${SHMUTANT_KEEP:-0}" in 0|1) ;; *) _shmutant_err "$label: SHMUTANT_KEEP must be 0 or 1, got [${SHMUTANT_KEEP:-}]"; return 2 ;; esac
+  if [ -n "${SHMUTANT_ONLY+x}" ]; then _shmutant_only_format "$label" || return 2; fi
   if [ -n "${SHMUTANT_RED_PREFIX+x}" ] && [ -z "$SHMUTANT_RED_PREFIX" ]; then
     _shmutant_err "$label: SHMUTANT_RED_PREFIX is empty — every line would count as a red line"; return 2
   fi
@@ -2739,6 +3002,57 @@ _shmutant_validate_settings() {
     _shmutant_canon "$label" SHMUTANT_STREAM "$sdir/$(command -p basename -- "$SHMUTANT_STREAM")" || return 2
   fi
 
+  return 0
+}
+
+# _shmutant_only_format <label> — SHMUTANT_ONLY, which is set, is one or more names, one per
+# line, none empty and none given twice. Compared with `[ = ]`, which no shell option makes
+# case-insensitive. Returns 2 with a message otherwise.
+_shmutant_only_format() {
+  local label="$1" rest name k
+  local -a names=()
+  [ -n "$SHMUTANT_ONLY" ] || { _shmutant_err "$label: SHMUTANT_ONLY is set and empty — it would select no row; unset it to run the whole table"; return 2; }
+  rest="$SHMUTANT_ONLY"
+  while :; do
+    name="${rest%%$'\n'*}"
+    [ -n "$name" ] || { _shmutant_err "$label: SHMUTANT_ONLY holds an empty name (a blank line, or a newline at its start or end) — every name must be a row's"; return 2; }
+    for k in "${names[@]}"; do
+      [ "$k" != "$name" ] || { _shmutant_err "$label: SHMUTANT_ONLY names '$name' twice"; return 2; }
+    done
+    names+=("$name")
+    case "$rest" in *$'\n'*) rest="${rest#*$'\n'}" ;; *) break ;; esac
+  done
+  return 0
+}
+
+# _shmutant_only_pick <label> — which rows of the table as it stands run: SHMUTANT_PICK[i] is 1
+# for a row that runs and 0 for one that does not, SHMUTANT_PICK_N counts the 1s. Unset
+# SHMUTANT_ONLY picks every row. Each name it holds must name exactly one row, compared whole;
+# every name that does not is reported before it returns 2. Its format was checked already.
+_shmutant_only_pick() {
+  local label="$1" rest name i hits bad=0
+  SHMUTANT_PICK=(); SHMUTANT_PICK_N=0
+  if [ -z "${SHMUTANT_ONLY+x}" ]; then
+    for (( i = 0; i < ${#SHMUTANT_ROWS_NAME[@]}; i++ )); do SHMUTANT_PICK[i]=1; done
+    SHMUTANT_PICK_N="${#SHMUTANT_ROWS_NAME[@]}"
+    return 0
+  fi
+  for (( i = 0; i < ${#SHMUTANT_ROWS_NAME[@]}; i++ )); do SHMUTANT_PICK[i]=0; done
+  rest="$SHMUTANT_ONLY"
+  while :; do
+    name="${rest%%$'\n'*}"; hits=0
+    for (( i = 0; i < ${#SHMUTANT_ROWS_NAME[@]}; i++ )); do
+      if [ "${SHMUTANT_ROWS_NAME[$i]}" = "$name" ]; then hits=$((hits + 1)); SHMUTANT_PICK[i]=1; fi
+    done
+    if [ "$hits" -eq 0 ]; then
+      _shmutant_err "$label: SHMUTANT_ONLY names '$name', which no row of the table declares"; bad=$((bad + 1))
+    elif [ "$hits" -gt 1 ]; then
+      _shmutant_err "$label: SHMUTANT_ONLY names '$name', which $hits rows share — a filter cannot tell which one is meant"; bad=$((bad + 1))
+    fi
+    SHMUTANT_PICK_N=$((SHMUTANT_PICK_N + hits))
+    case "$rest" in *$'\n'*) rest="${rest#*$'\n'}" ;; *) break ;; esac
+  done
+  if [ "$bad" -ne 0 ]; then _shmutant_err "$label: $bad name(s) in SHMUTANT_ONLY refused — nothing was run"; return 2; fi
   return 0
 }
 
@@ -2848,8 +3162,14 @@ _shmutant_locals_writable_in() {
 # held and only when prepare did not make that name readonly (dynamic scope reaches it, and the
 # assignment would end a non-interactive caller). The status arrives as a positional parameter,
 # which no callback can mark readonly. Refuses with status 1.
+# The traps are held first of all (the saves declare no name), so a handler prepare left sees
+# none of what follows. Then a function named builtin that prepare defined is removed: `\builtin`
+# would be that function, and the option below would stay on. Then localvar_inherit goes off
+# again, for a prepare that turned it on: every declaration from here to the pool's return would
+# otherwise take what a variable of its name holds at the scope before it.
 _shmutant_pool_stash() {
-  _shmutant_hold_traps
+  _shmutant_hold_traps; _shmutant_drop_builtin_fn stash || \builtin :
+  \builtin shopt -u localvar_inherit
   # if/else, not a return: a `return` function prepare defined would fall through to the
   # assignment; the shadow check that refuses it comes after this.
   if _shmutant_readonly _shmutant_pool_prc; then
@@ -2865,14 +3185,14 @@ _shmutant_pool_locals_writable() {
   _shmutant_locals_writable "$1" "$2" \
     SHMUTANT_FREEZE_UNSETTLED SHMUTANT_KILL_GROUP SHMUTANT_START SHMUTANT_UNSETTLED_FD _shmutant_pool_cap _shmutant_pool_errexit _shmutant_pool_label _shmutant_pool_n _shmutant_pool_pout_r _shmutant_pool_pout_w _shmutant_pool_prc _shmutant_pool_run \
     _shmutant_pool_t0 _shmutant_pool_wd after_ck ambiguous base base_sel base_verdict base_why cap cksum_bin clone_id comp copy counts counts_bad counts_end counts_got counts_r counts_w cwhy d \
-    dbg depth detail dir dirmode done_pid err_fd errexit_before etime f fd fifo \
+    depth detail dir dirmode done_pid err_fd errexit_before etime f fd fifo \
     fired fmt found frozen go got grp h have held helpers here \
     hms hold hold_r holder holderid hp i id intact jobs jp js k kept key \
     killed killing kind kinds l label left left_r left_w line links ls_bin m mark \
     mode ms mutate_aliases n named new nl now out out_r out_r2 out_w outf \
     p parent path pending phys pid pids pool_aliases pout pout_r pout_w prc \
-    prep r rc red rel rest ret rjrc root root_ok rootid rootls \
-    roots rounds row_why run s sdir sec seen seen_r seen_w sel sent setup_failed sig size starts nul counts_r2 \
+    prep r rc red rel rest rjrc root root_ok rootid rootls \
+    roots rounds row_why run s sdir sec seen seen_r seen_w sel sent setup_failed unrecorded sig size starts nul counts_r2 \
     spec st stat_bin state status stillours stillpids stops suffix swapped t t0 t1 \
     table target target_ck targets timeout tmp unpublished us v v_jobs v_red v_timeout \
     verdict vr vw wd who wit wrc wstatus \
@@ -2890,10 +3210,13 @@ _shmutant_pool_locals_writable() {
     SHMUTANT_VERDICT_W SHMUTANT_V_STATUS SHMUTANT_V_US SHMUTANT_V_VERDICT SHMUTANT_WD_ID \
     SHMUTANT_ROWS_NAME SHMUTANT_ROWS_FILE SHMUTANT_ROWS_OLD SHMUTANT_ROWS_NEW SHMUTANT_ROWS_WIT SHMUTANT_ROWS_SEL \
     SHMUTANT_TARGET SHMUTANT_DECL_ERRORS SHMUTANT_SELECTED_N \
-    _shmutant_bo _shmutant_so _shmutant_o _shmutant_n _shmutant_pc _shmutant_wrap_left \
+    _shmutant_wrap_left \
     a budget dog e elapsed last leftovers linked lstart old rrc s tampered tmpd tnow victims wroot \
+    dog_self done_first orphaned runner runner_gap runnerid \
     b chunk conts g gcont gone_group guard_id guard_lost guard_of guard_of_id guard_pid guard_r guard_up guard_w hs kept kills members out pairs part pg ph phid recs rid rootid_pre seen_ck unfrozen w want \
-    SHMUTANT_GUARD SHMUTANT_GUARD_PID SHMUTANT_PS_LSTART SHMUTANT_PS_BOUND c guard_self guard_gap_ref gap ea eb lp le tbl cands guarded jl w fid_now stopped fgap cont_first cfirst told group_untold first
+    SHMUTANT_GUARD SHMUTANT_GUARD_PID SHMUTANT_PS_LSTART SHMUTANT_PS_BOUND SHMUTANT_PS_UNSETTLES c guard_self guard_gap_ref gap ea eb lp le tbl cands guarded jl w fid_now stopped fgap cont_first cfirst told group_untold first \
+    before after ga gb \
+    bad hits name names only scope SHMUTANT_PICK SHMUTANT_PICK_N
 }
 
 # _shmutant_decl_writable <label> — the table's own names, checked by each declaration entry
@@ -3062,45 +3385,54 @@ _shmutant_pool_cleanup() {
   unset SHMUTANT_PRISTINE_STATE
 }
 
-# _shmutant_drop_builtin_fn — remove a function named builtin without trusting any command
-# name: an assignment to POSIXLY_CORRECT enters posix mode, where the special builtin `unset`
+# _shmutant_drop_builtin_fn [<label>] — remove a function named builtin without trusting any command
+# name (<label> only tells one call from another): an assignment to POSIXLY_CORRECT enters posix mode, where the special builtin `unset`
 # is found before a function of its name. With `builtin` real, every other shadow (a function
 # named return included) is refused through `builtin …`, never removed. Leaving posix mode resets shell options wholesale
 # (expand_aliases off, inherit_errexit left on, …), so every option that changed is put back
 # from BASHOPTS and SHELLOPTS, read before and after — variables, which nothing shadows — with
-# the real builtin, which is real again by then. No `local`: that name is not yet checked.
-_shmutant_drop_builtin_fn() {
-  _shmutant_bo="$BASHOPTS"; _shmutant_so="$SHELLOPTS"; _shmutant_pc="${POSIXLY_CORRECT+set}:${POSIXLY_CORRECT-}"
+# the real builtin, which is real again by then. No `local`: that name is not yet checked. What
+# was read before is kept in positional parameters, which take no attribute and belong to no
+# caller: a name assigned here would be assigned under whatever attribute the calling shell gave
+# it, and written through a nameref of the calling shell's.
+_shmutant_drop_builtin_fn() { _shmutant_drop_builtin_fn_from "$BASHOPTS" "$SHELLOPTS" "${POSIXLY_CORRECT+set}:${POSIXLY_CORRECT-}"; }
+# _shmutant_drop_builtin_fn_from <BASHOPTS> <SHELLOPTS> <set:value, or : when unset> — the
+# removal, then the options and POSIXLY_CORRECT put back as the three arguments recorded them.
+_shmutant_drop_builtin_fn_from() {
   POSIXLY_CORRECT=1; unset -f builtin 2>/dev/null; unset POSIXLY_CORRECT
-  _shmutant_o="$_shmutant_bo"
-  while [[ -n "$_shmutant_o" ]]; do
-    _shmutant_n="${_shmutant_o%%:*}"; case "$_shmutant_o" in *:*) _shmutant_o="${_shmutant_o#*:}" ;; *) _shmutant_o="" ;; esac
-    case ":$BASHOPTS:" in *":$_shmutant_n:"*) ;; *) builtin shopt -s "$_shmutant_n" 2>/dev/null ;; esac
-  done
-  _shmutant_o="$BASHOPTS"
-  while [[ -n "$_shmutant_o" ]]; do
-    _shmutant_n="${_shmutant_o%%:*}"; case "$_shmutant_o" in *:*) _shmutant_o="${_shmutant_o#*:}" ;; *) _shmutant_o="" ;; esac
-    case ":$_shmutant_bo:" in *":$_shmutant_n:"*) ;; *) builtin shopt -u "$_shmutant_n" 2>/dev/null ;; esac
-  done
-  _shmutant_o="$_shmutant_so"
-  while [[ -n "$_shmutant_o" ]]; do
-    _shmutant_n="${_shmutant_o%%:*}"; case "$_shmutant_o" in *:*) _shmutant_o="${_shmutant_o#*:}" ;; *) _shmutant_o="" ;; esac
-    case ":$SHELLOPTS:" in *":$_shmutant_n:"*) ;; *) builtin set -o "$_shmutant_n" 2>/dev/null ;; esac
-  done
-  _shmutant_o="$SHELLOPTS"
-  while [[ -n "$_shmutant_o" ]]; do
-    _shmutant_n="${_shmutant_o%%:*}"; case "$_shmutant_o" in *:*) _shmutant_o="${_shmutant_o#*:}" ;; *) _shmutant_o="" ;; esac
-    case ":$_shmutant_so:" in *":$_shmutant_n:"*) ;; *) builtin set +o "$_shmutant_n" 2>/dev/null ;; esac
-  done
+  _shmutant_opts_put shopt -s "$BASHOPTS" "$1"
+  _shmutant_opts_put shopt -u "$1" "$BASHOPTS"
+  _shmutant_opts_put set -o "$SHELLOPTS" "$2"
+  _shmutant_opts_put set +o "$2" "$SHELLOPTS"
   # Two options BASHOPTS does not report reliably around this toggle: leaving posix mode turns
   # expand_aliases off, and leaves inherit_errexit on when errexit is on. Both from before.
-  case ":$_shmutant_bo:" in *:expand_aliases:*) builtin shopt -s expand_aliases ;; *) builtin shopt -u expand_aliases ;; esac
-  case ":$_shmutant_bo:" in *:inherit_errexit:*) builtin shopt -s inherit_errexit ;; *) builtin shopt -u inherit_errexit ;; esac
+  case ":$1:" in *:expand_aliases:*) builtin shopt -s expand_aliases ;; *) builtin shopt -u expand_aliases ;; esac
+  case ":$1:" in *:inherit_errexit:*) builtin shopt -s inherit_errexit ;; *) builtin shopt -u inherit_errexit ;; esac
   # POSIXLY_CORRECT exactly as the caller had it: `set -o posix` above recreates it as `y`, and
   # the caller's own value, or its absence, is what the caller's later commands read. Unset only
   # when it is set: unsetting it leaves posix mode, which turns expand_aliases off again.
-  case "$_shmutant_pc" in set:*) POSIXLY_CORRECT="${_shmutant_pc#set:}" ;; *) [[ -z "${POSIXLY_CORRECT+set}" ]] || builtin unset -v POSIXLY_CORRECT ;; esac
-  builtin unset -v _shmutant_bo _shmutant_so _shmutant_o _shmutant_n _shmutant_pc
+  case "$3" in set:*) POSIXLY_CORRECT="${3#set:}" ;; *) [[ -z "${POSIXLY_CORRECT+set}" ]] || builtin unset -v POSIXLY_CORRECT ;; esac
+}
+# _shmutant_opts_put <shopt|set> <flag> <have> <list> — <flag> given to the builtin for each
+# option of the colon-separated <list> that the colon-separated <have> does not hold. Eight
+# options to a call, each reached by stripping the fields before it, in positional parameters
+# only: a call per option would count against a FUNCNEST of the calling shell's, and a loop needs
+# `set` or `shift` to move on, either of which the calling shell can have disabled.
+_shmutant_opts_put() {
+  [[ -n "$4" ]] || builtin return 0
+  _shmutant_opt_put "$1" "$2" "$3" "$4"
+  case "$4" in *:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:}" ;; esac
+  case "$4" in *:*:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:*:}" ;; esac
+  case "$4" in *:*:*:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:*:*:}" ;; esac
+  case "$4" in *:*:*:*:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:*:*:*:}" ;; esac
+  case "$4" in *:*:*:*:*:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:*:*:*:*:}" ;; esac
+  case "$4" in *:*:*:*:*:*:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:*:*:*:*:*:}" ;; esac
+  case "$4" in *:*:*:*:*:*:*:*) _shmutant_opt_put "$1" "$2" "$3" "${4#*:*:*:*:*:*:*:}" ;; esac
+  case "$4" in *:*:*:*:*:*:*:*:*) _shmutant_opts_put "$1" "$2" "$3" "${4#*:*:*:*:*:*:*:*:}" ;; esac
+}
+# _shmutant_opt_put <shopt|set> <flag> <have> <list> — the same for the first option of <list>.
+_shmutant_opt_put() {
+  case ":$3:" in *":${4%%:*}:"*) ;; *) builtin "$1" "$2" "${4%%:*}" 2>/dev/null ;; esac
 }
 
 # _shmutant_no_shadows <label> — refuse to run while a builtin this harness signals, waits and
@@ -3126,7 +3458,9 @@ _shmutant_no_shadows() {
 # mut-N) are removed only from a workdir shmutant marked as its own on first use; a caller's
 # directory that happens to carry those names is refused, not emptied.
 _shmutant_workdir_owned() {
-  local label="$1" wd="$2" line="" size=""
+  # e: the name the loop below walks the workdir's entries by. Undeclared, it would be assigned
+  # under an attribute of the calling shell's, and an entry read as `0` is one that is not there.
+  local label="$1" wd="$2" line="" size="" e
   if [ -f "$wd/.shmutant" ] && [ ! -L "$wd/.shmutant" ]; then
     # The marker is exactly the line shmutant writes, its newline included and nothing after it:
     # a caller's own .shmutant (a config, a sentinel, one that merely begins with that line) does
@@ -3157,19 +3491,24 @@ _shmutant_report_keep() {
   { printf '%s\n' "${SHMUTANT_KEEP:-0}" >&"$SHMUTANT_CLI_KEEP_FD"; } 2>/dev/null || _shmutant_err "the keep channel could not be written; an interrupt would not know to keep the workdir"
 }
 
-# shmutant_pool <label> <workdir> <prepare> <run> [cap] — run every table row. Prepares the
-# tree once, runs each distinct selector uninjected (SHMUTANT_BASELINE), then every row through a
-# pool of min(SHMUTANT_JOBS or CPUs, cap or 8) workers. Emits the verdict stream and one stderr
-# line per row that was not killed. Returns 0 when every row was killed, 1 when any was not,
-# 2 when the harness itself could not run (a refused declaration, empty table, bad workdir,
-# prepare failed, root outside the workdir, or a verdict-stream write that failed).
+# shmutant_pool <label> <workdir> <prepare> <run> [cap] — run every table row, or only the rows
+# SHMUTANT_ONLY names. Prepares the tree once, runs each distinct selector of those rows
+# uninjected (SHMUTANT_BASELINE), then each of those rows through a pool of min(SHMUTANT_JOBS or
+# CPUs, cap or 8) workers. Emits the verdict stream and one stderr line per row that was not
+# killed. Returns 0 when every row was killed, 1 when any was not, 2 when the harness itself
+# could not run (a refused declaration, empty table, bad workdir, prepare failed, root outside
+# the workdir, a SHMUTANT_ONLY name that names no row or several, or a verdict-stream write that
+# failed), and 3 when a filtered pass killed every row it ran.
 shmutant_pool() {
-  # Aliases off for the whole pool, callbacks included (their bodies were parsed when defined);
-  # the caller's setting is put back on return.
+  # Aliases and localvar_inherit off for the whole pool, callbacks included (their bodies were
+  # parsed when defined); the caller's settings are put back on return.
+  # First of all, as in shmutant_copy_tree.
+  _shmutant_drop_builtin_fn pool || \builtin :
   # Before any local: bash refuses a local over a readonly global, and the assignment that
   # follows would end a non-interactive caller's shell.
   _shmutant_pool_locals_writable pool "the calling shell made" || \builtin return 2
-  local rc pool_aliases; _shmutant_aliases_off pool_aliases
+  # Declared, unset, and only then assigned, as in shmutant_copy_tree.
+  local rc pool_aliases; \builtin unset -v rc pool_aliases; _shmutant_aliases_off pool_aliases
   # A plain call, not a condition: a callback's own errexit is honoured inside, as documented.
   _shmutant_pool_body "$@"; rc=$?
   _shmutant_aliases_back "$pool_aliases"
@@ -3183,7 +3522,7 @@ shmutant_pool() {
 _shmutant_pool_body() {
   if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then _shmutant_err "pool: usage: shmutant_pool <label> <workdir> <prepare> <run> [cap] (got $# arguments)"; return 2; fi
   local label="$1" wd="$2" prep="$3" run="$4" cap="${5:-}"
-  local n jobs root suffix i k sel t0 t1 killed=0 rc=0 verdict detail rjrc linked starts ambiguous=0 cwhy links
+  local n jobs root suffix i k sel t0 t1 killed=0 rc=0 verdict detail rjrc linked starts ambiguous=0 cwhy links only=0 scope=""
   local -a base_sel=() base_verdict=() base_why=() row_why=()
   n="${#SHMUTANT_ROWS_NAME[@]}"
   t0="$(_shmutant_now)"
@@ -3216,6 +3555,8 @@ _shmutant_pool_body() {
     *[!0-9]*) _shmutant_err "$label: the pool cap must be a positive integer, got [$cap]"; return 2 ;;
     *) if [ "${#cap}" -gt 4 ] || [ "$cap" -lt 1 ]; then _shmutant_err "$label: the pool cap must be a positive integer of at most four digits, got [$cap]"; return 2; fi ;;
   esac
+  # Before prepare builds anything: a name the loaded table does not hold is refused here.
+  _shmutant_only_pick "$label" || return 2
   _shmutant_open_stream "$label" || return 2
   SHMUTANT_PRISTINE_ID=""
   _shmutant_fresh_dir "$wd/pristine" "$wd" || { _shmutant_pool_fail "$label" "$wd"; _shmutant_err "$label: cannot recreate $wd/pristine — stale contents there would be prepared over"; return 2; }
@@ -3293,6 +3634,9 @@ _shmutant_pool_body() {
   if [ "$n" -eq 0 ]; then _shmutant_err "$label: the mutation table is EMPTY — this harness proves nothing"; _shmutant_pool_fail "$label" "$wd"; return 2; fi
   # prepare ran in this shell and may have assigned any setting; the workers read them next.
   _shmutant_validate_settings "$label" "$wd" || { _shmutant_err "$label: a setting changed by prepare is invalid"; _shmutant_pool_fail "$label" "$wd"; return 2; }
+  # Again over the table and the setting prepare left: either may have changed.
+  _shmutant_only_pick "$label" || { _shmutant_pool_fail "$label" "$wd"; return 2; }
+  only=0; scope=""; [ -z "${SHMUTANT_ONLY+x}" ] || only=1
   jobs="$(_shmutant_jobs "$cap")"
   # The settled SHMUTANT_KEEP, for a CLI parent that may have to clean up after an interrupt.
   _shmutant_report_keep after-prepare
@@ -3349,6 +3693,9 @@ _shmutant_pool_body() {
     _shmutant_err "$label: the prepared tree holds a regular file with more than one hard link (${linked%%$'\n'*}) — a clone cannot keep them joined; prepare a tree without them"
     _shmutant_pool_fail "$label" "$wd"; return 2 ;;
   esac
+  # After every whole-table check and before any result: a stream cut off later still shows that
+  # this pass was filtered.
+  [ "$only" = 0 ] || _shmutant_emit shmutant 1 filter "$label" "$SHMUTANT_PICK_N" "$n"
 
   if [ "${SHMUTANT_BASELINE:-1}" != 0 ]; then
     # With the counts on, the unselected run is base-0: an empty selector, which no row has (a
@@ -3356,6 +3703,7 @@ _shmutant_pool_body() {
     # are compared with, and the longest run, so it starts first.
     [ "${SHMUTANT_COUNTS:-0}" != 1 ] || base_sel=("")
     for (( i = 0; i < n; i++ )); do
+      [ "${SHMUTANT_PICK[$i]}" = 1 ] || continue
       sel="${SHMUTANT_ROWS_SEL[$i]}"
       for k in "${base_sel[@]}"; do [ "$k" = "$sel" ] && continue 2; done
       base_sel+=("$sel")
@@ -3393,6 +3741,8 @@ _shmutant_pool_body() {
 
   SHMUTANT_SKIP=()
   for (( i = 0; i < n; i++ )); do
+    # A row the filter did not name gets no worker, no directory and no verdict.
+    if [ "${SHMUTANT_PICK[$i]}" != 1 ]; then SHMUTANT_SKIP[i]=2; continue; fi
     SHMUTANT_SKIP[i]=0
     for (( k = 0; k < ${#base_sel[@]}; k++ )); do
       if [ "${base_sel[$k]}" = "${SHMUTANT_ROWS_SEL[$i]}" ] && [ "${base_verdict[$k]}" != green ]; then
@@ -3417,6 +3767,7 @@ _shmutant_pool_body() {
   [ "$rjrc" -eq 0 ] || { _shmutant_pool_fail "$label" "$wd"; return 2; }
 
   for (( i = 0; i < n; i++ )); do
+    [ "${SHMUTANT_PICK[i]}" = 1 ] || continue
     SHMUTANT_V_VERDICT="${SHMUTANT_RES_VERDICT[mut-$i]:-lost}"; SHMUTANT_V_US="${SHMUTANT_RES_US[mut-$i]:-0}"; SHMUTANT_V_STATUS="${SHMUTANT_RES_STATUS[mut-$i]:-}"
     verdict="$SHMUTANT_V_VERDICT"
     if [ -n "${row_why[$i]:-}" ]; then detail="${row_why[$i]}"
@@ -3431,8 +3782,9 @@ _shmutant_pool_body() {
     fi
   done
   t1="$(_shmutant_now)"
-  _shmutant_emit shmutant 1 summary "$label" "$n" "$killed" "$jobs" "$(_shmutant_secs "$(( t1 - t0 ))")"
-  _shmutant_err "$label: $killed/$n mutation(s) killed on their own witness (jobs=$jobs, $(_shmutant_secs "$(( t1 - t0 ))")s)"
+  _shmutant_emit shmutant 1 summary "$label" "$SHMUTANT_PICK_N" "$killed" "$jobs" "$(_shmutant_secs "$(( t1 - t0 ))")"
+  [ "$only" = 0 ] || scope=" — filtered: $SHMUTANT_PICK_N of $n declared row(s) ran, so this is no verdict on the whole table"
+  _shmutant_err "$label: $killed/$SHMUTANT_PICK_N mutation(s) killed on their own witness (jobs=$jobs, $(_shmutant_secs "$(( t1 - t0 ))")s)$scope"
   # Read before _shmutant_pool_fail, which hands the caller's CHLD trap back: the check forks.
   local intact=1; _shmutant_stream_intact || intact=0
   _shmutant_pool_cleanup "$label" "$wd"
@@ -3443,6 +3795,8 @@ _shmutant_pool_body() {
   elif [ "$SHMUTANT_EMIT_FAILED" -ne 0 ]; then
     _shmutant_err "$label: the verdict stream could not be written (${SHMUTANT_STREAM:-stdout}) — the records above are incomplete"; rc=2
   fi
+  # A filtered pass in which every named row was killed: never 0, which means the whole table.
+  if [ "$rc" -eq 0 ] && [ "$only" = 1 ]; then rc=3; fi
   # The traps go back only now, with the status settled: nothing of the pool's runs after this
   # but its return.
   _shmutant_release_traps
@@ -3454,6 +3808,7 @@ _shmutant_pool_body() {
 _shmutant_usage() {
   command -p cat <<'EOF'
 usage: shmutant run <plan.sh> [--jobs N] [--workdir DIR] [--keep] [--no-baseline] [--timeout S]
+                    [--row NAME]...
        shmutant version
        shmutant checksum
        shmutant help
@@ -3462,8 +3817,10 @@ A plan is a bash file. It defines two functions, `prepare <dir>` and `run <root>
 and declares its rows with `shmutant_target` and `shmutant_mut`. It is sourced with
 SHMUTANT_PLAN_DIR set to its own directory, in a subshell: a plan that exits, execs or fails
 to load ends the run with status 2. Exit: 0 every row killed, 1 a row was not, 2 the plan or
-the harness could not run. A workdir the run created is removed afterwards unless --keep (or
-SHMUTANT_KEEP=1); a --workdir you supplied is never removed.
+the harness could not run, 3 every row --row named was killed (the rest of the table was not
+run). --row takes one row name, verbatim, and may be repeated; it sets SHMUTANT_ONLY. A
+workdir the run created is removed afterwards unless --keep (or SHMUTANT_KEEP=1); a --workdir
+you supplied is never removed.
 EOF
 }
 
@@ -3576,15 +3933,17 @@ _shmutant_cli_leave() {
 # `_shmutant_cli_leave` at the head of the EXIT trap, ahead of one the plan installed (or put
 # it back after the plan removed it), so the keep in force is reported however the plan ends.
 _shmutant_cli_keep_exit_trap() {
-  local t
   # An exec with a program word replaces this shell without running its EXIT trap: the leave
   # report is made before the command that is about to do that. An exec that only redirects
   # (`exec 3>f`, `exec {fd}>f`, `exec >f`) replaces nothing and is not one.
   case "$BASH_COMMAND" in exec|exec\ [!'{<>&'0-9]*) _shmutant_cli_leave before-exec ;; esac
-  t="$(trap -p EXIT)"
-  case "$t" in *_shmutant_cli_leave*) return 0 ;; esac
-  if [ -z "$t" ]; then trap '_shmutant_cli_leave at-exit' EXIT; return 0; fi
-  eval "set -- $t"
+  # The trap's text in a positional parameter, not in a name of this function's: the plan may
+  # have turned localvar_inherit on by now, and a declared name would take the attribute the plan
+  # gave a variable of that name.
+  set -- "$(trap -p EXIT)"
+  case "$1" in *_shmutant_cli_leave*) return 0 ;; esac
+  if [ -z "$1" ]; then trap '_shmutant_cli_leave at-exit' EXIT; return 0; fi
+  eval "set -- $1"
   # Expanded now on purpose: the plan's own command text becomes part of the trap.
   # shellcheck disable=SC2064
   trap "_shmutant_cli_leave at-exit; $3" EXIT
@@ -3612,7 +3971,9 @@ _shmutant_cli_end_group() {
   local holder="${2%% *}" holderid="" err_fd=2
   case "$2" in *" "*) holderid="${2#* }" ;; esac
   [ -n "$holder" ] || return 0
-  _shmutant_holder_state "$holder" "$holderid" || [ "$?" = 2 ] || return 0
+  # Given up on after ten seconds, as every read of the freeze it licenses is (_shmutant_ps), and
+  # none of that freeze's reads, whatever the caller left in SHMUTANT_PS_UNSETTLES.
+  SHMUTANT_PS_BOUND=10 SHMUTANT_PS_UNSETTLES="" _shmutant_holder_state "$holder" "$holderid" || [ "$?" = 2 ] || return 0
   _shmutant_kill_tree_twice -g "$1" "$1:"
   return 0
 }
@@ -3687,7 +4048,7 @@ _shmutant_cli_abort() {
 }
 
 _shmutant_cli_run() {
-  local plan="" wd="" keep=0 made=0 rc done_file marker keep_last="" line plan_holder=""
+  local plan="" wd="" keep=0 made=0 rc done_file marker keep_last="" line plan_holder="" rows_given=0
   # Seeded from the environment for the window before the pool settles the value: an interrupt
   # during plan loading or prepare must not discard artifacts the operator asked to keep.
   [ "${SHMUTANT_KEEP:-0}" = 1 ] && keep=1
@@ -3702,6 +4063,12 @@ _shmutant_cli_run() {
                      SHMUTANT_TIMEOUT="$2"; shift 2 ;;
       --keep)        keep=1; SHMUTANT_KEEP=1; shift ;;
       --no-baseline) SHMUTANT_BASELINE=0; shift ;;
+      # A row name is taken as given, a leading dash included: one the plan does not declare is
+      # refused by name before prepare runs. The first --row replaces SHMUTANT_ONLY.
+      --row)         [ "$#" -ge 2 ] && [ -n "$2" ] || { _shmutant_err "--row needs a row name"; return 2; }
+                     case "$2" in *$'\n'*) _shmutant_err "--row: a row name containing a newline cannot be selected"; return 2 ;; esac
+                     if [ "$rows_given" = 1 ]; then SHMUTANT_ONLY+=$'\n'"$2"; else SHMUTANT_ONLY="$2"; rows_given=1; fi
+                     shift 2 ;;
       -*)            _shmutant_err "unknown option: $1"; _shmutant_usage >&2; return 2 ;;
       *)             [ -z "$plan" ] || { _shmutant_err "one plan only"; return 2; }
                      plan="$1"; shift ;;
@@ -3793,6 +4160,11 @@ _shmutant_cli_run() {
   command -p rm -f -- "$seen_file"
   builtin set -m
   (
+    # Job control on and off again, first, as a run's wrapper does: this shell reads the process
+    # group it was moved into, so a hang-up taken by a substitution of the plan or of prepare
+    # stays in the plan's group. Its holder, a job listed under that group, covers a substitution
+    # of this shell alone; a subshell of the plan lists none of this shell's jobs.
+    builtin set -o monitor; builtin set +o monitor
     # `trap -p` in a subshell reports the parent's traps although none is active: the pool
     # would save this shell's abort handler as the plan subshell's own and re-raise into it.
     trap - INT TERM
@@ -3859,7 +4231,9 @@ shmutant_main() {
   # Options inherited through SHELLOPTS/BASHOPTS/POSIXLY_CORRECT (errexit, nounset, noclobber,
   # posix mode) are reset before anything else runs.
   set +e +u +C +o posix; unset POSIXLY_CORRECT
-  \builtin shopt -u expand_aliases
+  # localvar_inherit too, which BASHOPTS can hand this process: a declaration would take the
+  # value of an environment variable of its name.
+  \builtin shopt -u expand_aliases; \builtin shopt -u localvar_inherit
   case "${1:-}" in
     run)          shift; _shmutant_cli_run "$@" ;;
     version)      printf 'shmutant %s\n' "$SHMUTANT_VERSION" ;;
