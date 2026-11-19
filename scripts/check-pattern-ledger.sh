@@ -411,7 +411,8 @@ _unpinned="$(LC_ALL=C awk '
     l = $0; pinned = 0
     while ((k = index(l, "LC_ALL=C awk")) > 0) { pinned++; l = substr(l, k + 12) }
     if (pinned < words) print NR ": " $0
-  }' "$PL")"
+  }' "$PL")"; _scanrc=$?
+eq "$_scanrc" 0 "5s fixture: the awk-pin scan itself ran — an empty finding from a failed scan proves nothing"
 eq "$_unpinned" "" "5s every awk command in pattern-ledger.sh is spelled LC_ALL=C awk"
 # (b) THE RUN: a stub `awk` ahead of the real one on PATH logs the locale of every call and refuses
 #     any but C, under a caller whose locale is UTF-8. It drives record, due, promote, classes,

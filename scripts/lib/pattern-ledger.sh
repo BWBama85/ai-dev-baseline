@@ -26,8 +26,8 @@
 #                                --rule <class> [--site <path|->] --result <fired|clean>
 #                                # --site defaults to `-`, which is only valid with --result clean
 #   pattern-ledger.sh rule-sweep-report --state <dir> --run <id> --tree <digest>
-#   (record: 21 = the row was not in the ledger after its own insert — a write was lost under
-#    the lock; nothing is reported as recorded that the ledger does not hold. 18 = the insert
+#   (record: 21 = after its own insert the ledger does not hold the record as written — lost, or
+#    changed; nothing is reported as recorded that the ledger does not hold. 18 = the insert
 #    would leave, or left, a ledger that does not parse; 20 = a search for the thread could not run,
 #    before the insert (no hit appended) or after it — neither is a lost row)
 #   pattern-ledger.sh -h | --help
@@ -63,6 +63,7 @@
 #   21 oversized  — `checklist` / `verify`: the promoted checklist exceeds the prompt budget (see
 #                   "What may be stored"). NOTHING is emitted: a truncated checklist would drop the
 #                   sweep a class earned, silently, which is the count-too-low direction.
+#                   `record`: the ledger does not hold its record as written after the insert.
 #   22 held       — `reclaim`: the write lock is held by a writer that is alive, on another host,
 #                   unrecorded, or not yet stale. Nothing was removed.
 #   23 unswept    — `record --sweep`: the sweep file carries no row for this class. Nothing was
@@ -1032,7 +1033,7 @@ cmd_record() {
   _adb_pl_insert "$ledger" "$_ADB_PL_HIT_END" "$rec" || irc=$?
   case "$irc" in
     0) : ;;
-    2) printf 'pattern-ledger: appending thread %s would leave %s unparseable — nothing written\n' "$OPT_THREAD" "$ledger" >&2; exit 18 ;;
+    2) printf 'pattern-ledger: appending thread %s would leave %s unparseable — no hit appended\n' "$OPT_THREAD" "$ledger" >&2; exit 18 ;;
     *) printf 'pattern-ledger: could not append to %s\n' "$ledger" >&2; exit 20 ;;
   esac
   # THE WRITE IS VERIFIED BEFORE IT IS REPORTED. A CI run landed 23 of 25 concurrent first-time
@@ -1199,7 +1200,7 @@ cmd_promote() {
   _adb_pl_insert "$ledger" "$_ADB_PL_CK_END" "$newrule" || irc=$?
   case "$irc" in
     0) : ;;
-    2) printf 'pattern-ledger: promoting %s would leave %s unparseable — nothing written\n' "$OPT_CLASS" "$ledger" >&2; exit 18 ;;
+    2) printf 'pattern-ledger: promoting %s would leave %s unparseable — no rule written\n' "$OPT_CLASS" "$ledger" >&2; exit 18 ;;
     *) printf 'pattern-ledger: could not write %s\n' "$ledger" >&2; exit 20 ;;
   esac
   printf 'promoted %s (%s hits, threshold %s from %s)\n' "$OPT_CLASS" "$count" "$t" "$tsrc"

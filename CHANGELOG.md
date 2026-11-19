@@ -298,7 +298,7 @@ only by a release it upgrades to. These entries are the notes for both.
   one such summary made `record` exit 21 blaming a concurrent writer, and every UTF-8-locale
   reader, `checklist` included, then refused the whole ledger (18). Every awk call in
   `pattern-ledger.sh` now runs in the C locale. An insert whose result would not parse is
-  discarded before it is published (18, nothing written). `record`'s searches no longer read an
+  discarded before it is published (18, no hit appended). `record`'s searches no longer read an
   awk failure as an answer: before the insert one is 20 with nothing appended, where it used to
   append a duplicate, and after it the read-back is 18 for a ledger that no longer parses, 20 for a
   search that could not run, and 21 only when this record is missing. Thread ids are compared as

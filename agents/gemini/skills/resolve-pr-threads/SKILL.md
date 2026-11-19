@@ -895,8 +895,8 @@ case "$RRC" in
   # promotion and resolves the thread — losing the finding permanently. That is the rule below
   # being silently undone by the accumulator added to satisfy a different one.
   # Reported by the declared reviewer on PR #429.
-  *)  echo "STOP: recording this thread failed (rc $RRC) — nothing was stored."
-      echo "      Resolving now would erase the finding; see the table below."
+  *)  echo "STOP: recording this thread failed (rc $RRC) — the hit may not be stored; its own message says."
+      echo "      Resolving now could erase the finding; see the table below."
       exit 1 ;;
 esac
 ```
@@ -973,9 +973,10 @@ bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" record --class <slug> --site 
   | `10` | already recorded — the idempotent re-run case | continue |
   | `23` | the sweep file has no row for this class | **stop**; the finding was not in 4a's findings file — add it and sweep again |
   | `24` | a sibling of this class is still `found` | **stop**; fix and mark it, or disposition it (4a) |
-  | `18` | the ledger, or the sweep file, does not parse | **stop**; `bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" verify` names a ledger record |
+  | `18` | the ledger, or the sweep file, does not parse — or the append would have left it unparseable, in which case nothing was appended and the ledger is unchanged | **stop**; `bash "$HOME/.gemini/scripts/lib/pattern-ledger.sh" verify` names a ledger record when the ledger itself is damaged |
   | `19` | a field was refused | **stop**; fix the value, do not work around it |
-  | `20` | the ledger could not be written — lock timeout, unwritable directory, failed rename | **stop**; nothing was stored |
+  | `20` | the ledger could not be written — lock timeout, unwritable directory, failed rename — or a search for the thread could not run | **stop**; the message says whether it came before the append (nothing appended) or after it (the row may be there) |
+  | `21` | after the append, the ledger does not hold this record as written | **stop**; read the message, which names what is beside the ledger |
   | any other | unknown | **stop** |
 
   Confirm every hit is stored before resolving anything. Reported by the declared reviewer on
