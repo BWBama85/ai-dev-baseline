@@ -371,7 +371,9 @@ while IFS= read -r b; do
   # guard, never a decision: the library re-runs the same ancestry test and remains the only
   # thing that produces a verdict, so a wrong guess here can only waste a call, never delete.
   PRJSON=""
-  if [ "$HAVE_GH" -eq 1 ] && ! git merge-base --is-ancestor "$b" "$BASE" 2>/dev/null; then
+  # Replace objects off, as the verdict judges with them off, so the guard and the verdict read the
+  # same history.
+  if [ "$HAVE_GH" -eq 1 ] && ! GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$b" "$BASE" 2>/dev/null; then
     if ! PRJSON="$(gh pr list --head "$b" --state merged --limit 20 \
                      --json number,headRefOid,mergeCommit 2>/dev/null)"; then
       NOTES="${NOTES}UNVERIFIED $b — the merged-PR query failed; preserved

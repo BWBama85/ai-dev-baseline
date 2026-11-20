@@ -65,7 +65,8 @@
 #   gh pr list --head <branch> --state merged --limit 20 --json number,headRefOid,mergeCommit
 # EMPTY stdin and `[]` both mean "no merged-PR evidence" and yield `unmerged` — that is the
 # no-`gh`/no-remote degradation #106 requires (such a repo behaves exactly as it did before this
-# library existed: only a true fast-forward is deletable). A live query that FAILED must never be
+# library existed: only a true fast-forward is deletable). One exception, with `--pr-heads` only:
+# in a shallow clone an unproved branch is `unverified` whatever the evidence (#545). A live query that FAILED must never be
 # piped in as empty: the caller reports that branch as unverified and preserves it.
 #
 # Requires: git. jq only when PR JSON is actually supplied (a jq-less box still gets `merged-ff`).
@@ -226,9 +227,10 @@ _adb_cl_emit() {   # <with-identity 0|1> <kind> <path> <key>
 # `branch-pr-heads` so the two cannot disagree about which PRs exist. Reads the payload on stdin and
 # prints one `<number>TAB<headRefOid>TAB<mergeCommit.oid>` line per PR that carries a merge commit.
 # The ONE documented skip: a PR whose `mergeCommit` is null or absent proves nothing and is left
-# out, as before. Everything else is validated before it is used: the payload is exactly one JSON
-# array of objects, the number serializes as a plain decimal 1-9999999999, `mergeCommit` (when
-# present) is an object, and both OIDs are complete lowercase hex of THIS repository's object
+# out, as before — but only a row whose number and head are themselves valid. Everything else is
+# validated before it is used: the payload is exactly one JSON array of objects, the number is an
+# integer VALUE 1-9999999999 (emitted as its plain decimal, so `7.0` is PR 7 on every jq build),
+# `mergeCommit` (when present) is an object, and both OIDs are complete lowercase hex of THIS repository's object
 # format (<hexlen>: 40 for sha1, 64 for sha256), anchored to the whole string. Anything else makes
 # jq fail; the callers turn that into their own exit 2, never a quietly dropped row.
 _cl_pr_candidates() {
@@ -238,12 +240,13 @@ _cl_pr_candidates() {
     if length != 1 or (.[0] | type) != "array" then error("not one JSON array") else .[0] end
     | .[]
     | if type != "object" then error("a merged-PR record is not an object") else . end
+    | if (.number | type) != "number" or .number != (.number | floor)
+         or .number < 1 or .number > 9999999999 or (.headRefOid | oid | not)
+      then error("malformed merged-PR record") else . end
     | if .mergeCommit == null then empty
-      elif (.mergeCommit | type) != "object" then error("mergeCommit is not an object")
-      elif ((.number | tostring | test("\\A[1-9][0-9]{0,9}\\z")) and (.number | type) == "number"
-            and (.headRefOid | oid) and (.mergeCommit.oid | oid))
-      then "\(.number)\t\(.headRefOid)\t\(.mergeCommit.oid)"
-      else error("malformed merged-PR record") end
+      elif (.mergeCommit | type) != "object" or (.mergeCommit.oid | oid | not)
+      then error("malformed mergeCommit")
+      else "\(.number | floor | tostring)\t\(.headRefOid)\t\(.mergeCommit.oid)" end
   ' 2>/dev/null
 }
 
@@ -283,7 +286,8 @@ cmd_branch_verdict() {
     [ "$#" -ge 2 ] || die "branch-verdict: --pr-heads needs a ref prefix"
     heads="$2"; shift 2
     case "$heads" in
-      refs/*) : ;;
+      refs/*) git check-ref-format "$heads/1" 2>/dev/null \
+                || die "branch-verdict: --pr-heads is not a valid ref prefix (got '$heads')" ;;
       *) die "branch-verdict: --pr-heads must be a refs/ prefix (got '$heads')" ;;
     esac
   fi
@@ -300,6 +304,8 @@ cmd_branch_verdict() {
     ''|-*) die "branch-verdict: <base-ref> must be a ref (got '$base')" ;;
   esac
   command -v git >/dev/null 2>&1 || die "branch-verdict: git is required"
+  # A branch NAME, never a revision expression: `refs/heads/main~1^{commit}` would resolve.
+  git check-ref-format "refs/heads/$branch" 2>/dev/null || die "branch-verdict: not a valid branch name: $branch"
 
   # Resolve BOTH refs up front, and refuse if either is missing. Resolving the branch through
   # refs/heads/ (never the bare name) means a tag or remote-tracking ref that happens to share the
@@ -311,7 +317,7 @@ cmd_branch_verdict() {
 
   # `--is-ancestor` has THREE outcomes: 0 = ancestor, 1 = not, anything else = git itself failed.
   # Every test below classifies all three, so a git failure is never read as "not merged".
-  git merge-base --is-ancestor "$tip" "$base_oid" 2>/dev/null; rc=$?
+  adb_git_is_ancestor . "$tip" "$base_oid"; rc=$?
   case "$rc" in
     0) printf 'merged-ff\n%s\n' "$tip"; return 0 ;;
     1) : ;;
@@ -426,6 +432,7 @@ cmd_branch_pr_heads() {
   [ "$#" -eq 2 ] || die "branch-pr-heads: needs exactly 2 args: <branch> <base-ref> (merged-PR JSON on stdin)"
   local branch="$1" base="$2" tip base_oid json cands n head oid want="" contained hexlen
   case "$branch" in ''|-*) die "branch-pr-heads: <branch> must be a branch name (got '$branch')" ;; esac
+  git check-ref-format "refs/heads/$branch" 2>/dev/null || die "branch-pr-heads: not a valid branch name: $branch"
   case "$base" in ''|-*) die "branch-pr-heads: <base-ref> must be a ref (got '$base')" ;; esac
   tip="$(git rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)"
   [ -n "$tip" ] || die "branch-pr-heads: no such local branch: $branch"

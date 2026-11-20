@@ -3569,7 +3569,8 @@ printf '[]\n[]' | ( cd "$PHR" && bash "$CL" branch-verdict ph/behind origin/main
 eq "$?" "2" "16a a stream of two arrays is not the one array the query returns"
 for bad in '[null]' '[{"number":7,"headRefOid":"'"$PH_T1"'","mergeCommit":false}]' \
            '[{"number":7,"headRefOid":"'"$PH_T1"'","mergeCommit":{"oid":""}}]' \
-           '[{"number":7.0,"headRefOid":"'"$PH_T1"'","mergeCommit":{"oid":"'"$PH_S7"'"}}]'; do
+           '[{}]' '[{"number":7,"headRefOid":"x","mergeCommit":null}]' \
+           '[{"number":"7","headRefOid":"'"$PH_T1"'","mergeCommit":null}]'; do
   printf '%s' "$bad" | ( cd "$PHR" && bash "$CL" branch-verdict --pr-heads refs/t/pull ph/behind origin/main ) >/dev/null 2>&1
   eq "$?" "2" "16a malformed evidence is refused, never dropped: $bad"
 done
@@ -3615,6 +3616,14 @@ both3="${ printf '[%s,%s]' "${ prjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ p
 eq "${ ph_plan "$both3"; }" "|rc=0" \
    "16a …nor for any other PR once one proves the branch by its exact head"
 eq "${ ph_plan ''; }" "|rc=0" "16a …and none for empty evidence"
+eq "${ ph_plan '[{"number":7.0,"headRefOid":"'"$PH_T1"'","mergeCommit":{"oid":"'"$PH_S7"'"}}]'; }" "7|rc=0" \
+   "16a an integer-valued 7.0 is PR 7, spelled as a plain decimal in the ref it fetches"
+( cd "$PHR" && bash "$CL" branch-pr-heads 'main~1' main </dev/null ) >/dev/null 2>&1
+eq "$?" "2" "16a a revision expression is not a branch name"
+( cd "$PHR" && bash "$CL" branch-verdict 'main~1' origin/main </dev/null ) >/dev/null 2>&1
+eq "$?" "2" "16a …for the verdict either"
+( cd "$PHR" && bash "$CL" branch-verdict --pr-heads 'refs//bad' ph/behind origin/main </dev/null ) >/dev/null 2>&1
+eq "$?" "2" "16a an invalid --pr-heads prefix is refused"
 eq "${ ph_plan "${ prjson 7 "$PH_T1" "$PH_D1"; }"; }" "|rc=0" \
    "16a …and none for a PR whose merge commit is shown outside the base (it cannot prove anything)"
 printf '{"x":1}' | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ) >/dev/null 2>&1
