@@ -305,7 +305,7 @@ only by a release it upgrades to. These entries are the notes for both.
   leaves (#545, #518).** A branch whose PR gained commits in another checkout used to read
   `unmerged` forever, and its run marker read as a run in flight on every sweep. When no merged PR's
   head is the tip, the sweep fetches those PRs' heads from `refs/pull/<n>/head` and deletes the
-  branch when its tip is an ancestor of one (`[#<n> (merge commit …; tip behind its head …)]`).
+  branch when its tip is an ancestor of one whose merge commit is in the default branch (`[#<n> (merge commit …; tip behind its head …)]`).
   When no PR proves the branch and a head could not be fetched, or disagrees with GitHub's, the
   branch is kept and reported `UNVERIFIED`. After a delete, a
   `branch.<name>.*` section the removal could not write (a sandbox protects `.git/config`) is a

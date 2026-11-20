@@ -24,6 +24,13 @@
 # CONTRACT (arguments, stdin shape, exit status); the per-function comments below note only what
 # the code itself cannot show.
 #
+# THREAT MODEL (#545). The predicates defend against ACCIDENTAL damage and against evidence that is
+# stale, missing or unreadable: a fetch that failed, a clone that is shallow, a query that hit its
+# cap, a branch that moved. They do not defend against a deliberately hostile LOCAL repository
+# (a planted symbolic ref in this library's private namespace, legacy grafts, a tag crafted to
+# shadow the base ref) or a forged `gh` payload; whoever controls those already controls the
+# branches being judged. Same line D102 draws for the settings receipt.
+#
 # EXIT STATUS IS FAIL-CLOSED. Every subcommand prints its answer and exits 0 (save `config-left`,
 # whose "keys left" answer is 10, and `run-live`, whose "none" is 10); a malformed
 # argument, unreadable JSON, or a missing dependency exits 2. The caller MUST treat 2 as a hard
@@ -243,17 +250,26 @@ _cl_pr_candidates() {
 # _cl_hexlen — the full OID length of this repository's object format (40 sha1, 64 sha256).
 _cl_hexlen() {
   case "$(git rev-parse --show-object-format 2>/dev/null)" in
+    sha1)   printf '40\n' ;;
     sha256) printf '64\n' ;;
-    *)      printf '40\n' ;;
+    *)      return 2 ;;
   esac
 }
 
 # _cl_contained <oid> <base-oid> — is a merge commit contained in the base? Prints `yes`, `no` or
-# `absent` (the object is not a commit in this clone), and returns 2 when git itself failed.
+# `absent` (no such object in this clone), and returns 2 when git itself failed: `cat-file -e`
+# answers 1 for a missing object and another status for a read it could not perform, and an object
+# that exists but is not a commit cannot be a merge commit (2 as well).
 _cl_contained() {
   local rc
-  [ "$(git cat-file -t "$1" 2>/dev/null)" = commit ] || { printf 'absent\n'; return 0; }
-  git merge-base --is-ancestor "$1" "$2" 2>/dev/null; rc=$?
+  git cat-file -e "$1" 2>/dev/null; rc=$?
+  case "$rc" in
+    0) : ;;
+    1) printf 'absent\n'; return 0 ;;
+    *) return 2 ;;
+  esac
+  [ "$(git cat-file -t "$1" 2>/dev/null)" = commit ] || return 2
+  adb_git_is_ancestor . "$1" "$2"; rc=$?
   case "$rc" in
     0) printf 'yes\n' ;;
     1) printf 'no\n' ;;
@@ -272,7 +288,7 @@ cmd_branch_verdict() {
     esac
   fi
   [ "$#" -eq 2 ] || die "branch-verdict: needs exactly 2 args: [--pr-heads <prefix>] <branch> <base-ref> (merged-PR JSON on stdin)"
-  local branch="$1" base="$2" tip base_oid json cands n head oid rc fetched contained unread="" shallow=0 count
+  local branch="$1" base="$2" tip base_oid json cands n head oid rc fetched contained unread="" shallow=0 count hexlen
   # A leading dash would be read by git as an option; an empty name resolves to nothing useful.
   case "$branch" in
     ''|-*) die "branch-verdict: <branch> must be a branch name (got '$branch')" ;;
@@ -302,10 +318,28 @@ cmd_branch_verdict() {
     *) die "branch-verdict: git merge-base failed (rc $rc) — cannot classify '$branch'" ;;
   esac
 
-  json="$(cat)"
+  # In a shallow clone a negative ancestry answer may only mean the walk hit the shallow boundary.
+  # With --pr-heads (the sweep) no negative is then a considered answer: an otherwise-unproved
+  # branch is `unverified`, whatever the evidence. A status that cannot be read is an error.
+  if [ -n "$heads" ]; then
+    case "$(git rev-parse --is-shallow-repository 2>/dev/null)" in
+      true)  shallow=1 ;;
+      false) shallow=0 ;;
+      *)     die "branch-verdict: could not read whether this clone is shallow" ;;
+    esac
+  fi
+
+  json="$(cat)" || die "branch-verdict: could not read the merged-PR evidence on stdin"
   # Empty stdin is the documented "no PR evidence supplied" case (no gh, no remote, or a repo
   # that simply has no merged PR for this head) — a normal negative, not an error.
-  case "$json" in *[![:space:]]*) : ;; *) printf 'unmerged\n%s\n' "$tip"; return 0 ;; esac
+  case "$json" in *[![:space:]]*) : ;; *)
+    if [ "$shallow" -eq 1 ]; then
+      printf 'unverified\n%s\nthis clone is shallow, so the tip cannot be shown outside the base\n' "$tip"
+    else
+      printf 'unmerged\n%s\n' "$tip"
+    fi
+    return 0 ;;
+  esac
 
   # jq is needed ONLY to read supplied evidence; without it the PR path degrades to `unverified`
   # (preserve + report), never to a quiet `unmerged`.
@@ -313,18 +347,19 @@ cmd_branch_verdict() {
     printf 'unverified\n%s\njq is not installed — merged-PR evidence could not be evaluated\n' "$tip"
     return 0
   fi
-  cands="$(printf '%s' "$json" | _cl_pr_candidates "$(_cl_hexlen)")" \
+  hexlen="$(_cl_hexlen)" || die "branch-verdict: could not read this repository's object format"
+  cands="$(printf '%s' "$json" | _cl_pr_candidates "$hexlen")" \
     || die "branch-verdict: could not parse the merged-PR JSON (malformed, or not one JSON array)"
-  # In a shallow clone a negative ancestry answer may only mean the walk hit the shallow boundary,
-  # so with --pr-heads a negative is not evidence there (below).
-  [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ] && shallow=1
 
   # Fed by a heredoc, NOT a pipe: a piped loop runs in a subshell, where `return 0` would fall
   # through to the `unmerged` line below and reinstate #106.
   while IFS="$TAB" read -r n head oid; do
     [ -n "$oid" ] || continue
+    # Without --pr-heads only an exact head can prove anything, so no other row is examined (as
+    # before #545: an error reading an unrelated PR's merge commit cannot block an exact match).
+    [ -n "$heads" ] || [ "$head" = "$tip" ] || continue
     contained="$(_cl_contained "$oid" "$base_oid")" \
-      || die "branch-verdict: git merge-base failed while checking PR #$n"
+      || die "branch-verdict: git failed while checking PR #$n's merge commit"
     case "$contained" in
       no)
         [ -n "$heads" ] && [ "$shallow" -eq 1 ] && [ -z "$unread" ] \
@@ -351,7 +386,7 @@ cmd_branch_verdict() {
       [ -n "$unread" ] || unread="PR #$n: the commit its pull ref holds is not the head GitHub reports"
       continue
     fi
-    git merge-base --is-ancestor "$tip" "$fetched" 2>/dev/null; rc=$?
+    adb_git_is_ancestor . "$tip" "$fetched"; rc=$?
     case "$rc" in
       0) printf 'merged-pr\n%s\n#%s (merge commit %.12s; tip behind its head %.12s)\n' "$tip" "$n" "$oid" "$fetched"
          return 0 ;;
@@ -368,9 +403,13 @@ EOF
   # proving PR fell off the end, so with --pr-heads it is not a considered negative.
   if [ -n "$heads" ] && [ -z "$unread" ]; then
     count="$(printf '%s' "$json" | jq -s '.[0] | length' 2>/dev/null)"
-    [ "${count:-0}" -ge 20 ] 2>/dev/null \
-      && unread="the merged-PR list returned $count entries, its cap, and may be incomplete"
+    case "$count" in
+      ''|*[!0-9]*) unread="the merged-PR list could not be counted" ;;
+      *) [ "$count" -lt 20 ] || unread="the merged-PR list returned $count entries, its cap, and may be incomplete" ;;
+    esac
   fi
+  [ "$shallow" -eq 0 ] || [ -n "$unread" ] \
+    || unread="this clone is shallow, so the tip cannot be shown outside the base"
   if [ -n "$unread" ]; then
     printf 'unverified\n%s\n%s\n' "$tip" "$unread"; return 0
   fi
@@ -385,22 +424,23 @@ EOF
 # Exit 2 on malformed JSON, a missing ref, no jq with evidence given, or a git failure.
 cmd_branch_pr_heads() {
   [ "$#" -eq 2 ] || die "branch-pr-heads: needs exactly 2 args: <branch> <base-ref> (merged-PR JSON on stdin)"
-  local branch="$1" base="$2" tip base_oid json cands n head oid want="" contained
+  local branch="$1" base="$2" tip base_oid json cands n head oid want="" contained hexlen
   case "$branch" in ''|-*) die "branch-pr-heads: <branch> must be a branch name (got '$branch')" ;; esac
   case "$base" in ''|-*) die "branch-pr-heads: <base-ref> must be a ref (got '$base')" ;; esac
   tip="$(git rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)"
   [ -n "$tip" ] || die "branch-pr-heads: no such local branch: $branch"
   base_oid="$(git rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)"
   [ -n "$base_oid" ] || die "branch-pr-heads: base ref not found: $base"
-  json="$(cat)"
+  json="$(cat)" || die "branch-pr-heads: could not read the merged-PR evidence on stdin"
   case "$json" in *[![:space:]]*) : ;; *) return 0 ;; esac
   export GIT_NO_REPLACE_OBJECTS=1
-  cands="$(printf '%s' "$json" | _cl_pr_candidates "$(_cl_hexlen)")" \
+  hexlen="$(_cl_hexlen)" || die "branch-pr-heads: could not read this repository's object format"
+  cands="$(printf '%s' "$json" | _cl_pr_candidates "$hexlen")" \
     || die "branch-pr-heads: could not parse the merged-PR JSON (malformed, not one JSON array, or no jq)"
   while IFS="$TAB" read -r n head oid; do
     [ -n "$oid" ] || continue
     contained="$(_cl_contained "$oid" "$base_oid")" \
-      || die "branch-pr-heads: git merge-base failed while checking PR #$n"
+      || die "branch-pr-heads: git failed while checking PR #$n's merge commit"
     # A merge commit shown OUTSIDE the base proves nothing whatever its head holds: no fetch.
     [ "$contained" = no ] && continue
     if [ "$head" = "$tip" ]; then

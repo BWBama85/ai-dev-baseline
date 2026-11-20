@@ -3424,13 +3424,12 @@ if ph cat-file -e "$PH_T1^{commit}" 2>/dev/null; then
   bad "16 fixture: the behind PR's head is already in the swept clone, so the fetch would prove nothing"
 else ok; fi
 
-phjson() { printf '[{"number":%s,"headRefOid":"%s","mergeCommit":{"oid":"%s"}}]' "$1" "$2" "$3"; }
-phjson 7  "$PH_T1" "$PH_S7"  > "$PHF/merged-ph_behind"
-phjson 8  "$PH_D1" "$PH_S8"  > "$PHF/merged-ph_div"
-phjson 9  "$PH_U1" "$PH_S9"  > "$PHF/merged-ph_unread"
-phjson 11 "$PH_M2" "$PH_S11" > "$PHF/merged-ph_mis"
+prjson 7  "$PH_T1" "$PH_S7"  > "$PHF/merged-ph_behind"
+prjson 8  "$PH_D1" "$PH_S8"  > "$PHF/merged-ph_div"
+prjson 9  "$PH_U1" "$PH_S9"  > "$PHF/merged-ph_unread"
+prjson 11 "$PH_M2" "$PH_S11" > "$PHF/merged-ph_mis"
 # The stub answers the merged-PR query from the fixture and every open-PR query with an empty list.
-cat > "$PHB/gh" <<'PHGH'
+check_write_stub "$PHB/gh" <<'PHGH' || bad "16 could not write the gh stub"
 #!/usr/bin/env bash
 h=""; st=""
 while [ "$#" -gt 0 ]; do
@@ -3443,7 +3442,6 @@ if [ "$st" = merged ]; then
 fi
 exit 0
 PHGH
-chmod +x "$PHB/gh"
 
 # --- 16b. the real sweep fetches the head and deletes only what it proved ----------------------
 ph_run() {   # <candidates> [HAVE_GH]
@@ -3538,14 +3536,14 @@ out="${ PHV --pr-heads refs/t/pull ph/mis origin/main < "$PHF/merged-ph_mis"; }"
 eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a a pull ref holding another commit than headRefOid is unverified"
 has "${ printf '%s\n' "$out" | sed -n 3p; }" "not the head GitHub reports" "16a …and says why"
 # A proving PR beside an unreadable one proves the branch, in either order.
-both1="${ printf '[%s,%s]' "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ phjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }"; }"
-both2="${ printf '[%s,%s]' "${ phjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }" "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }"; }"
+both1="${ printf '[%s,%s]' "${ prjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ prjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }"; }"
+both2="${ printf '[%s,%s]' "${ prjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }" "${ prjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }"; }"
 eq "${ printf '%s' "$both1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "merged-pr" \
    "16a an unreadable PR listed BEFORE a proving one does not mask the proof"
 eq "${ printf '%s' "$both2" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "merged-pr" \
    "16a …nor listed after it"
 # A PR whose merge commit is not in the base proves nothing, whatever its head says.
-eq "${ phjson 7 "$PH_T1" "$PH_D1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unmerged" \
+eq "${ prjson 7 "$PH_T1" "$PH_D1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unmerged" \
    "16a the ancestor form still requires the merge commit to be contained in the base"
 # The private head is read by its EXACT ref: a branch whose NAME is the private ref's path must not
 # stand in for it (`rev-parse` would resolve refs/heads/refs/t/pull/9 when refs/t/pull/9 is absent).
@@ -3554,7 +3552,7 @@ eq "${ PHV --pr-heads refs/t/pull ph/unread origin/main < "$PHF/merged-ph_unread
    "16a a same-named branch never stands in for a private head ref that was not fetched"
 ph update-ref -d "refs/heads/refs/t/pull/9"
 # A merge commit this clone does not hold cannot be judged; with --pr-heads that is unreadable.
-eq "${ phjson 7 "$PH_T1" 1111111111111111111111111111111111111111 | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unverified" \
+eq "${ prjson 7 "$PH_T1" 1111111111111111111111111111111111111111 | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unverified" \
    "16a with --pr-heads, a merge commit not in this clone is unverified, never a silent unmerged"
 ( cd "$PHR" && bash "$CL" branch-verdict --pr-heads pull ph/behind origin/main </dev/null ) >/dev/null 2>&1
 eq "$?" "2" "16a a --pr-heads prefix outside refs/ is refused"
@@ -3584,10 +3582,16 @@ eq "${ PHV --pr-heads refs/t/pull ph/div origin/main < "$PHF/merged-ph_div" | se
    "16a ancestry is judged without local replace objects"
 ph replace -d "$PH_D1" >/dev/null
 # A shallow clone: a negative ancestry answer is not evidence, so the diverged case is unverified.
-cp "$PHR/.git/shallow" "$PH/shallow.bak" 2>/dev/null; ph rev-parse "$PH_D1^" > "$PHR/.git/shallow"
+ph rev-parse "$PH_D1^" > "$PHR/.git/shallow"
 out="${ PHV --pr-heads refs/t/pull ph/div origin/main < "$PHF/merged-ph_div"; }"
+out2="${ PHV --pr-heads refs/t/pull ph/div origin/main </dev/null; }"
+out3="${ printf '[]' | PHV --pr-heads refs/t/pull ph/div origin/main; }"
+out4="${ PHV ph/div origin/main </dev/null; }"
 rm -f "$PHR/.git/shallow"
 eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a in a shallow clone a diverged answer is unverified, never a negative"
+eq "${ printf '%s\n' "$out2" | sed -n 1p; }" "unverified" "16a …and so is an unproved branch with no evidence at all"
+eq "${ printf '%s\n' "$out3" | sed -n 1p; }" "unverified" "16a …or an empty list"
+eq "${ printf '%s\n' "$out4" | sed -n 1p; }" "unmerged" "16a …only with --pr-heads (exact-head-only callers are unchanged)"
 ph update-ref -d refs/t/pull/8
 # The query's cap: a full page of 20 with no proof may be a subset.
 PH_CAP="${ i=0; printf '['; while [ $i -lt 20 ]; do [ $i -gt 0 ] && printf ','; printf '{"number":%s,"headRefOid":"%s","mergeCommit":{"oid":"%s"}}' $((100+i)) "$PH_D1" "$PH_D1"; i=$((i+1)); done; printf ']'; }"
@@ -3600,13 +3604,18 @@ for r in 7 8 11; do ph update-ref -d "refs/t/pull/$r"; done
 # branch-pr-heads: the PRs whose head must be fetched.
 eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main < "$PHF/merged-ph_behind" ); }" "7" \
    "16a branch-pr-heads names a merged PR whose head is not the tip"
-eq "${ phjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
+ph_plan() {   # <json> — the planner's stdout, then `rc=<status>` on its own line
+  local out rc
+  out="${ printf '%s' "$1" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ) 2>/dev/null; }"; rc=$?
+  printf '%s|rc=%s' "$out" "$rc"
+}
+eq "${ ph_plan "${ prjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7"; }"; }" "|rc=0" \
    "16a …and none when the head IS the tip (the exact form needs no fetch)"
-both3="${ printf '[%s,%s]' "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ phjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7" | tr -d '[]'; }"; }"
-eq "${ printf '%s' "$both3" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
+both3="${ printf '[%s,%s]' "${ prjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ prjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7" | tr -d '[]'; }"; }"
+eq "${ ph_plan "$both3"; }" "|rc=0" \
    "16a …nor for any other PR once one proves the branch by its exact head"
-eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main </dev/null ); }" "" "16a …and none for empty evidence"
-eq "${ phjson 7 "$PH_T1" "$PH_D1" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
+eq "${ ph_plan ''; }" "|rc=0" "16a …and none for empty evidence"
+eq "${ ph_plan "${ prjson 7 "$PH_T1" "$PH_D1"; }"; }" "|rc=0" \
    "16a …and none for a PR whose merge commit is shown outside the base (it cannot prove anything)"
 printf '{"x":1}' | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ) >/dev/null 2>&1
 eq "$?" "2" "16a …and malformed evidence is an error"

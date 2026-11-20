@@ -321,9 +321,9 @@ pr_state() {
 
 ### 3. Classify and delete local branches (scope `local` or `all`)
 
-One fresh query per candidate, then the library decides. `--limit` is not decoration: without it
-`gh pr list` returns only its default page, so a long-lived branch's merged PR can fall off the
-end and read as unmerged.
+One fresh query per candidate, then the library decides. `--limit` is a cap, not pagination: a
+list that reaches it may be missing the proving PR, so the verdict reads a full list with no proof
+as `unverified` (#545), never as a considered `unmerged`.
 
 ```bash
 # ADB-SNIPPET: branch-sweep
