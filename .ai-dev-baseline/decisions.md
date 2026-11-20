@@ -9590,6 +9590,17 @@ survive is the part a later reader needs.
              The one new surface is `SHMUTANT_DIAG_DIR`, off unless set, which nothing here sets.
              Every function this repo calls is still defined and the rest of the diff only adds
              internals, so `check_shmutant_pool` and the ported rows take no edit.
+- amended:   2026-11-19. The vendored copy moves to shmutant `v0.5.1` (tag commit `0f63aa7`,
+             SHA-256 `2c8f5803…f6eaac4`, matching that release's `CHECKSUMS`), past `v0.5.0`. Read
+             live on 2026-11-19: BWBama85/shmutant#72, #75, #78, #81, #85, #86, #88, #89 and #105 are
+             CLOSED, completed. The changed code is the kill and freeze paths: a hang-up inside a unit
+             stays in its own process group, a watchdog ends its run once its runner has gone, a
+             process-table read that stalls is given up, kills are confirmed on a recorded process
+             rather than after a fixed wait, and names the pool assigns no longer take the calling
+             shell's attributes. The one new surface is the row filter (`--row`, `SHMUTANT_ONLY`,
+             #85), off unless set, which nothing here sets yet; #639's single-row re-run is its
+             consumer. No function this repo calls was removed or renamed, so `check_shmutant_pool`
+             and the ported rows take no edit.
 
 ## D126 — #456: no mutation harness runs per pull request; they run nightly, by dispatch and by label
 - date:      2026-10-10
