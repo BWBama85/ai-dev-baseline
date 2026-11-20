@@ -37,8 +37,11 @@ process detail the default output deliberately omits.
   work. "Proven" has exactly two forms:
   - **fast-forward** — the branch tip is an ancestor of `origin/<default>`.
   - **rewritten merge (squash or rebase)** — a **freshly-queried** merged PR whose
-    `mergeCommit.oid` is contained in `origin/<default>` **and** whose `headRefOid` equals the
-    local tip.
+    `mergeCommit.oid` is contained in `origin/<default>` **and** whose head carries the local tip:
+    either its `headRefOid` equals the tip, or (#545) its head, fetched live from
+    `refs/pull/<n>/head` and equal to that `headRefOid`, has the tip as an ancestor. The second
+    form is a branch whose PR gained commits in another checkout. When no PR proves the branch and
+    a head could not be fetched, the branch is kept and reported `UNVERIFIED`.
 - **Every delete is a compare-and-delete against the tip its own proof was computed from.**
   Locally that is `git update-ref -d refs/heads/<b> <the tip the verdict was computed from>`; on
   the remote it is `git push origin --force-with-lease=refs/heads/<b>:<the tip the enumeration
@@ -152,7 +155,8 @@ the install-source clone itself all print nothing.
 per-category line**, and the other two are ruled out by rules already stated above rather than by
 taste:
 
-- **Not `NOTES`.** That is the *exception* channel — `SKIPPED`, `REFUSED`, `UNVERIFIED`, `LARGE` —
+- **Not `NOTES`.** That is the *exception* channel — `SKIPPED`, `REFUSED`, `UNVERIFIED`, `LARGE`,
+  `LEFT CONFIG` —
   and it prints in full precisely because everything in it is unusual. Routing a routine success
   through it costs one line per deleted branch (past the ≤3-line target on any real sweep) and,
   worse, trains the reader to skim the one channel whose value is that it is rare.
@@ -317,9 +321,9 @@ pr_state() {
 
 ### 3. Classify and delete local branches (scope `local` or `all`)
 
-One fresh query per candidate, then the library decides. `--limit` is not decoration: without it
-`gh pr list` returns only its default page, so a long-lived branch's merged PR can fall off the
-end and read as unmerged.
+One fresh query per candidate, then the library decides. `--limit` is a cap, not pagination: a
+list that reaches it may be missing the proving PR, so the verdict reads a full list with no proof
+as `unverified` (#545), never as a considered `unmerged`.
 
 ```bash
 # ADB-SNIPPET: branch-sweep
@@ -343,6 +347,8 @@ end and read as unmerged.
 # removed — unset, gh resolves the repository from this checkout's own git remotes, the same
 # anchor the proofs already stand on.
 unset GH_REPO
+# One private namespace per sweep for the PR heads #545 fetches (below): the pid alone can recur.
+PRHEADS_NS="refs/adb-cleanup/$$-${RANDOM:-0}"
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   # WHOLE-LINE match, via grep. The builtin newline-delimited `case` form looks cheaper and is a
@@ -362,7 +368,9 @@ while IFS= read -r b; do
   # guard, never a decision: the library re-runs the same ancestry test and remains the only
   # thing that produces a verdict, so a wrong guess here can only waste a call, never delete.
   PRJSON=""
-  if [ "$HAVE_GH" -eq 1 ] && ! git merge-base --is-ancestor "$b" "$BASE" 2>/dev/null; then
+  # Replace objects off, as the verdict judges with them off, so the guard and the verdict read the
+  # same history.
+  if [ "$HAVE_GH" -eq 1 ] && ! GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$b" "$BASE" 2>/dev/null; then
     if ! PRJSON="$(gh pr list --head "$b" --state merged --limit 20 \
                      --json number,headRefOid,mergeCommit 2>/dev/null)"; then
       NOTES="${NOTES}UNVERIFIED $b — the merged-PR query failed; preserved
@@ -370,8 +378,73 @@ while IFS= read -r b; do
     fi
   fi
 
+  # A BRANCH BEHIND ITS OWN MERGED PR (#545): the PR gained commits in another checkout, so its
+  # head is not this tip and its commits may not be in this clone at all. Fetch such a PR's head
+  # LIVE from `refs/pull/<n>/head` into a private ref, and let the verdict test the tip's ancestry
+  # against it. `branch-pr-heads` names the PRs that need one, and none when a PR already proves the
+  # branch by its exact head. A fetch that fails leaves NO ref: the private name is cleared before
+  # the fetch and again after a failed one, and if it cannot be cleared the branch is kept
+  # `UNVERIFIED` without a verdict. The verdict reads a missing ref as unreadable evidence:
+  # `unverified`, the branch kept, unless another PR proves it.
+  #
+  # THE FETCH RUNS INSIDE THIS LOOP, so it runs wherever the sweep runs: on an SSH remote inside a
+  # sandbox that denies `~/.ssh` it fails, and that is the `unverified` note. `origin` may not be
+  # the PR's repository (a fork checkout); the verdict also requires the fetched commit to equal
+  # the PR's `headRefOid`, so another repository's pull ref proves nothing. `--refmap=` confines the
+  # update to the private ref (no configured `refs/pull/*` mapping applies), `--no-write-fetch-head`
+  # leaves FETCH_HEAD alone, and every ref operation is `--no-deref`, so a private name that is a
+  # symbolic ref can never carry a delete through to a branch. No wall-clock bound: like every gh
+  # call in this loop it relies on the transport's own timeouts. `</dev/null` on every call, for the
+  # reason the open-PR arm below states.
+  PRHEADS="$PRHEADS_NS/pull"
+  if ! WANT="$(printf '%s' "$PRJSON" | {{CLEANUP_LIB}} branch-pr-heads "$b" "$BASE")"; then
+    NOTES="${NOTES}UNVERIFIED $b — the merged-PR evidence could not be read; preserved
+"; continue
+  fi
+  # `ref_free <ref>` is true only when a SUCCESSFUL lookup lists no such ref: `for-each-ref` prints
+  # an exact match (a dangling symbolic ref included) and fails on a lookup error, so neither a
+  # failed read nor a leftover is ever taken for "free".
+  ref_free() {
+    local seen
+    seen="$(git for-each-ref --format='%(refname)' "$1" 2>/dev/null </dev/null)" || return 1
+    [ -z "$seen" ]
+  }
+  HEADS_BAD=0
+  while IFS= read -r PRN; do
+    [ -n "$PRN" ] || continue
+    ref_free "$PRHEADS/$PRN" || git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+    ref_free "$PRHEADS/$PRN" || { HEADS_BAD=1; continue; }
+    GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags --no-write-fetch-head --no-recurse-submodules \
+      --refmap= origin "+refs/pull/$PRN/head:$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
+      || { git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+           ref_free "$PRHEADS/$PRN" || HEADS_BAD=1; }
+  done <<EOF4
+$WANT
+EOF4
+
   # Line 1 = verdict, line 2 = the tip the verdict was computed from, line 3 = detail.
-  if ! V="$(printf '%s' "$PRJSON" | {{CLEANUP_LIB}} branch-verdict "$b" "$BASE")"; then
+  V_RC=0
+  if [ "$HEADS_BAD" -eq 0 ]; then
+    V="$(printf '%s' "$PRJSON" | {{CLEANUP_LIB}} branch-verdict --pr-heads "$PRHEADS" "$b" "$BASE")" || V_RC=$?
+  fi
+  # The private refs go on every path this loop takes, before anything below can `continue`: they
+  # are evidence for this one verdict. (A sweep killed between the fetch and here leaves them under
+  # refs/adb-cleanup/, which nothing reads; `git for-each-ref refs/adb-cleanup` lists them.) A
+  # leftover keeps the fetched objects alive, so a delete that fails is named with its command.
+  while IFS= read -r PRN; do
+    [ -n "$PRN" ] || continue
+    ref_free "$PRHEADS/$PRN" && continue
+    git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null && ref_free "$PRHEADS/$PRN" \
+      || NOTES="${NOTES}NOTE: could not remove the private ref $PRHEADS/$PRN; run: git update-ref --no-deref -d $PRHEADS/$PRN
+"
+  done <<EOF4
+$WANT
+EOF4
+  if [ "$HEADS_BAD" -ne 0 ]; then
+    NOTES="${NOTES}UNVERIFIED $b — a private PR-head ref under $PRHEADS could not be cleared, so no fetched head can be trusted; preserved
+"; continue
+  fi
+  if [ "$V_RC" -ne 0 ]; then
     NOTES="${NOTES}UNVERIFIED $b — could not be classified; preserved
 "; continue
   fi
@@ -393,9 +466,24 @@ EOF2
       if git update-ref -d "refs/heads/$b" "$TIP" 2>/dev/null; then
         # `update-ref -d` removes the ref and NOTHING else, where `git branch -d` also drops
         # branch.<name>.*. Left behind, a later branch of the same name silently inherits the old
-        # upstream and pushes to it. `|| true` because a branch that never had config has no
-        # section to remove, which is not an error.
-        git config --remove-section "branch.$b" >/dev/null 2>&1 || true
+        # upstream and pushes to it.
+        #
+        # DECIDED BY READING THE CONFIG AFTERWARDS, never by the removal's exit status (#518): that
+        # status is non-zero both for a branch that never had config and for a section that could
+        # not be removed (a `.git/config` the process may not write — a sandbox protects it), and
+        # only the second is a problem. `config-left` matches the exact section, fixed-string.
+        # `--local` with `GIT_CONFIG` removed from this call's environment, so the removal writes the
+        # same file `config-left` reads: git refuses `--local` beside an inherited GIT_CONFIG.
+        env -u GIT_CONFIG git config --local --remove-section "branch.$b" >/dev/null 2>&1 </dev/null || :
+        CFG_LEFT=0
+        {{CLEANUP_LIB}} config-left "$b" >/dev/null 2>&1 </dev/null || CFG_LEFT=$?
+        case "$CFG_LEFT" in
+          0)  : ;;
+          10) NOTES="${NOTES}LEFT CONFIG branch.$b — its keys remained after the delete (a lock, or a .git/config this process may not write, such as under a sandbox); remove that section with git config --remove-section once you have checked no branch of that name exists again
+" ;;
+          *)  NOTES="${NOTES}UNVERIFIED branch.$b config — could not re-read .git/config after the delete
+" ;;
+        esac
         # THE PROOF, recorded ONLY after the delete actually succeeded — the `else` arm below is a
         # branch that still exists, and attaching evidence to it would assert a deletion that did
         # not happen.
@@ -510,7 +598,7 @@ EOF2
                 # THE PROOF IS THE GATE THIS CLOSE PASSED, not the delete's evidence — and that
                 # is a claim-grammar constraint, discovered by the executed case rather than
                 # reasoned about. `PR closed` is a category name containing a STATUS WORD, and a
-                # `merged-pr` verdict's evidence is `#<n> (merge commit <oid>)`: rendering it here
+                # `merged-pr` verdict's evidence is `#<n> (merge commit <oid>[; tip behind its head <oid>])`: rendering it here
                 # puts a status word and an entity reference in one sentence, which
                 # `state-assert.sh lint` rejects — and only on sweeps where a squash-merged branch
                 # also had an open PR, i.e. exactly when nobody is looking. It costs the report
@@ -1209,7 +1297,7 @@ and finally the observation, before the repository-state tail.
 `closed` is a status word, and the category name is the sentence. This is the same rule the
 `Cleared state` proofs already live by (`PR merged`, not `PR #41 merged`) — read from the other
 end, and the number is not lost: it is the item. The sharper half is the proof: a `merged-pr`
-delete's evidence *is* `#<n> (merge commit <oid>)`, so rendering the delete's proof on this line
+delete's evidence *is* `#<n> (merge commit <oid>[; tip behind its head <oid>])`, so rendering the delete's proof on this line
 would violate the grammar on any sweep where a squash-merged branch also had an open PR. The proof
 here is the **OID gate this close passed** instead, which is both grammar-safe and the more precise
 answer to why *this* PR was closed; the delete's own evidence is one line above, and the full
