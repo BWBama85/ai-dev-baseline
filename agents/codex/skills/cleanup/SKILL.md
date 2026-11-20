@@ -405,10 +405,14 @@ EOF4
   V_RC=0
   V="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-verdict --pr-heads "$PRHEADS" "$b" "$BASE")" || V_RC=$?
   # The private refs go on EVERY path, before anything below can `continue`: they are evidence for
-  # this one verdict, and a leftover would be read by nothing but would sit in the ref store.
+  # this one verdict. A leftover is read by nothing, but it would keep the fetched objects alive in
+  # the ref store, so a delete that fails is named rather than dropped.
   while IFS= read -r PRN; do
     [ -n "$PRN" ] || continue
-    git update-ref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+    git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null || continue
+    git update-ref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
+      || NOTES="${NOTES}NOTE: could not remove the private ref $PRHEADS/$PRN; delete it with git update-ref -d
+"
   done <<EOF4
 $WANT
 EOF4
