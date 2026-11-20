@@ -39,8 +39,11 @@ process detail the default output deliberately omits.
   work. "Proven" has exactly two forms:
   - **fast-forward** — the branch tip is an ancestor of `origin/<default>`.
   - **rewritten merge (squash or rebase)** — a **freshly-queried** merged PR whose
-    `mergeCommit.oid` is contained in `origin/<default>` **and** whose `headRefOid` equals the
-    local tip.
+    `mergeCommit.oid` is contained in `origin/<default>` **and** whose head carries the local tip:
+    either its `headRefOid` equals the tip, or (#545) its head, fetched live from
+    `refs/pull/<n>/head` and equal to that `headRefOid`, has the tip as an ancestor. The second
+    form is a branch whose PR gained commits in another checkout. A head that cannot be fetched is
+    `UNVERIFIED` and the branch is kept.
 - **Every delete is a compare-and-delete against the tip its own proof was computed from.**
   Locally that is `git update-ref -d refs/heads/<b> <the tip the verdict was computed from>`; on
   the remote it is `git push origin --force-with-lease=refs/heads/<b>:<the tip the enumeration
@@ -154,7 +157,8 @@ the install-source clone itself all print nothing.
 per-category line**, and the other two are ruled out by rules already stated above rather than by
 taste:
 
-- **Not `NOTES`.** That is the *exception* channel — `SKIPPED`, `REFUSED`, `UNVERIFIED`, `LARGE` —
+- **Not `NOTES`.** That is the *exception* channel — `SKIPPED`, `REFUSED`, `UNVERIFIED`, `LARGE`,
+  `LEFT CONFIG` —
   and it prints in full precisely because everything in it is unusual. Routing a routine success
   through it costs one line per deleted branch (past the ≤3-line target on any real sweep) and,
   worse, trains the reader to skim the one channel whose value is that it is rare.
@@ -372,8 +376,43 @@ while IFS= read -r b; do
     fi
   fi
 
+  # A BRANCH BEHIND ITS OWN MERGED PR (#545): the PR gained commits in another checkout, so its
+  # head is not this tip and its commits may not be in this clone at all. Fetch each such PR's head
+  # LIVE from `refs/pull/<n>/head` into a private ref, and let the verdict test the tip's ancestry
+  # against it. `branch-pr-heads` names the PRs that need one (none when a head equals the tip).
+  # A fetch that fails leaves NO ref — any earlier one is deleted first, and FETCH_HEAD is never
+  # written or read — and the verdict reads a missing ref as unreadable evidence: `unverified`, the
+  # branch kept. The fetch runs inside this loop, so it runs wherever the sweep runs: on an SSH
+  # remote inside a sandbox that denies `~/.ssh` it fails, and that is the `unverified` note.
+  # `origin` may not be the PR's repository (a fork checkout); the verdict also requires the
+  # fetched commit to equal the PR's `headRefOid`, so another repository's pull ref proves nothing.
+  # `</dev/null` on every call here, for the reason the open-PR arm below states.
+  PRHEADS="refs/adb-cleanup/$$/pull"
+  if ! WANT="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-pr-heads "$b")"; then
+    NOTES="${NOTES}UNVERIFIED $b — the merged-PR evidence could not be read; preserved
+"; continue
+  fi
+  while IFS= read -r PRN; do
+    [ -n "$PRN" ] || continue
+    git update-ref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+    GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags --no-write-fetch-head origin \
+      "+refs/pull/$PRN/head:$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null || :
+  done <<EOF4
+$WANT
+EOF4
+
   # Line 1 = verdict, line 2 = the tip the verdict was computed from, line 3 = detail.
-  if ! V="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-verdict "$b" "$BASE")"; then
+  V_RC=0
+  V="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-verdict --pr-heads "$PRHEADS" "$b" "$BASE")" || V_RC=$?
+  # The private refs go on EVERY path, before anything below can `continue`: they are evidence for
+  # this one verdict, and a leftover would be read by nothing but would sit in the ref store.
+  while IFS= read -r PRN; do
+    [ -n "$PRN" ] || continue
+    git update-ref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+  done <<EOF4
+$WANT
+EOF4
+  if [ "$V_RC" -ne 0 ]; then
     NOTES="${NOTES}UNVERIFIED $b — could not be classified; preserved
 "; continue
   fi
@@ -395,9 +434,22 @@ EOF2
       if git update-ref -d "refs/heads/$b" "$TIP" 2>/dev/null; then
         # `update-ref -d` removes the ref and NOTHING else, where `git branch -d` also drops
         # branch.<name>.*. Left behind, a later branch of the same name silently inherits the old
-        # upstream and pushes to it. `|| true` because a branch that never had config has no
-        # section to remove, which is not an error.
-        git config --remove-section "branch.$b" >/dev/null 2>&1 || true
+        # upstream and pushes to it.
+        #
+        # DECIDED BY READING THE CONFIG AFTERWARDS, never by the removal's exit status (#518): that
+        # status is non-zero both for a branch that never had config and for a section that could
+        # not be removed (a `.git/config` the process may not write — a sandbox protects it), and
+        # only the second is a problem. `config-left` matches the exact section, fixed-string.
+        git config --remove-section "branch.$b" >/dev/null 2>&1 </dev/null || :
+        CFG_LEFT=0
+        bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" config-left "$b" >/dev/null 2>&1 </dev/null || CFG_LEFT=$?
+        case "$CFG_LEFT" in
+          0)  : ;;
+          10) NOTES="${NOTES}LEFT CONFIG branch.$b — .git/config was not writable (sandboxed?); run: git config --remove-section \"branch.$b\"
+" ;;
+          *)  NOTES="${NOTES}UNVERIFIED branch.$b config — could not re-read .git/config after the delete
+" ;;
+        esac
         # THE PROOF, recorded ONLY after the delete actually succeeded — the `else` arm below is a
         # branch that still exists, and attaching evidence to it would assert a deletion that did
         # not happen.

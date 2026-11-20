@@ -301,6 +301,14 @@ only by a release it upgrades to. These entries are the notes for both.
 
 ### Fixed
 
+- **`/cleanup` deletes a branch that is behind its own merged PR, and reports the config a delete
+  leaves (#545, #518).** A branch whose PR gained commits in another checkout used to read
+  `unmerged` forever, and its run marker read as a run in flight on every sweep. The sweep now fetches
+  each merged PR's head from `refs/pull/<n>/head` and deletes the branch when its tip is an
+  ancestor of that head (`[#<n> (merge commit …; tip behind its head …)]`). A head it cannot fetch,
+  or one that disagrees with GitHub's, keeps the branch and reports `UNVERIFIED`. After a delete, a
+  `branch.<name>.*` section the removal could not write (a sandbox protects `.git/config`) is a
+  `LEFT CONFIG` note naming the command to run, where it used to vanish silently.
 - **A pattern-ledger row the writer accepts is now read back under a UTF-8 locale (#522).**
   `record` validates a summary in the C locale, but the readers' awk ran in the caller's. Under a
   UTF-8 locale, an awk that classifies characters by locale (the BSD awk on macOS, for one) also

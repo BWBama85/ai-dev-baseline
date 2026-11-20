@@ -10,8 +10,9 @@
 # restated (the DRY discipline of docs/design-principles.md: source the shared primitive, never
 # copy it). It is the same split scripts/lib/roadmap-lib.sh makes for /roadmap.
 #
-# NETWORK PURITY. No subcommand here ever calls `gh`. `branch-verdict` takes already-fetched PR
-# JSON on stdin and does only LOCAL git object queries; `state-scan` reads the filesystem
+# NETWORK PURITY. No subcommand here ever calls `gh` or fetches. `branch-verdict` takes
+# already-fetched PR JSON on stdin and does only LOCAL git object and ref queries (a PR head the
+# workflow fetched is read from a local ref, never from the network); `state-scan` reads the filesystem
 # (deterministic and offline, not pure); `state-verdict` and `report` are pure functions of their
 # arguments and stdin. The workflow owns every live read, which keeps the network shape visible
 # in the skill and makes every predicate hermetically testable with a fixture.
@@ -28,7 +29,9 @@
 # "stale" would destroy unmerged work, which is the one thing /cleanup promises never to do.
 #
 # Usage:
-#   cleanup-lib.sh branch-verdict <branch> <base-ref>          # merged-PR JSON on stdin
+#   cleanup-lib.sh branch-verdict [--pr-heads <prefix>] <branch> <base-ref>   # merged-PR JSON on stdin
+#   cleanup-lib.sh branch-pr-heads <branch>                    # merged-PR JSON on stdin
+#   cleanup-lib.sh config-left    <branch>                     # 0 none · 10 keys left · 2 unreadable
 #   cleanup-lib.sh state-scan     [--with-identity] <state-dir>
 #   cleanup-lib.sh state-verdict  threads <pr-state>
 #   cleanup-lib.sh state-verdict  sweep   <pr-state>
@@ -195,22 +198,33 @@ _adb_cl_emit() {   # <with-identity 0|1> <kind> <path> <key>
 # Naming the verdict after one of the two methods would read as "rebase merges are unhandled".
 #
 # THE TWO CONDITIONS for `merged-pr`, BOTH required:
-#   (a) the PR's `mergeCommit.oid` is contained in <base-ref>. #106 asks for this, and it is what
-#       makes the evidence LOCAL and current rather than a remembered "the PR was open" — the
-#       staleness the old guardrail was really protecting against. A merged PR alone proves
-#       nothing about THIS repo's default branch (it may have merged into another base).
-#   (b) the PR's `headRefOid` EQUALS the local branch tip. #106 does not ask for this; it is
-#       added because without it a branch that was squash-merged and then had NEW LOCAL COMMITS
-#       added still matches (a) and would be deleted — destroying unmerged work, which is exactly
-#       what the issue's own "never delete anything unproven" guardrail forbids. With it, the
-#       verdict proves the local branch carries nothing beyond what landed.
+#   (a) the PR's `mergeCommit.oid` is contained in <base-ref>. It is what makes the evidence LOCAL
+#       and current: a merged PR alone proves nothing about THIS repo's default branch.
+#   (b) the local tip carries nothing beyond the PR, proved one of two ways (line 3 says which):
+#       - EXACT HEAD: the PR's `headRefOid` equals the tip.
+#       - TIP BEHIND ITS HEAD (#545): only with `--pr-heads <prefix>`. The PR's head was fetched
+#         live into `<prefix>/<number>`; that commit must equal the PR's `headRefOid`, and the tip
+#         must be an ancestor of it. This is the branch whose PR gained commits in another
+#         checkout. A tip with commits of its own is not an ancestor and stays `unmerged`.
+#   A PR whose head ref is absent, or holds a commit other than `headRefOid`, is UNREADABLE
+#   evidence: when no PR proves the branch, any unreadable one makes the verdict `unverified`.
+#   Without `--pr-heads` only the exact-head form is tried, as before #545.
 #
 # A `[gone]` upstream is deliberately NOT consulted here. #106 is explicit that it is
 # corroborating evidence only: a branch deleted on the remote WITHOUT merging looks identical,
 # so treating it as sufficient would delete abandoned-but-unmerged work.
 cmd_branch_verdict() {
-  [ "$#" -eq 2 ] || die "branch-verdict: needs exactly 2 args: <branch> <base-ref> (merged-PR JSON on stdin)"
-  local branch="$1" base="$2" tip base_oid json cands n oid rc
+  local heads=""
+  if [ "${1:-}" = --pr-heads ]; then
+    [ "$#" -ge 2 ] || die "branch-verdict: --pr-heads needs a ref prefix"
+    heads="$2"; shift 2
+    case "$heads" in
+      refs/*) : ;;
+      *) die "branch-verdict: --pr-heads must be a refs/ prefix (got '$heads')" ;;
+    esac
+  fi
+  [ "$#" -eq 2 ] || die "branch-verdict: needs exactly 2 args: [--pr-heads <prefix>] <branch> <base-ref> (merged-PR JSON on stdin)"
+  local branch="$1" base="$2" tip base_oid json cands n head oid rc fetched unread=""
   # A leading dash would be read by git as an option; an empty name resolves to nothing useful.
   case "$branch" in
     ''|-*) die "branch-verdict: <branch> must be a branch name (got '$branch')" ;;
@@ -228,11 +242,8 @@ cmd_branch_verdict() {
   base_oid="$(git rev-parse --verify --quiet "$base^{commit}" 2>/dev/null)"
   [ -n "$base_oid" ] || die "branch-verdict: base ref not found: $base"
 
-  # `--is-ancestor` has THREE outcomes, and conflating them is a fail-open bug: 0 = ancestor,
-  # 1 = not an ancestor, anything else = git itself failed (a corrupt object store, a bad ref).
-  # A naive `if git merge-base …` reads that third band as "not merged", which is the safe
-  # direction here — but it is silent, and the same conflation on the PR loop below would be
-  # unsafe. Classify the band explicitly in both places so the code says which it meant.
+  # `--is-ancestor` has THREE outcomes: 0 = ancestor, 1 = not, anything else = git itself failed.
+  # Every call below classifies all three, so a git failure is never read as "not merged".
   git merge-base --is-ancestor "$tip" "$base_oid" 2>/dev/null; rc=$?
   case "$rc" in
     0) printf 'merged-ff\n%s\n' "$tip"; return 0 ;;
@@ -245,52 +256,118 @@ cmd_branch_verdict() {
   # that simply has no merged PR for this head) — a normal negative, not an error.
   case "$json" in *[![:space:]]*) : ;; *) printf 'unmerged\n%s\n' "$tip"; return 0 ;; esac
 
-  # jq is needed ONLY to read supplied evidence. A box without jq still gets the `merged-ff`
-  # answer above, so ordinary fast-forward cleanup keeps working; it is only the PR-evidence path
-  # that degrades — and it degrades to `unverified` (preserve + report), never to a quiet
-  # `unmerged` that would look like a considered negative.
+  # jq is needed ONLY to read supplied evidence; without it the PR path degrades to `unverified`
+  # (preserve + report), never to a quiet `unmerged`.
   if ! command -v jq >/dev/null 2>&1; then
     printf 'unverified\n%s\njq is not installed — merged-PR evidence could not be evaluated\n' "$tip"
     return 0
   fi
 
-  # Select the PRs whose head SHA is EXACTLY this tip — condition (b) — and that carry a merge
-  # commit at all. `.mergeCommit` is null for a PR GitHub reports as merged without one, so it is
-  # defaulted before `.oid` is read rather than dereferenced blind.
-  cands="$(printf '%s' "$json" | jq -r --arg tip "$tip" '
-    # Guard the SHAPE first: a non-array (an object, an error payload, a string) must raise, not
-    # quietly yield no candidates — a fail-open "unmerged" here merely preserves, but the same
-    # silence on malformed input is what hides a broken caller.
+  # Every PR that carries a merge commit, with its number and head VALIDATED here: both reach git
+  # (a ref name, an OID), so an entry with a non-integer number or a non-OID head is dropped as
+  # proving nothing. A non-array payload raises rather than quietly yielding no candidates.
+  cands="$(printf '%s' "$json" | jq -r '
     if type != "array" then error("not an array") else . end
     | .[]
-    | select((.headRefOid // "") == $tip)
     | ((.mergeCommit // {}) | .oid // "") as $oid
     | select($oid != "")
-    | "\(.number // 0)\t\($oid)"
+    | select((.number | type) == "number" and .number >= 1 and (.number | floor) == .number)
+    | select((.headRefOid | type) == "string" and (.headRefOid | test("^[0-9a-f]{40}([0-9a-f]{24})?$")))
+    | "\(.number)\t\(.headRefOid)\t\($oid)"
   ' 2>/dev/null)" \
     || die "branch-verdict: could not parse the merged-PR JSON (malformed, or not a JSON array)"
 
-  # Fed by a heredoc, NOT a pipe: a pipe puts the loop in a subshell, where `return 0` returns
-  # from the subshell and the function falls through to the `unmerged` line below — reporting
-  # every squash-merged branch as unmerged, i.e. silently reinstating #106.
-  while IFS="$TAB" read -r n oid; do
+  # Fed by a heredoc, NOT a pipe: a piped loop runs in a subshell, where `return 0` would fall
+  # through to the `unmerged` line below and reinstate #106.
+  while IFS="$TAB" read -r n head oid; do
     [ -n "$oid" ] || continue
-    # The merge commit must be in the LOCAL object store before it can be tested. When it is not
-    # (an unfetched or pruned object), `--is-ancestor` fails with a hard error; skipping such a
-    # PR degrades to "cannot prove it", which preserves the branch. Checking existence first also
-    # keeps the rc band below to a clean 0/1, so a genuine git failure still surfaces.
+    # The merge commit must be in the LOCAL object store before it can be tested; an unfetched one
+    # degrades to "cannot prove it", which preserves the branch.
     git rev-parse --verify --quiet "$oid^{commit}" >/dev/null 2>&1 || continue
     git merge-base --is-ancestor "$oid" "$base_oid" 2>/dev/null; rc=$?
     case "$rc" in
-      0) printf 'merged-pr\n%s\n#%s (merge commit %.12s)\n' "$tip" "$n" "$oid"; return 0 ;;
-      1) : ;;
+      0) : ;;
+      1) continue ;;
       *) die "branch-verdict: git merge-base failed (rc $rc) while checking PR #$n" ;;
+    esac
+    if [ "$head" = "$tip" ]; then
+      printf 'merged-pr\n%s\n#%s (merge commit %.12s)\n' "$tip" "$n" "$oid"; return 0
+    fi
+    [ -n "$heads" ] || continue
+    fetched="$(git rev-parse --verify --quiet "$heads/$n^{commit}" 2>/dev/null)"
+    if [ -z "$fetched" ]; then
+      [ -n "$unread" ] || unread="the head of PR #$n could not be read from its pull ref"
+      continue
+    fi
+    if [ "$fetched" != "$head" ]; then
+      [ -n "$unread" ] || unread="PR #$n: the commit its pull ref holds is not the head GitHub reports"
+      continue
+    fi
+    git merge-base --is-ancestor "$tip" "$fetched" 2>/dev/null; rc=$?
+    case "$rc" in
+      0) printf 'merged-pr\n%s\n#%s (merge commit %.12s; tip behind its head %.12s)\n' "$tip" "$n" "$oid" "$fetched"
+         return 0 ;;
+      1) : ;;   # diverged: the tip has commits the PR never carried
+      *) die "branch-verdict: git merge-base failed (rc $rc) while checking PR #$n's head" ;;
     esac
   done <<EOF
 $cands
 EOF
 
+  if [ -n "$unread" ]; then
+    printf 'unverified\n%s\n%s\n' "$tip" "$unread"; return 0
+  fi
   printf 'unmerged\n%s\n' "$tip"
+}
+
+# --- branch-pr-heads ---------------------------------------------------------------------------
+# branch-pr-heads <branch> — merged-PR JSON on stdin (the same payload `branch-verdict` reads).
+# Prints the number of every PR whose head must be FETCHED before `branch-verdict --pr-heads` can
+# judge it: a merge commit is present and `headRefOid` is not the local tip. One integer per line;
+# nothing for empty input. Exit 2 on malformed JSON, a missing branch, or no jq with evidence given.
+cmd_branch_pr_heads() {
+  [ "$#" -eq 1 ] || die "branch-pr-heads: needs exactly 1 arg: <branch> (merged-PR JSON on stdin)"
+  local branch="$1" tip json
+  case "$branch" in ''|-*) die "branch-pr-heads: <branch> must be a branch name (got '$branch')" ;; esac
+  tip="$(git rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)"
+  [ -n "$tip" ] || die "branch-pr-heads: no such local branch: $branch"
+  json="$(cat)"
+  case "$json" in *[![:space:]]*) : ;; *) return 0 ;; esac
+  command -v jq >/dev/null 2>&1 || die "branch-pr-heads: jq is required to read merged-PR JSON"
+  printf '%s' "$json" | jq -r --arg tip "$tip" '
+    if type != "array" then error("not an array") else . end
+    | .[]
+    | select(((.mergeCommit // {}) | .oid // "") != "")
+    | select((.number | type) == "number" and .number >= 1 and (.number | floor) == .number)
+    | select((.headRefOid // "") != $tip)
+    | .number' 2>/dev/null \
+    || die "branch-pr-heads: could not parse the merged-PR JSON (malformed, or not a JSON array)"
+}
+
+# --- config-left -------------------------------------------------------------------------------
+# config-left <branch> — does THIS repository's local config still hold a `branch.<branch>.*` key?
+# Read-only. Exit 0 = none left · 10 = keys left (their names on stdout, one per line) · 2 = the
+# config could not be read, or a bad argument.
+#
+# EXACT SECTION, fixed-string (#518). A key belongs to the section when it starts with
+# `branch.<branch>.` AND the rest holds no further dot: variable names cannot contain one, so
+# `branch.fix/v1.2-x.more.remote` (branch `fix/v1.2-x.more`) is not `fix/v1.2-x`'s, and an
+# unescaped regex would also have matched `branch.fix/v1x2-x.*`. `--local`, because the removal
+# writes this repository's config and a global `branch.*` key is not one it could have left.
+# Git lowercases the section and variable names in this listing and keeps the subsection as
+# written, so `branch.` is matched lowercase and the branch name verbatim.
+cmd_config_left() {
+  [ "$#" -eq 1 ] || die "config-left: needs exactly 1 arg: <branch>"
+  local branch="$1" names left
+  case "$branch" in ''|-*) die "config-left: <branch> must be a branch name (got '$branch')" ;; esac
+  # A repository's local config always holds `core.*` keys, so a failed listing is a failure.
+  names="$(git config --local --name-only --list 2>/dev/null </dev/null)" \
+    || die "config-left: could not read the local git config"
+  left="$(printf '%s\n' "$names" | awk -v p="branch.$branch." '
+    index($0, p) == 1 && index(substr($0, length(p) + 1), ".") == 0 { print }')"
+  [ -n "$left" ] || return 0
+  printf '%s\n' "$left"
+  return 10
 }
 
 # --- state-scan --------------------------------------------------------------------------------
@@ -1164,6 +1241,8 @@ main() {
   case "$sub" in
     -h|--help|help) usage; exit 0 ;;
     branch-verdict) cmd_branch_verdict "$@" ;;
+    branch-pr-heads) cmd_branch_pr_heads "$@" ;;
+    config-left)    cmd_config_left "$@" ;;
     state-scan)     cmd_state_scan "$@" ;;
     state-verdict)  cmd_state_verdict "$@" ;;
     run-live)       cmd_run_live "$@" ;;
