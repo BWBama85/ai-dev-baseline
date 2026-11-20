@@ -399,15 +399,23 @@ while IFS= read -r b; do
     NOTES="${NOTES}UNVERIFIED $b — the merged-PR evidence could not be read; preserved
 "; continue
   fi
+  # `ref_free <ref>` is true only when a SUCCESSFUL lookup lists no such ref: `for-each-ref` prints
+  # an exact match (a dangling symbolic ref included) and fails on a lookup error, so neither a
+  # failed read nor a leftover is ever taken for "free".
+  ref_free() {
+    local seen
+    seen="$(git for-each-ref --format='%(refname)' "$1" 2>/dev/null </dev/null)" || return 1
+    [ -z "$seen" ]
+  }
   HEADS_BAD=0
   while IFS= read -r PRN; do
     [ -n "$PRN" ] || continue
-    git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
-    if git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null; then HEADS_BAD=1; continue; fi
+    ref_free "$PRHEADS/$PRN" || git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+    ref_free "$PRHEADS/$PRN" || { HEADS_BAD=1; continue; }
     GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags --no-write-fetch-head --no-recurse-submodules \
       --refmap= origin "+refs/pull/$PRN/head:$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
       || { git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
-           git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null && HEADS_BAD=1; }
+           ref_free "$PRHEADS/$PRN" || HEADS_BAD=1; }
   done <<EOF4
 $WANT
 EOF4
@@ -417,13 +425,14 @@ EOF4
   if [ "$HEADS_BAD" -eq 0 ]; then
     V="$(printf '%s' "$PRJSON" | {{CLEANUP_LIB}} branch-verdict --pr-heads "$PRHEADS" "$b" "$BASE")" || V_RC=$?
   fi
-  # The private refs go on EVERY path, before anything below can `continue`: they are evidence for
-  # this one verdict. A leftover is read by nothing, but it keeps the fetched objects alive, so a
-  # delete that fails is named with the command that removes it.
+  # The private refs go on every path this loop takes, before anything below can `continue`: they
+  # are evidence for this one verdict. (A sweep killed between the fetch and here leaves them under
+  # refs/adb-cleanup/, which nothing reads; `git for-each-ref refs/adb-cleanup` lists them.) A
+  # leftover keeps the fetched objects alive, so a delete that fails is named with its command.
   while IFS= read -r PRN; do
     [ -n "$PRN" ] || continue
-    git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null || continue
-    git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
+    ref_free "$PRHEADS/$PRN" && continue
+    git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null && ref_free "$PRHEADS/$PRN" \
       || NOTES="${NOTES}NOTE: could not remove the private ref $PRHEADS/$PRN; run: git update-ref --no-deref -d $PRHEADS/$PRN
 "
   done <<EOF4
@@ -461,7 +470,9 @@ EOF2
         # status is non-zero both for a branch that never had config and for a section that could
         # not be removed (a `.git/config` the process may not write — a sandbox protects it), and
         # only the second is a problem. `config-left` matches the exact section, fixed-string.
-        git config --remove-section "branch.$b" >/dev/null 2>&1 </dev/null || :
+        # `--local` with `GIT_CONFIG` removed from this call's environment, so the removal writes the
+        # same file `config-left` reads: git refuses `--local` beside an inherited GIT_CONFIG.
+        env -u GIT_CONFIG git config --local --remove-section "branch.$b" >/dev/null 2>&1 </dev/null || :
         CFG_LEFT=0
         {{CLEANUP_LIB}} config-left "$b" >/dev/null 2>&1 </dev/null || CFG_LEFT=$?
         case "$CFG_LEFT" in
@@ -585,7 +596,7 @@ EOF2
                 # THE PROOF IS THE GATE THIS CLOSE PASSED, not the delete's evidence — and that
                 # is a claim-grammar constraint, discovered by the executed case rather than
                 # reasoned about. `PR closed` is a category name containing a STATUS WORD, and a
-                # `merged-pr` verdict's evidence is `#<n> (merge commit <oid>)`: rendering it here
+                # `merged-pr` verdict's evidence is `#<n> (merge commit <oid>[; tip behind its head <oid>])`: rendering it here
                 # puts a status word and an entity reference in one sentence, which
                 # `state-assert.sh lint` rejects — and only on sweeps where a squash-merged branch
                 # also had an open PR, i.e. exactly when nobody is looking. It costs the report
@@ -1284,7 +1295,7 @@ and finally the observation, before the repository-state tail.
 `closed` is a status word, and the category name is the sentence. This is the same rule the
 `Cleared state` proofs already live by (`PR merged`, not `PR #41 merged`) — read from the other
 end, and the number is not lost: it is the item. The sharper half is the proof: a `merged-pr`
-delete's evidence *is* `#<n> (merge commit <oid>)`, so rendering the delete's proof on this line
+delete's evidence *is* `#<n> (merge commit <oid>[; tip behind its head <oid>])`, so rendering the delete's proof on this line
 would violate the grammar on any sweep where a squash-merged branch also had an open PR. The proof
 here is the **OID gate this close passed** instead, which is both grammar-safe and the more precise
 answer to why *this* PR was closed; the delete's own evidence is one line above, and the full

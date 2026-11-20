@@ -906,10 +906,10 @@ else
   # gained a pushed commit after being classified still satisfies it. Not used, even for the
   # fast-forward case — the expected-OID delete is the stronger check.
   hasnt "$wfexec" 'git branch -d' "6 …including the fast-forward case, which never falls back to git branch -d"
-  has "$wfcode" 'git config --remove-section "branch.$b" >/dev/null 2>&1 </dev/null || :' \
+  has "$wfexec" 'env -u GIT_CONFIG git config --local --remove-section "branch.$b" >/dev/null 2>&1 </dev/null || :' \
      "6 the ref delete also drops branch.<name>.* so a later branch cannot inherit a stale upstream"
   # #518: the outcome is decided by READING the config afterwards, never by the removal's status.
-  has "$wfcode" '{{CLEANUP_LIB}} config-left "$b"' \
+  has "$wfexec" '{{CLEANUP_LIB}} config-left "$b"' \
      "6 …and the config is re-read after the removal, so a refused write is not silent (#518)"
   hasnt "$wfexec" 'remove-section "branch.$b" >/dev/null 2>&1 || true' \
      "6 …and the old status-swallowing spelling is gone (#518)"
@@ -3395,11 +3395,11 @@ ph() { check_git "$PHR" "$@"; }
   git reset -q --hard HEAD~1;         git commit -q --allow-empty -m div-own
   # unread: PR 9's head was never published at a pull ref.
   git checkout -q -b ph/unread main;  git commit -q --allow-empty -m unread-0
-  git commit -q --allow-empty -m unread-pr; git reset -q --hard HEAD~1
+  git commit -q --allow-empty -m unread-pr; git rev-parse HEAD > ../u1; git reset -q --hard HEAD~1
   # mismatch: refs/pull/11/head holds M1, but GitHub reports M2 as the head.
   git checkout -q -b ph/mis main;     git commit -q --allow-empty -m mis-0
   git commit -q --allow-empty -m mis-1; git push -q origin HEAD:refs/pull/11/head
-  git commit -q --allow-empty -m mis-2; git reset -q --hard HEAD~2
+  git commit -q --allow-empty -m mis-2; git rev-parse HEAD > ../m2; git reset -q --hard HEAD~2
   git checkout -q main
 ) || bad "16 fixture build failed"
 # The behind PR's later round, from ANOTHER clone (the issue's own history).
@@ -3414,8 +3414,8 @@ git clone -q "$PH/remote.git" "$PH/other" 2>/dev/null || bad "16 second clone fa
 ) || bad "16 second-clone round failed"
 PH_T1="${ git -C "$PH/remote.git" rev-parse refs/pull/7/head; }"
 PH_D1="${ git -C "$PH/remote.git" rev-parse refs/pull/8/head; }"
-PH_U1="${ ph rev-parse 'ph/unread@{1}'; }"
-PH_M2="${ ph rev-parse 'ph/mis@{1}'; }"
+PH_U1="${ cat "$PH/u1"; }"
+PH_M2="${ cat "$PH/m2"; }"
 # One squash commit per PR on main, so each mergeCommit is contained in origin/main.
 for n in 7 8 9 11; do ph commit -q --allow-empty -m "squash (#$n)"; eval "PH_S$n=\"\${ ph rev-parse HEAD; }\""; done
 ph push -q origin main
@@ -3505,6 +3505,20 @@ if [ -n "${ ph rev-parse --verify --quiet refs/heads/ph/behind; }" ]; then ok; e
   bad "16b control: without the fetch the behind branch was still deleted, so 16b proves nothing about the fetch"; fi
 has "${ cat "$PH/notes"; }" "UNVERIFIED ph/behind" "16b control: …and is reported UNVERIFIED instead"
 
+# A private ref that cannot be cleared before the fetch: the namespace is pinned for this run, a
+# stale ref is planted there with a held lock, and the branch must be kept with no verdict.
+PH_PIN="${ printf '%s\n' "$BR_SNIPPET" | sed 's|^PRHEADS_NS=.*$|PRHEADS_NS=refs/adb-cleanup/pinned|'; }"
+if [ "$PH_PIN" = "$BR_SNIPPET" ]; then bad "16b the namespace line was not found to pin"; else ok; fi
+ph update-ref refs/adb-cleanup/pinned/pull/7 "$PH_T1"
+: > "$PHR/.git/refs/adb-cleanup/pinned/pull/7.lock"
+BR_SNIPPET="$PH_PIN"; ph_run "ph/behind"; BR_SNIPPET="$BR_SNIPPET_SAVED"
+rm -f "$PHR/.git/refs/adb-cleanup/pinned/pull/7.lock"
+if [ -n "${ ph rev-parse --verify --quiet refs/heads/ph/behind; }" ]; then ok; else
+  bad "16b a stale private ref that could not be cleared still let the branch be deleted"; fi
+has "${ cat "$PH/notes"; }" "UNVERIFIED ph/behind — a private PR-head ref under refs/adb-cleanup/pinned/pull could not be cleared" \
+   "16b …and the branch is reported UNVERIFIED with no verdict"
+ph update-ref -d refs/adb-cleanup/pinned/pull/7
+
 # --- 16a. the library on its own --------------------------------------------------------------
 PHV() { ( cd "$PHR" && bash "$CL" branch-verdict "$@" ) 2>/dev/null; }
 ph fetch -q origin "+refs/pull/7/head:refs/t/pull/7" "+refs/pull/8/head:refs/t/pull/8" "+refs/pull/11/head:refs/t/pull/11"
@@ -3555,6 +3569,32 @@ printf '[{"number":7,"headRefOid":"%.12s","mergeCommit":{"oid":"%s"}}]' "$PH_T1"
 eq "$?" "2" "16a an abbreviated head OID is malformed evidence"
 printf '[]\n[]' | ( cd "$PHR" && bash "$CL" branch-verdict ph/behind origin/main ) >/dev/null 2>&1
 eq "$?" "2" "16a a stream of two arrays is not the one array the query returns"
+for bad in '[null]' '[{"number":7,"headRefOid":"'"$PH_T1"'","mergeCommit":false}]' \
+           '[{"number":7,"headRefOid":"'"$PH_T1"'","mergeCommit":{"oid":""}}]' \
+           '[{"number":7.0,"headRefOid":"'"$PH_T1"'","mergeCommit":{"oid":"'"$PH_S7"'"}}]'; do
+  printf '%s' "$bad" | ( cd "$PHR" && bash "$CL" branch-verdict --pr-heads refs/t/pull ph/behind origin/main ) >/dev/null 2>&1
+  eq "$?" "2" "16a malformed evidence is refused, never dropped: $bad"
+done
+eq "${ printf '[{"number":7,"headRefOid":"%s","mergeCommit":null}]' "$PH_T1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unmerged" \
+   "16a mergeCommit null is still the documented skip"
+# Replace objects: a local graft that makes the tip an ancestor of PR 8's head must not prove it.
+ph fetch -q origin "+refs/pull/8/head:refs/t/pull/8"
+ph replace --graft "$PH_D1" "${ ph rev-parse ph/div; }"
+eq "${ PHV --pr-heads refs/t/pull ph/div origin/main < "$PHF/merged-ph_div" | sed -n 1p; }" "unmerged" \
+   "16a ancestry is judged without local replace objects"
+ph replace -d "$PH_D1" >/dev/null
+# A shallow clone: a negative ancestry answer is not evidence, so the diverged case is unverified.
+cp "$PHR/.git/shallow" "$PH/shallow.bak" 2>/dev/null; ph rev-parse "$PH_D1^" > "$PHR/.git/shallow"
+out="${ PHV --pr-heads refs/t/pull ph/div origin/main < "$PHF/merged-ph_div"; }"
+rm -f "$PHR/.git/shallow"
+eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a in a shallow clone a diverged answer is unverified, never a negative"
+ph update-ref -d refs/t/pull/8
+# The query's cap: a full page of 20 with no proof may be a subset.
+PH_CAP="${ i=0; printf '['; while [ $i -lt 20 ]; do [ $i -gt 0 ] && printf ','; printf '{"number":%s,"headRefOid":"%s","mergeCommit":{"oid":"%s"}}' $((100+i)) "$PH_D1" "$PH_D1"; i=$((i+1)); done; printf ']'; }"
+out="${ printf '%s' "$PH_CAP" | PHV --pr-heads refs/t/pull ph/div origin/main; }"
+eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a a merged-PR list at its cap of 20 with no proof is unverified"
+has "${ printf '%s\n' "$out" | sed -n 3p; }" "its cap" "16a …and says why"
+eq "${ printf '%s' "$PH_CAP" | PHV ph/div origin/main | sed -n 1p; }" "unmerged" "16a …only with --pr-heads (exact-head-only callers are unchanged)"
 for r in 7 8 11; do ph update-ref -d "refs/t/pull/$r"; done
 
 # branch-pr-heads: the PRs whose head must be fetched.
@@ -3566,6 +3606,8 @@ both3="${ printf '[%s,%s]' "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ p
 eq "${ printf '%s' "$both3" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
    "16a …nor for any other PR once one proves the branch by its exact head"
 eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main </dev/null ); }" "" "16a …and none for empty evidence"
+eq "${ phjson 7 "$PH_T1" "$PH_D1" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
+   "16a …and none for a PR whose merge commit is shown outside the base (it cannot prove anything)"
 printf '{"x":1}' | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ) >/dev/null 2>&1
 eq "$?" "2" "16a …and malformed evidence is an error"
 
@@ -3606,8 +3648,16 @@ eq "${ ph config --local --get "branch.ph/lock.merge"; }" "refs/heads/ph/lock" "
 has "${ cat "$PH/notes"; }" 'LEFT CONFIG branch.ph/lock — its keys remained after the delete' \
    "16c a removal that could not be written is a loud LEFT CONFIG note, never silent (#518)"
 ph config --remove-section "branch.ph/lock"
-hasnt "$ph_notes" "fix/v1x2-x" "16c the look-alike section is never reported"
-hasnt "$ph_notes" "v1.2-x.more" "16c …nor the longer sibling's"
+hasnt "$ph_notes" "LEFT CONFIG branch.fix/v1.2-x" "16c the dotted branch's look-alike keys are not read as its own leftovers"
+
+# GIT_CONFIG inherited: git refuses `--local` beside it, so the sweep takes it out of the removal's
+# environment and the read's; the alternate file is never written.
+ph_ffbranch ph/gc; ph config "branch.ph/gc.remote" origin
+printf '[branch "ph/gc"]\n\tremote = elsewhere\n' > "$PH/alt.cfg"
+( export GIT_CONFIG="$PH/alt.cfg"; ph_run "ph/gc" 0 )
+eq "${ ph config --local --get "branch.ph/gc.remote"; }" "" "16c with GIT_CONFIG set, the local section is still removed"
+eq "${ cat "$PH/alt.cfg"; }" "${ printf '[branch "ph/gc"]\n\tremote = elsewhere'; }" "16c …and the alternate file is untouched"
+hasnt "${ cat "$PH/notes"; }" "branch.ph/gc" "16c …and nothing is reported"
 
 # config-left on its own: exact names, its three answers.
 ph config "branch.ph/x.remote" origin
