@@ -42,8 +42,8 @@ process detail the default output deliberately omits.
     `mergeCommit.oid` is contained in `origin/<default>` **and** whose head carries the local tip:
     either its `headRefOid` equals the tip, or (#545) its head, fetched live from
     `refs/pull/<n>/head` and equal to that `headRefOid`, has the tip as an ancestor. The second
-    form is a branch whose PR gained commits in another checkout. A head that cannot be fetched is
-    `UNVERIFIED` and the branch is kept.
+    form is a branch whose PR gained commits in another checkout. When no PR proves the branch and
+    a head could not be fetched, the branch is kept and reported `UNVERIFIED`.
 - **Every delete is a compare-and-delete against the tip its own proof was computed from.**
   Locally that is `git update-ref -d refs/heads/<b> <the tip the verdict was computed from>`; on
   the remote it is `git push origin --force-with-lease=refs/heads/<b>:<the tip the enumeration
@@ -349,6 +349,8 @@ end and read as unmerged.
 # removed — unset, gh resolves the repository from this checkout's own git remotes, the same
 # anchor the proofs already stand on.
 unset GH_REPO
+# One private namespace per sweep for the PR heads #545 fetches (below): the pid alone can recur.
+PRHEADS_NS="refs/adb-cleanup/$$-${RANDOM:-0}"
 while IFS= read -r b; do
   [ -n "$b" ] || continue
   # WHOLE-LINE match, via grep. The builtin newline-delimited `case` form looks cheaper and is a
@@ -377,45 +379,62 @@ while IFS= read -r b; do
   fi
 
   # A BRANCH BEHIND ITS OWN MERGED PR (#545): the PR gained commits in another checkout, so its
-  # head is not this tip and its commits may not be in this clone at all. Fetch each such PR's head
+  # head is not this tip and its commits may not be in this clone at all. Fetch such a PR's head
   # LIVE from `refs/pull/<n>/head` into a private ref, and let the verdict test the tip's ancestry
-  # against it. `branch-pr-heads` names the PRs that need one (none when a head equals the tip).
-  # A fetch that fails leaves NO ref — any earlier one is deleted first, and FETCH_HEAD is never
-  # written or read — and the verdict reads a missing ref as unreadable evidence: `unverified`, the
-  # branch kept. The fetch runs inside this loop, so it runs wherever the sweep runs: on an SSH
-  # remote inside a sandbox that denies `~/.ssh` it fails, and that is the `unverified` note.
-  # `origin` may not be the PR's repository (a fork checkout); the verdict also requires the
-  # fetched commit to equal the PR's `headRefOid`, so another repository's pull ref proves nothing.
-  # `</dev/null` on every call here, for the reason the open-PR arm below states.
-  PRHEADS="refs/adb-cleanup/$$/pull"
-  if ! WANT="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-pr-heads "$b")"; then
+  # against it. `branch-pr-heads` names the PRs that need one, and none when a PR already proves the
+  # branch by its exact head. A fetch that fails leaves NO ref: the private name is cleared before
+  # the fetch and again after a failed one, and if it cannot be cleared the branch is kept
+  # `UNVERIFIED` without a verdict. The verdict reads a missing ref as unreadable evidence:
+  # `unverified`, the branch kept, unless another PR proves it.
+  #
+  # THE FETCH RUNS INSIDE THIS LOOP, so it runs wherever the sweep runs: on an SSH remote inside a
+  # sandbox that denies `~/.ssh` it fails, and that is the `unverified` note. `origin` may not be
+  # the PR's repository (a fork checkout); the verdict also requires the fetched commit to equal
+  # the PR's `headRefOid`, so another repository's pull ref proves nothing. `--refmap=` confines the
+  # update to the private ref (no configured `refs/pull/*` mapping applies), `--no-write-fetch-head`
+  # leaves FETCH_HEAD alone, and every ref operation is `--no-deref`, so a private name that is a
+  # symbolic ref can never carry a delete through to a branch. No wall-clock bound: like every gh
+  # call in this loop it relies on the transport's own timeouts. `</dev/null` on every call, for the
+  # reason the open-PR arm below states.
+  PRHEADS="$PRHEADS_NS/pull"
+  if ! WANT="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-pr-heads "$b" "$BASE")"; then
     NOTES="${NOTES}UNVERIFIED $b — the merged-PR evidence could not be read; preserved
 "; continue
   fi
+  HEADS_BAD=0
   while IFS= read -r PRN; do
     [ -n "$PRN" ] || continue
-    git update-ref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
-    GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags --no-write-fetch-head origin \
-      "+refs/pull/$PRN/head:$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null || :
+    git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+    if git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null; then HEADS_BAD=1; continue; fi
+    GIT_TERMINAL_PROMPT=0 git fetch --quiet --no-tags --no-write-fetch-head --no-recurse-submodules \
+      --refmap= origin "+refs/pull/$PRN/head:$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
+      || { git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null
+           git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null && HEADS_BAD=1; }
   done <<EOF4
 $WANT
 EOF4
 
   # Line 1 = verdict, line 2 = the tip the verdict was computed from, line 3 = detail.
   V_RC=0
-  V="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-verdict --pr-heads "$PRHEADS" "$b" "$BASE")" || V_RC=$?
+  if [ "$HEADS_BAD" -eq 0 ]; then
+    V="$(printf '%s' "$PRJSON" | bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" branch-verdict --pr-heads "$PRHEADS" "$b" "$BASE")" || V_RC=$?
+  fi
   # The private refs go on EVERY path, before anything below can `continue`: they are evidence for
-  # this one verdict. A leftover is read by nothing, but it would keep the fetched objects alive in
-  # the ref store, so a delete that fails is named rather than dropped.
+  # this one verdict. A leftover is read by nothing, but it keeps the fetched objects alive, so a
+  # delete that fails is named with the command that removes it.
   while IFS= read -r PRN; do
     [ -n "$PRN" ] || continue
     git show-ref --verify --quiet "$PRHEADS/$PRN" </dev/null || continue
-    git update-ref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
-      || NOTES="${NOTES}NOTE: could not remove the private ref $PRHEADS/$PRN; delete it with git update-ref -d
+    git update-ref --no-deref -d "$PRHEADS/$PRN" >/dev/null 2>&1 </dev/null \
+      || NOTES="${NOTES}NOTE: could not remove the private ref $PRHEADS/$PRN; run: git update-ref --no-deref -d $PRHEADS/$PRN
 "
   done <<EOF4
 $WANT
 EOF4
+  if [ "$HEADS_BAD" -ne 0 ]; then
+    NOTES="${NOTES}UNVERIFIED $b — a private PR-head ref under $PRHEADS could not be cleared, so no fetched head can be trusted; preserved
+"; continue
+  fi
   if [ "$V_RC" -ne 0 ]; then
     NOTES="${NOTES}UNVERIFIED $b — could not be classified; preserved
 "; continue
@@ -449,7 +468,7 @@ EOF2
         bash "$HOME/.codex/scripts/lib/cleanup-lib.sh" config-left "$b" >/dev/null 2>&1 </dev/null || CFG_LEFT=$?
         case "$CFG_LEFT" in
           0)  : ;;
-          10) NOTES="${NOTES}LEFT CONFIG branch.$b — .git/config was not writable (sandboxed?); run: git config --remove-section \"branch.$b\"
+          10) NOTES="${NOTES}LEFT CONFIG branch.$b — its keys remained after the delete (a lock, or a .git/config this process may not write, such as under a sandbox); remove that section with git config --remove-section once you have checked no branch of that name exists again
 " ;;
           *)  NOTES="${NOTES}UNVERIFIED branch.$b config — could not re-read .git/config after the delete
 " ;;

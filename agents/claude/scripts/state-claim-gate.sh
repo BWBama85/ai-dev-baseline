@@ -159,7 +159,7 @@ claim_home() {
     green|red|passing|failing)
       printf 'CI status -> bash "$HOME/.claude/scripts/lib/roadmap-lib.sh" branch-health (Checks API + commit-status API, fail-closed)' ;;
     unmerged)
-      printf 'branch merged? -> bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" branch-verdict (models squash/rebase, exact-head or tip-behind-head)' ;;
+      printf 'branch merged? -> bash "$HOME/.claude/scripts/lib/cleanup-lib.sh" branch-verdict (models squash/rebase, exact-head; tip-behind-head via /cleanup, which fetches the PR heads)' ;;
     *)
       printf 'PR/issue state -> bash "$HOME/.claude/scripts/lib/state-assert.sh" observe pr|issue <n>' ;;
   esac

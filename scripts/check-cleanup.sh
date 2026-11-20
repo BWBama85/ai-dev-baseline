@@ -3445,50 +3445,6 @@ exit 0
 PHGH
 chmod +x "$PHB/gh"
 
-# --- 16a. the library on its own --------------------------------------------------------------
-PHV() { ( cd "$PHR" && bash "$CL" branch-verdict "$@" ) 2>/dev/null; }
-ph fetch -q origin "+refs/pull/7/head:refs/t/pull/7" "+refs/pull/8/head:refs/t/pull/8" "+refs/pull/11/head:refs/t/pull/11"
-out="${ PHV --pr-heads refs/t/pull ph/behind origin/main < "$PHF/merged-ph_behind"; }"
-eq "${ printf '%s\n' "$out" | sed -n 1p; }" "merged-pr" "16a a tip behind its merged PR's fetched head is merged-pr (#545)"
-eq "${ printf '%s\n' "$out" | sed -n 2p; }" "${ ph rev-parse ph/behind; }" "16a …line 2 is still the LOCAL tip, which the delete leases on"
-has "${ printf '%s\n' "$out" | sed -n 3p; }" "tip behind its head" "16a …and line 3 says which form matched"
-has "${ printf '%s\n' "$out" | sed -n 3p; }" "#7 (merge commit" "16a …naming the PR and its merge commit"
-eq "${ PHV ph/behind origin/main < "$PHF/merged-ph_behind" | sed -n 1p; }" "unmerged" \
-   "16a without --pr-heads only the exact-head form is tried, as before"
-eq "${ PHV --pr-heads refs/t/pull ph/div origin/main < "$PHF/merged-ph_div" | sed -n 1p; }" "unmerged" \
-   "16a a diverged tip (a commit the PR never carried) is unmerged, silently"
-out="${ PHV --pr-heads refs/t/pull ph/unread origin/main < "$PHF/merged-ph_unread"; }"
-eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a a PR head that cannot be read is unverified, never unmerged"
-has "${ printf '%s\n' "$out" | sed -n 3p; }" "could not be read from its pull ref" "16a …and says why"
-out="${ PHV --pr-heads refs/t/pull ph/mis origin/main < "$PHF/merged-ph_mis"; }"
-eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a a pull ref holding another commit than headRefOid is unverified"
-has "${ printf '%s\n' "$out" | sed -n 3p; }" "not the head GitHub reports" "16a …and says why"
-# A proving PR beside an unreadable one proves the branch, in either order.
-both1="${ printf '[%s,%s]' "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ phjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }"; }"
-both2="${ printf '[%s,%s]' "${ phjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }" "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }"; }"
-eq "${ printf '%s' "$both1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "merged-pr" \
-   "16a an unreadable PR listed BEFORE a proving one does not mask the proof"
-eq "${ printf '%s' "$both2" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "merged-pr" \
-   "16a …nor listed after it"
-# A PR whose merge commit is not in the base proves nothing, whatever its head says.
-eq "${ phjson 7 "$PH_T1" "$PH_D1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unmerged" \
-   "16a the ancestor form still requires the merge commit to be contained in the base"
-( cd "$PHR" && bash "$CL" branch-verdict --pr-heads pull ph/behind origin/main </dev/null ) >/dev/null 2>&1
-eq "$?" "2" "16a a --pr-heads prefix outside refs/ is refused"
-printf '[{"number":"7; rm -rf /","headRefOid":"%s","mergeCommit":{"oid":"%s"}}]' "$PH_T1" "$PH_S7" \
-  | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p > "$PH/v"
-eq "${ cat "$PH/v"; }" "unmerged" "16a a non-integer PR number never reaches a ref name"
-for r in 7 8 11; do ph update-ref -d "refs/t/pull/$r"; done
-
-# branch-pr-heads: the PRs whose head must be fetched.
-eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind < "$PHF/merged-ph_behind" ); }" "7" \
-   "16a branch-pr-heads names a merged PR whose head is not the tip"
-eq "${ phjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind ); }" "" \
-   "16a …and none when the head IS the tip (the exact form needs no fetch)"
-eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind </dev/null ); }" "" "16a …and none for empty evidence"
-printf '{"x":1}' | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind ) >/dev/null 2>&1
-eq "$?" "2" "16a …and malformed evidence is an error"
-
 # --- 16b. the real sweep fetches the head and deletes only what it proved ----------------------
 ph_run() {   # <candidates> [HAVE_GH]
   ( cd "$PHR" && env PATH="$PHB:$PATH" PH_FIX="$PHF" "$BASH" -c '
@@ -3525,11 +3481,16 @@ has "$ph_notes" "UNVERIFIED ph/mis — PR #11: the commit its pull ref holds is 
    "16b a pull ref that disagrees with GitHub's head is reported UNVERIFIED"
 eq "${ ph for-each-ref --format='%(refname)' refs/adb-cleanup; }" "" \
    "16b the sweep's private PR-head refs are gone afterwards, on every path"
-if printf 'Deleted (local)\t%s\n' "$ph_del" | bash "$CL" report | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then
+ph_rep="${ printf 'Deleted (local)\t%s\n' "$ph_del" | bash "$CL" report; }"
+has "$ph_rep" "ph/behind [#7 (merge commit ${PH_S7:0:12}; tip behind its head ${PH_T1:0:12})]" \
+   "16b the rendered report carries the branch, PR, merge commit and fetched head"
+if printf '%s\n' "$ph_rep" | bash "$ROOT/scripts/lib/state-assert.sh" lint >/dev/null 2>&1; then
   ok; else bad "16b the ancestor-form proof violates the claim grammar"; fi
 # With the branch gone and no remote-tracking ref, the run marker that names it is stale (#545's
 # symptom): the existing marker verdict clears it once the sweep has deleted the branch.
-eq "${ bash "$CL" state-verdict marker merged 0 0; }" "stale" \
+PH_LREF=0; ph show-ref --verify --quiet refs/heads/ph/behind && PH_LREF=1
+PH_RREF=0; ph show-ref --verify --quiet refs/remotes/origin/ph/behind && PH_RREF=1
+eq "${ bash "$CL" state-verdict marker merged "$PH_LREF" "$PH_RREF"; }" "stale" \
    "16b a marker whose branch the sweep deleted reads stale once neither ref survives"
 
 # THE CONTROL: the same block with the fetch removed must keep the behind branch. Without it 16b
@@ -3544,13 +3505,78 @@ if [ -n "${ ph rev-parse --verify --quiet refs/heads/ph/behind; }" ]; then ok; e
   bad "16b control: without the fetch the behind branch was still deleted, so 16b proves nothing about the fetch"; fi
 has "${ cat "$PH/notes"; }" "UNVERIFIED ph/behind" "16b control: …and is reported UNVERIFIED instead"
 
+# --- 16a. the library on its own --------------------------------------------------------------
+PHV() { ( cd "$PHR" && bash "$CL" branch-verdict "$@" ) 2>/dev/null; }
+ph fetch -q origin "+refs/pull/7/head:refs/t/pull/7" "+refs/pull/8/head:refs/t/pull/8" "+refs/pull/11/head:refs/t/pull/11"
+out="${ PHV --pr-heads refs/t/pull ph/behind origin/main < "$PHF/merged-ph_behind"; }"
+eq "${ printf '%s\n' "$out" | sed -n 1p; }" "merged-pr" "16a a tip behind its merged PR's fetched head is merged-pr (#545)"
+eq "${ printf '%s\n' "$out" | sed -n 2p; }" "${ ph rev-parse ph/behind; }" "16a …line 2 is still the LOCAL tip, which the delete leases on"
+has "${ printf '%s\n' "$out" | sed -n 3p; }" "tip behind its head" "16a …and line 3 says which form matched"
+has "${ printf '%s\n' "$out" | sed -n 3p; }" "#7 (merge commit" "16a …naming the PR and its merge commit"
+eq "${ PHV ph/behind origin/main < "$PHF/merged-ph_behind" | sed -n 1p; }" "unmerged" \
+   "16a without --pr-heads only the exact-head form is tried, as before"
+eq "${ PHV --pr-heads refs/t/pull ph/div origin/main < "$PHF/merged-ph_div" | sed -n 1p; }" "unmerged" \
+   "16a a diverged tip (a commit the PR never carried) is unmerged, silently"
+out="${ PHV --pr-heads refs/t/pull ph/unread origin/main < "$PHF/merged-ph_unread"; }"
+eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a a PR head that cannot be read is unverified, never unmerged"
+has "${ printf '%s\n' "$out" | sed -n 3p; }" "could not be read from its pull ref" "16a …and says why"
+out="${ PHV --pr-heads refs/t/pull ph/mis origin/main < "$PHF/merged-ph_mis"; }"
+eq "${ printf '%s\n' "$out" | sed -n 1p; }" "unverified" "16a a pull ref holding another commit than headRefOid is unverified"
+has "${ printf '%s\n' "$out" | sed -n 3p; }" "not the head GitHub reports" "16a …and says why"
+# A proving PR beside an unreadable one proves the branch, in either order.
+both1="${ printf '[%s,%s]' "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ phjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }"; }"
+both2="${ printf '[%s,%s]' "${ phjson 7 "$PH_T1" "$PH_S7" | tr -d '[]'; }" "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }"; }"
+eq "${ printf '%s' "$both1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "merged-pr" \
+   "16a an unreadable PR listed BEFORE a proving one does not mask the proof"
+eq "${ printf '%s' "$both2" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "merged-pr" \
+   "16a …nor listed after it"
+# A PR whose merge commit is not in the base proves nothing, whatever its head says.
+eq "${ phjson 7 "$PH_T1" "$PH_D1" | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unmerged" \
+   "16a the ancestor form still requires the merge commit to be contained in the base"
+# The private head is read by its EXACT ref: a branch whose NAME is the private ref's path must not
+# stand in for it (`rev-parse` would resolve refs/heads/refs/t/pull/9 when refs/t/pull/9 is absent).
+ph branch -q "refs/t/pull/9" "$PH_U1" 2>/dev/null
+eq "${ PHV --pr-heads refs/t/pull ph/unread origin/main < "$PHF/merged-ph_unread" | sed -n 1p; }" "unverified" \
+   "16a a same-named branch never stands in for a private head ref that was not fetched"
+ph update-ref -d "refs/heads/refs/t/pull/9"
+# A merge commit this clone does not hold cannot be judged; with --pr-heads that is unreadable.
+eq "${ phjson 7 "$PH_T1" 1111111111111111111111111111111111111111 | PHV --pr-heads refs/t/pull ph/behind origin/main | sed -n 1p; }" "unverified" \
+   "16a with --pr-heads, a merge commit not in this clone is unverified, never a silent unmerged"
+( cd "$PHR" && bash "$CL" branch-verdict --pr-heads pull ph/behind origin/main </dev/null ) >/dev/null 2>&1
+eq "$?" "2" "16a a --pr-heads prefix outside refs/ is refused"
+printf '[{"number":"7; rm -rf /","headRefOid":"%s","mergeCommit":{"oid":"%s"}}]' "$PH_T1" "$PH_S7" \
+  | ( cd "$PHR" && bash "$CL" branch-verdict --pr-heads refs/t/pull ph/behind origin/main ) >/dev/null 2>&1
+eq "$?" "2" "16a a non-integer PR number is malformed evidence (2), never a ref name"
+printf '[{"number":7,"headRefOid":"%s","mergeCommit":{"oid":"main"}}]' "$PH_T1" \
+  | ( cd "$PHR" && bash "$CL" branch-verdict --pr-heads refs/t/pull ph/behind origin/main ) >/dev/null 2>&1
+eq "$?" "2" "16a a merge 'OID' that is a revision name is malformed evidence, never resolved"
+printf '[{"number":7,"headRefOid":"%.12s","mergeCommit":{"oid":"%s"}}]' "$PH_T1" "$PH_S7" \
+  | ( cd "$PHR" && bash "$CL" branch-verdict --pr-heads refs/t/pull ph/behind origin/main ) >/dev/null 2>&1
+eq "$?" "2" "16a an abbreviated head OID is malformed evidence"
+printf '[]\n[]' | ( cd "$PHR" && bash "$CL" branch-verdict ph/behind origin/main ) >/dev/null 2>&1
+eq "$?" "2" "16a a stream of two arrays is not the one array the query returns"
+for r in 7 8 11; do ph update-ref -d "refs/t/pull/$r"; done
+
+# branch-pr-heads: the PRs whose head must be fetched.
+eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main < "$PHF/merged-ph_behind" ); }" "7" \
+   "16a branch-pr-heads names a merged PR whose head is not the tip"
+eq "${ phjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
+   "16a …and none when the head IS the tip (the exact form needs no fetch)"
+both3="${ printf '[%s,%s]' "${ phjson 9 "$PH_U1" "$PH_S9" | tr -d '[]'; }" "${ phjson 7 "${ ph rev-parse ph/behind; }" "$PH_S7" | tr -d '[]'; }"; }"
+eq "${ printf '%s' "$both3" | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ); }" "" \
+   "16a …nor for any other PR once one proves the branch by its exact head"
+eq "${ ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main </dev/null ); }" "" "16a …and none for empty evidence"
+printf '{"x":1}' | ( cd "$PHR" && bash "$CL" branch-pr-heads ph/behind origin/main ) >/dev/null 2>&1
+eq "$?" "2" "16a …and malformed evidence is an error"
+
 # --- 16c. #518: the config the delete leaves, decided by reading it back ----------------------
 # Merged-ff branches (HAVE_GH=0: the proof is local ancestry, no fetch involved).
-ph_ffbranch() {   # <name> — a branch whose tip is contained in origin/main
-  ph branch -f "$1" origin/main
+ph_ffbranch() {   # <name> — a branch whose tip is contained in origin/main, with NO upstream
+  ph branch -f --no-track "$1" origin/main
 }
 ph_ffbranch ph/cfg;  ph config "branch.ph/cfg.remote" origin;  ph config "branch.ph/cfg.merge" refs/heads/ph/cfg
 ph_ffbranch ph/nocfg
+eq "${ ph config --local --get-regexp '^branch\.ph/nocfg\.'; }" "" "16c fixture: the no-config branch really has no config"
 ph_ffbranch fix/v1.2-x
 ph config "branch.fix/v1.2-x.remote" origin; ph config "branch.fix/v1.2-x.merge" refs/heads/fix/v1.2-x
 ph config "branch.fix/v1x2-x.remote" origin             # an unescaped `.` would match this
@@ -3559,6 +3585,9 @@ ph_run "ph/cfg
 ph/nocfg
 fix/v1.2-x" 0
 ph_notes="${ cat "$PH/notes"; }"
+for k in ph/cfg ph/nocfg fix/v1.2-x; do
+  if [ -z "${ ph rev-parse --verify --quiet "refs/heads/$k"; }" ]; then ok; else bad "16c $k was not deleted"; fi
+done
 eq "${ ph config --local --get-regexp '^branch\.ph/cfg\.' ; }" "" "16c a writable config loses the deleted branch's section"
 hasnt "$ph_notes" "LEFT CONFIG" "16c …and no LEFT CONFIG note appears (writable, or no config at all)"
 hasnt "$ph_notes" "UNVERIFIED" "16c …nor any other note"
@@ -3572,11 +3601,13 @@ ph_run "ph/lock" 0
 rm -f "$PHR/.git/config.lock"
 if [ -z "${ ph rev-parse --verify --quiet refs/heads/ph/lock; }" ]; then ok; else bad "16c the ref was not deleted"; fi
 has "${ cat "$PH/deleted_local"; }" "ph/lock" "16c …and the delete is still recorded, because the ref really is gone"
-eq "${ ph config --local --get "branch.ph/lock.remote"; }" "origin" "16c the locked config kept its keys (the fixture works)"
-has "${ cat "$PH/notes"; }" 'LEFT CONFIG branch.ph/lock — .git/config was not writable (sandboxed?); run: git config --remove-section "branch.ph/lock"' \
+eq "${ ph config --local --get "branch.ph/lock.remote"; }" "origin" "16c the locked config kept its .remote (the fixture works)"
+eq "${ ph config --local --get "branch.ph/lock.merge"; }" "refs/heads/ph/lock" "16c …and its .merge"
+has "${ cat "$PH/notes"; }" 'LEFT CONFIG branch.ph/lock — its keys remained after the delete' \
    "16c a removal that could not be written is a loud LEFT CONFIG note, never silent (#518)"
 ph config --remove-section "branch.ph/lock"
-hasnt "${ cat "$PH/notes"; }" "fix/v1x2-x" "16c the look-alike section is never reported"
+hasnt "$ph_notes" "fix/v1x2-x" "16c the look-alike section is never reported"
+hasnt "$ph_notes" "v1.2-x.more" "16c …nor the longer sibling's"
 
 # config-left on its own: exact names, its three answers.
 ph config "branch.ph/x.remote" origin
