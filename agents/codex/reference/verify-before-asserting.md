@@ -71,7 +71,7 @@ name the *observed* fact that implies it (an exit code, an action taken) instead
 | Question | The one command that answers it |
 |---|---|
 | PR / issue state | `state-assert.sh observe pr\|issue <n>` |
-| Is this branch merged? | `cleanup-lib.sh branch-verdict` (models squash/rebase, exact-head, containment) |
+| Is this branch merged? | `cleanup-lib.sh branch-verdict` (models squash/rebase, exact-head, containment; a tip behind its PR's head only with `--pr-heads` over heads the `/cleanup` sweep fetched) |
 | Is the branch green? | `roadmap-lib.sh branch-health` (Checks API + commit-status API, fail-closed) |
 
 ## What is enforced, and what is not
